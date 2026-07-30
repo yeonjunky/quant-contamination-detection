@@ -1,0 +1,31 @@
+분류,arxiv_id,제목,내용,당신 연구와의 관련성,published,url
+A. 서베이 (먼저 읽을 것),2404.00699,A Comprehensive Survey of Contamination Detection Methods in Large Language Models (TMLR 2025),탐지 기법 전반 정리 (2024),관련연구 절 골격,2024-03,https://arxiv.org/abs/2404.00699
+A. 서베이 (먼저 읽을 것),2502.14425,A Survey on Data Contamination for LLMs,오염 정의·원인·완화 전반 (2025),최신 종합 서베이 (탐지 커버리지는 2404.00699이 더 넓음),2025-02,https://arxiv.org/abs/2502.14425
+A. 서베이 (먼저 읽을 것),2502.17521,Recent Advances in Large Langauge Model Benchmarks against Data Contamination: From Static to Dynamic Evaluation [sic: 원문 오타],정적 벤치마크 개선의 한계 → 동적 전환 논증,LiveCodeBench류 정당화 근거,2025-02,https://arxiv.org/abs/2502.17521
+A. 서베이 (먼저 읽을 것),2605.26133,Pretraining Data Exposure: Survey of Membership Inference,MIA·데이터 추출·오염을 하나로 묶은 서베이 (2026),탐지 기법 계보 정리,2026-05,https://arxiv.org/abs/2605.26133
+B. 시간 분할 = LCB 시간분할 조건의 근거,2310.10628,Data Contamination Through the Lens of Time,GPT 모델을 시간축으로 분할 평가 — cutoff 전후 성능 격차 측정,당신 contest_date 필터링의 원조 방법론,2023-10,https://arxiv.org/abs/2310.10628
+B. 시간 분할 = LCB 시간분할 조건의 근거,2403.07974,LiveCodeBench,대회 날짜 기반 지속 수집으로 오염 없는 코드 평가,당신이 직접 사용 중,2024-03,https://arxiv.org/abs/2403.07974
+B. 시간 분할 = LCB 시간분할 조건의 근거,2511.12116,LLMLagBench: Identifying Temporal Training Boundaries,모델의 실제 training cutoff를 추정,cutoff를 신뢰할 수 없을 때 필수,2025-11,https://arxiv.org/abs/2511.12116
+B. 시간 분할 = LCB 시간분할 조건의 근거,2504.14655,LeetCodeDataset: Temporal Dataset for Robust Evaluation,시간 분할 학습/평가 데이터셋,분할 설계 참고,2025-04,https://arxiv.org/abs/2504.14655
+C. 오염의 효과 크기 (핵심 인용),2501.18771,"Overestimation in LLM Evaluation (controlled, MT)",깨끗한 분할에서 시작해 오염을 단계·규모·형식별로 주입 — 인과적 효과 분리 (1B/8B),"인과 추론 설계의 참조점 — 단, 1B/8B 직접 사전학습+MT(BLEU) 연구로 31–70B 기성 모델에는 모방 불가",2025-01,https://arxiv.org/abs/2501.18771
+C. 오염의 효과 크기 (핵심 인용),2403.04811,Quantifying Contamination in Code Generation Evaluation,코드 생성에서 오염의 정량적 영향,코드 도메인 효과 크기 기준선,2024-03,https://arxiv.org/abs/2403.04811
+C. 오염의 효과 크기 (핵심 인용),2506.02791,Rethinking the effects of data contamination in Code Intelligence,sample-level이 아닌 partial contamination을 체계적으로 측정,부분 오염 = 현실적 시나리오,2025-06,https://arxiv.org/abs/2506.02791
+C. 오염의 효과 크기 (핵심 인용),2507.19219,How Much Do LLMs Cheat? One-Time-Pad Framework,과대추정 정량화 프레임워크,과대추정 측정 지표,2025-07,https://arxiv.org/abs/2507.19219
+D. 탐지의 한계 (반드시 알 것),2311.04850,Rethinking Benchmark and Contamination with Rephrased Samples,n-gram 매칭은 패러프레이즈·번역으로 쉽게 우회됨,n-gram 기반 정제를 신뢰하지 말 것,2023-11,https://arxiv.org/abs/2311.04850
+D. 탐지의 한계 (반드시 알 것),2602.12413,Soft Contamination Means Benchmarks Test Shallow Generalization,의미적 중복(semantic duplicate)은 n-gram으로 미검출 — Olmo3 코퍼스에서 광범위 확인 (2026),'깨끗한' 벤치마크의 한계 논증,2026-02,https://arxiv.org/abs/2602.12413
+D. 탐지의 한계 (반드시 알 것),2402.02823,Evading Data Contamination Detection is (too) Easy,의도적 오염은 탐지 회피가 쉬움,탐지 기법 신뢰성 비판,2024-02,https://arxiv.org/abs/2402.02823
+D. 탐지의 한계 (반드시 알 것),2409.09927,"Limitations, Inconsistencies, and Oracle Challenges",최신 LLM에서 기존 탐지법이 불일치,탐지법 선택 시 주의,2024-09,https://arxiv.org/abs/2409.09927
+D. 탐지의 한계 (반드시 알 것),2603.03203,"No Memorization, No Detection (CDD 재현 실패)",출력 분포 기반 탐지(CDD)가 verbatim 암기 없으면 우연 수준 (70M-410M),★ 양자화 연구와 직결 — 아래 설명,2026-03,https://arxiv.org/abs/2603.03203
+E. 코드 오염 특화,2605.24079,TRACER: Semantic-Aware Fine-Grained Code Contamination,기능적 동일/거의 동일/논리 공유 3단계 의미 중복 탐지 (2026),코드 벤치마크 오염 최신 도구,2026-05,https://arxiv.org/abs/2605.24079
+E. 코드 오염 특화,2411.10842,CODECLEANER: Contamination Mitigation Toolkit,코드 리팩터링 기반 오염 완화 툴킷,실용 도구,2024-11,https://arxiv.org/abs/2411.10842
+E. 코드 오염 특화,2503.06643,Is Your Benchmark Still Useful? Dynamic Benchmarking for Code,의미 보존 변형으로 코드 벤치마크 동적 생성,HumanEval 변형 생성용,2025-03,https://arxiv.org/abs/2503.06643
+E. 코드 오염 특화,2503.13572,VeriContaminated: LLM-Driven Verilog Coding,특정 코드 도메인의 오염 사례 연구,도메인 특화 사례 포맷,2025-03,https://arxiv.org/abs/2503.13572
+F. 오염 사후 보정 (당신 대안 경로),2509.15218,LNE-Blocking: Contamination Mitigation Evaluation,깨끗한 데이터셋을 만드는 대신 오염 전 성능을 복원,벤치마크 교체 없이 보정,2025-09,https://arxiv.org/abs/2509.15218
+F. 오염 사후 보정 (당신 대안 경로),2601.19334,When Benchmarks Leak: Inference-Time Decontamination,평가셋을 바꾸지 않고 추론 시점에 오염 보정 (2026),최신 접근,2026-01,https://arxiv.org/abs/2601.19334
+F. 오염 사후 보정 (당신 대안 경로),2506.04142,Trustworthy LLM Evaluation via Shortcut Neuron Analysis,오염 모델 내부의 'shortcut neuron' 분석으로 과대추정 규명,기계론적 해석 — 양자화와 연결 가능,2025-06,https://arxiv.org/abs/2506.04142
+F. 오염 사후 보정 (당신 대안 경로),2605.21543,Provable Joint Decontamination for Multiple LLMs,여러 모델 동시 벤치마킹의 정제 이론 (2026),다모델 비교 = 당신 설정,2026-05,https://arxiv.org/abs/2605.21543
+G. 코드 도메인 양자화 (A1 교체 인용),2503.07103,Evaluating the Impact of Post-Training Quantization on Large Language Models for Code Generation,"최대 34B 코드 LLM, 2bit까지. 4bit=새 프런티어, 메모리 70% 감소에 유의한 저하 없음",A1 오인용 대체 — 코드 도메인 4bit 효과 크기의 근거. 단 캘리브레이션 기반(GPTQ/AWQ),2025-03,https://arxiv.org/abs/2503.07103
+G. 코드 도메인 양자화 (A1 교체 인용),2507.09665,Is Quantization a Deal-breaker? Empirical Insights from Large Code Models,AWQ를 CodeLlama/DeepSeekCoder에. 기능적 정확성+유지보수성·구조적 단순성 보존,AWQ arm의 기대 효과 크기 근거,2025-07,https://arxiv.org/abs/2507.09665
+G. 코드 도메인 양자화 (A1 교체 인용),2506.22776,Smaller = Weaker? Benchmarking Robustness of Quantized LLMs in Code Generation,"350M–33B, 4개 패밀리. 양자화 모델이 오히려 더 강건 (51.59% vs 42.86%)",'양자화가 항상 해롭다'는 전제를 반박 — 양방향 가설의 근거,2025-06,https://arxiv.org/abs/2506.22776
+G. 코드 도메인 양자화 (A1 교체 인용),2505.20276,(원 인용) 롱컨텍스트 양자화 평가,"8bit 약 0.8% 하락, 4bit 최대 59%. **64K 초과 롱컨텍스트 전용**",bnb-nf4 arm 근거: Llama-3.1-70B가 nf4에서 32% 하락 — 효과 최대 예상 조건,2025-05,https://arxiv.org/abs/2505.20276
+F. 오염 사후 보정 (당신 대안 경로),2605.15138,(오염 메커니즘 + 해법) MANSU / CAD,오염 모델 내부 메커니즘 규명에 그치지 않고 MANSU(해법)와 CAD(검증 지표)를 제안,오염 축 검증 지표로 CAD 활용 가능,2026-05,https://arxiv.org/abs/2605.15138
