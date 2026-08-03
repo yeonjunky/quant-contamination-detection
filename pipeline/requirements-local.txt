@@ -1,0 +1,10 @@
+# Mock-only profile: no GPU library required.
+# Enough to run the dry-run harness (scripts/run_dry_run.py) and the
+# GPU-free pytest suite (tests/) end to end.
+numpy
+pandas
+pyarrow
+pytest
+evalplus
+datasets
+huggingface_hub

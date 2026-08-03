@@ -1,0 +1,25 @@
+# H100 box: full GPU stack for the pilot + main experiment.
+#
+# UNPINNED PLACEHOLDER — do not use as-is. Per pipeline_build_plan.md's
+# "Open assumptions" list: this must become a fully version-pinned lockfile
+# (exact `==` versions, not ranges) once run against the H100's actual
+# driver/CUDA version, which has not yet been checked.
+#
+# GPTQModel and llm-compressor stand in for the originally-named
+# AutoGPTQ/AutoAWQ, which are both archived/unmaintained (AutoGPTQ archived
+# April 2025, AutoAWQ archived ~May 2025, transformers dropped the AutoGPTQ
+# backend). They still produce GPTQ-int4 / AWQ-int4 output matching the
+# paper's terminology. Confirm this substitution before pinning.
+torch
+transformers
+bitsandbytes
+accelerate
+gptqmodel
+llm-compressor
+datasets
+huggingface_hub
+evalplus
+pyarrow
+numpy
+pandas
+pytest

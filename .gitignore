@@ -1,3 +1,8 @@
 *.pdf
 .DS_Store
-.commandcode
+/data/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
