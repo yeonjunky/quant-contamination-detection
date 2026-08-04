@@ -5,7 +5,8 @@
 # (exact `==` versions, not ranges) once run against the H100's actual
 # driver/CUDA version, which has not yet been checked.
 #
-# GPTQModel and llm-compressor stand in for the originally-named
+# GPTQModel and llmcompressor (PyPI name; GitHub repo is "llm-compressor")
+# stand in for the originally-named
 # AutoGPTQ/AutoAWQ, which are both archived/unmaintained (AutoGPTQ archived
 # April 2025, AutoAWQ archived ~May 2025, transformers dropped the AutoGPTQ
 # backend). They still produce GPTQ-int4 / AWQ-int4 output matching the
@@ -15,7 +16,7 @@ transformers
 bitsandbytes
 accelerate
 gptqmodel
-llm-compressor
+llmcompressor
 datasets
 huggingface_hub
 evalplus
