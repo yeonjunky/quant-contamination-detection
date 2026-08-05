@@ -1,5 +1,14 @@
 # Data-Collection Pipeline: Build Plan
 
+> **DESIGN CHANGE 2026-08-05 — this plan predates a model-roster change.** Llama-3.3-70B and
+> Gemma-4-31B-it were removed from the design entirely; Llama-3.1-8B-Instruct was added
+> (see `paper/revision_provenance.md`, 2026-08-05 entry). Consequences for this document:
+> every 70B fp16 / multi-GPU-rental reference below is obsolete (no arm exceeds 32.5B; the
+> whole ladder fits a single H100/H200), the HF cache sizing note shrinks accordingly, and
+> `pilot_report.py` must compute **five** pilot quantities (a)–(e) per paper §4.7 (the
+> "(a)-(d)" below is stale). The registry in `pipeline/src/qcd/models/registry.py` is the
+> authoritative roster.
+
 ## Context
 
 The repo currently holds only the paper draft, review history, and reference CSVs —
