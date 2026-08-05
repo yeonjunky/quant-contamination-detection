@@ -17,7 +17,7 @@ Reported accuracy drops from post-training quantization are usually interpreted 
 if a benchmark problem was seen during pretraining, a model's correct response may reflect recall
 rather than reasoning, and quantization is known to perturb memorized traces disproportionately
 (unlearned knowledge has been shown to resurface after 4-bit quantization, rising from 21% to 83%
-retained in one study; the mechanism has been formalized as a sparsity-permanence tradeoff in which
+retained for utility-constrained unlearning methods in one study; the mechanism has been formalized as a sparsity-permanence tradeoff in which
 sub-threshold parameter changes are erased by quantization's bin structure). Separately, contamination-detection
 research shows that detectors are not interchangeable: output-distribution-peakedness detectors (CDD)
 require verbatim memorization and collapse to chance without it, while probability-based detectors
@@ -27,8 +27,8 @@ families of contamination signal, and does it change the outcome of contaminatio
 on code-generation benchmarks?
 
 We present a registered-report-style observational design (analysis plan fixed before execution, though
-not lodged with an external registry) to answer this at a scale (7B–70B) roughly one to three
-orders of magnitude larger (17×–1,000×, depending on which endpoints are compared) than the only prior
+not lodged with an external registry) to answer this at a scale (7B–32B) roughly one to two and a half
+orders of magnitude larger (17×–464×, depending on which endpoints are compared) than the only prior
 contamination-detection study to probe this failure mode (70M–410M). The design's primary question (Q1) compares peakedness- and probability-based detection
 signals across quantization precision on a paired, per-item basis, which is well powered even at
 benchmark-imposed sample-size ceilings (e.g., 164 items). A secondary question (Q2) asks whether the
@@ -51,8 +51,10 @@ Two independent lines of evidence suggest this assumption should not be taken fo
 
 **Quantization perturbs memorized traces.** Studies of machine unlearning — the practice of suppressing
 specific knowledge in a trained model without full retraining — find that "erased" knowledge often
-resurfaces after quantization: one study reports retained-knowledge rates rising from 21% at full
-precision to 83% after 4-bit quantization (arXiv:2410.16454). A mechanistic follow-up explains why:
+resurfaces after quantization: one study reports retained-knowledge rates for utility-constrained
+unlearning methods rising from 21% at full precision to 83% after 4-bit quantization
+(arXiv:2410.16454; the qualifier is the source's own — it warns that figures from unconstrained
+methods are misleading). A mechanistic follow-up explains why:
 the parameter changes that constitute a successful unlearn are frequently 47–828× smaller than a single
 NF4 quantization bin, so quantization's rounding simply erases them (arXiv:2605.15138, "Forgetting That
 Sticks"). If quantization can un-erase suppressed knowledge, it is plausible that it can also erase
@@ -66,7 +68,7 @@ at all (arXiv:2603.03203, *No Memorization, No Detection: Output Distribution-Ba
 Detection in Small Language Models*). The paper's own limitations section cautions that this behavior
 "should not be extrapolated to larger scales without further investigation" — a caution that cuts both
 ways, since the paper's positive result (CDD works) was itself obtained only at 7B and is not established
-at the 32B–70B scale either. What the paper does establish is a *mechanism*: CDD is governed by a sharp
+at the 32B scale either. What the paper does establish is a *mechanism*: CDD is governed by a sharp
 memorization threshold tied to the absolute number of trainable parameters, not model size per se.
 
 Put together, these two threads motivate a question that neither literature has asked: **if quantization
@@ -95,7 +97,7 @@ statistical significance.
 
 **Contributions (stated as design commitments, to be confirmed or refuted by execution):**
 
-1. The first measurement, at 7B–70B scale, of how post-training quantization affects the relative
+1. The first measurement, at 7B–32B scale, of how post-training quantization affects the relative
    behavior of peakedness-based vs. probability-based contamination-detection signals (Q1a/Q1b).
 2. A bounded, log-odds-scale estimate of the quantization × contamination interaction on pass@1 in code
    generation, reported as an association rather than a causal effect, with an explicit base-rate-confound
@@ -104,7 +106,7 @@ statistical significance.
    scores, crossed with quantization technique, precision, and model — intended to support future
    contamination-detection benchmarking work independent of this paper's own conclusions.
 4. A negative/boundary result, regardless of Q1's outcome: either evidence that CDD is inoperative at
-   32B–70B scale (extending arXiv:2603.03203's threshold finding beyond its tested range) or evidence that
+   32B scale (extending arXiv:2603.03203's threshold finding beyond its tested range) or evidence that
    it is operative, both of which are currently unknown.
 
 ---
@@ -125,6 +127,9 @@ Splitting a benchmark by public release date relative to a model's training cuto
 natural-experiment design for contamination (arXiv:2310.10628, *Data Contamination Through the Lens of
 Time*), directly justifying our LiveCodeBench pre-/post-cutoff split (§4.2). LiveCodeBench itself
 (arXiv:2403.07974) implements continuous, dated problem collection specifically to support this design.
+arXiv:2504.14655 (*LeetCodeDataset*) applies the same temporal-split principle to LeetCode problems; we
+use LiveCodeBench for its larger dated pool, but the existence of an independent second instance
+corroborates the design pattern.
 Because publicly declared training-cutoff dates can be wrong or absent, we additionally rely on
 arXiv:2511.12116 (*LLMLagBench*), which estimates a model's *actual* temporal training boundary from its
 knowledge of recent events, as a validation step (§5, step 4) rather than trusting declared cutoffs
@@ -135,7 +140,7 @@ arXiv:2501.18771 provides a controlled, causally-identified estimate of contamin
 pretraining 1B/8B models on machine-translation data with contamination injected at controlled stages,
 scales, and formats. We treat this as the methodological reference point for causal identification, but
 **cannot replicate its design**: it requires pretraining from scratch, and our study uses off-the-shelf
-7B–70B models in the code domain. We can therefore only approximate its causal design observationally
+7B–32B models in the code domain. We can therefore only approximate its causal design observationally
 (§6). arXiv:2403.04811 and arXiv:2506.02791 quantify contamination's effect size specifically in code
 generation, with the latter noting that most prior work measures only sample-level contamination and
 under-counts the more common partial-contamination case. arXiv:2507.19219 offers a one-time-pad-based
@@ -188,11 +193,11 @@ and does not establish.
   on a 7B model, whereas 3–25M is the trainable-parameter range of the replication's *own* r=256
   configurations on 70M–410M models (Table 1: 3.1M / 9.4M / 25.2M). Note that the 7B figure appears only in
   the paper's Discussion prose; Table 1 tabulates 70M/160M/410M and does not contain it.
-- **What it does not show:** anything about 32B–70B models, or about pretraining-time (as opposed to
+- **What it does not show:** anything about 32B models, or about pretraining-time (as opposed to
   fine-tuning-injected) contamination. The paper explicitly states its small-model findings "should not be
   extrapolated to larger scales without further investigation." It is tempting to argue in the opposite
   direction — that CDD's positive 7B result means CDD "works" at the scales this design targets — but that
-  argument violates the same caveat it would have to cite. **The position of 32B–70B models relative to CDD's memorization
+  argument violates the same caveat it would have to cite. **The position of 32B models relative to CDD's memorization
   threshold is simply unknown**, and could fail in either direction: if these larger models sit above the
   threshold, CDD works and our design is well-powered (§4.5.2); if they sit at or near the threshold's
   chance-level side, CDD's AUC is ≈0.5 and **no amount of additional data will make Q1b detectable**,
@@ -323,46 +328,47 @@ design cannot actually power.
 
 | Model | Size | Baseline precision | Role | Notes |
 |---|---|---|---|---|
-| Qwen2.5-32B | 32.5B | fp16 | Primary | Dense, GQA+RoPE; no official QAT checkpoint exists, so naive-PTQ comparisons are uncontaminated by a QAT confound |
-| Llama-3.3-70B | 70B | fp16 (not yet generated; only an int8 baseline currently exists — see "Compute constraint" below) | Primary | arXiv:2505.20276 reports pronounced BNB-nf4 fragility (32% drop) in **Llama-3.1-70B**, not 3.3 — the closest available evidence, but the 3.1→3.3 version difference is itself untested (§6) and this is our best candidate for a large effect, not a confirmed one |
-| Qwen2.5-7B | 7B | fp16 | Pilot workhorse + size axis | Cheap to run; used to secure item counts for the pilot and as a secondary "does the effect scale with model size" probe |
-| Olmo3-7B | 7B | fp16 | Ground-truth label validation + size axis | Fully open training corpus, enabling direct measurement (rather than assumption) of the proxy-label error rate *e* in §4.5.2. Dense transformer, so no architecture confound is introduced. Joins the pilot (§4.7) |
-| Olmo3-32B | 32B | fp16 | Ground-truth label validation + size axis | As above at the 32B scale, matching Qwen2.5-32B's footprint |
-| Gemma-4-31B-it *(appendix only)* | ~30.7B | bf16 | **Excluded from main analysis** | Ships an official QAT q4_0 checkpoint (structurally different 4-bit degradation vs. naive PTQ), has a thinking-mode toggle, and is multimodal — three uncontrolled confounds. Retained only for an appendix "QAT vs. PTQ" comparison. |
+| Qwen2.5-32B-Instruct | 32.5B | fp16 | Primary | Dense, GQA+RoPE; no official QAT checkpoint exists, so naive-PTQ comparisons are uncontaminated by a QAT confound |
+| Qwen2.5-7B-Instruct | 7B | fp16 | Pilot workhorse + size axis | Cheap to run; used to secure item counts for the pilot and as a secondary "does the effect scale with model size" probe |
+| Llama-3.1-8B-Instruct | 8B | fp16 | Size axis + externally verified cutoff | The only main-analysis model whose training cutoff is already independently verified by LLMLagBench (arXiv:2511.12116): declared 2023-12, detected knowledge-drop changepoint 2023-03. We use the declared (later) date as the conservative contamination boundary; the detected/declared gap and its consequence for this arm's LCB pre-cutoff pool are discussed in §4.2. Family tie to arXiv:2505.20276's BNB-nf4 fragility prior, which was measured on Llama-3.1-**70B** — same family and data recipe, roughly 9× smaller, so a weak prior rather than a confirmed expectation (§6) |
+| Olmo3-7B-Instruct | 7B | fp16 | Ground-truth label validation + size axis | Fully open training data across all stages (pretraining and post-training), enabling direct measurement (rather than assumption) of the proxy-label error rate *e* in §4.5.2. Dense transformer, so no architecture confound is introduced. Joins the pilot (§4.7) |
+| Olmo3-32B-Instruct | 32B | fp16 | Ground-truth label validation + size axis | As above at the 32B scale, matching Qwen2.5-32B-Instruct's footprint |
 
-Architecture is still not treated as a controlled axis: Qwen2.5, Llama-3.3, and Olmo3 are all dense
+All five arms use the instruction-tuned (\*-Instruct) releases: code-generation pass@1 under
+instruction prompts is the measured quantity, the illustrative base rates in §4.5.3 are
+instruction-tuned figures, and the LLMLagBench verification (§5, step 4) probes instruct checkpoints.
+Shorthand names elsewhere in this document (e.g., "Qwen2.5-7B") refer to these Instruct checkpoints.
+An instruct checkpoint also widens the contamination surface — benchmark items can enter through
+post-training (instruction-tuning) data as well as pretraining — which is why the Olmo3 ground-truth
+search in §5, step 5 covers both stages.
+
+QAT-shipped models (e.g., Gemma-family official QAT checkpoints) are excluded entirely: an official QAT
+checkpoint degrades structurally differently from naive PTQ, and the available QAT models add further
+uncontrolled confounds (thinking-mode toggles, multimodality). A QAT-vs-PTQ comparison on such a model
+is deferred to future work; the format of the shipped checkpoints (llama.cpp q4_0) would also require a
+second inference stack, whose numerics differences would confound the very contrast of interest.
+
+Architecture is still not treated as a controlled axis: Qwen2.5, Llama-3.1, and Olmo3 are all dense
 transformers, so this column would carry no information. Two axes do vary deliberately across models:
 **size**, and **training-corpus transparency**. The latter is introduced specifically to serve §4.5.2 —
 Olmo3 releases its pretraining corpus, so contamination labels for its arm can be measured against the
 training data directly instead of inferred from a release-date proxy. All within-model comparisons use the
-model's own full-precision baseline; we do not attempt to unify baseline precision *across* models
-(fp16 vs. bf16), since Gemma's exclusion leaves the remaining model families fp16-comparable already.
+model's own full-precision baseline, and all five models share the same baseline precision (fp16), so no
+cross-model baseline-precision issue arises.
 
-**Compute constraint and the 70B baseline.** The available hardware is a single H100 (80 GB), with a
-single H200 (141 GB) obtainable on request. Weight footprints, before KV cache and activations:
+**Compute footprint.** The available hardware is a single H100 (80 GB), with a single H200 (141 GB)
+obtainable on request. Weight footprints, before KV cache and activations:
 
 | Model | fp16 | int8 | int4 (nf4) | Fits a single device at fp16? |
 |---|---|---|---|---|
-| Qwen2.5-7B / Olmo3-7B | ~15 GB | ~8 GB | ~4 GB | Yes (H100) |
-| Qwen2.5-32B / Olmo3-32B | ~64–65 GB | ~32 GB | ~18 GB | Yes, tightly (H100, ~15 GB left for KV cache) |
-| Llama-3.3-70B | **141.2 GB** | ~71 GB | ~39 GB | **No** — exceeds even the H200's 141 GB before any KV cache |
+| Qwen2.5-7B / Olmo3-7B / Llama-3.1-8B | ~14–16 GB | ~7–8 GB | ~4–5 GB | Yes (H100) |
+| Qwen2.5-32B / Olmo3-32B | ~64–65 GB | ~32 GB | ~18 GB | Yes, tightly (H100, ~15 GB left for KV cache); comfortably on the H200 |
 
-Llama-3.3-70B at fp16 therefore cannot be run on either available device; the weights alone do not fit.
-This is a hard constraint on the design, not a scheduling problem, and it is why the model table above
-records the 70B fp16 baseline as *not yet generated* rather than as a step to be repeated.
-
-*Plan:* obtain the 70B fp16 pass through a one-time multi-GPU rental. That window must cover the
-**complete** fp16 pass — CDD's multi-sample generations *and* the teacher-forced log-probability passes
-that perplexity and Min-k% require (§4.4) — not generations alone, since the sampling protocol is repeated
-at every precision level.
-
-*Pre-specified fallback,* if the rental cannot be obtained: run the 70B arm on a three-level ladder
-anchored at int8 (int8 → nf4 → GPTQ/AWQ). We record this as a limitation, not as a justified equivalence.
-In particular, we do **not** assume int8 detector scores approximate fp16 detector scores: that assumption
-is the null hypothesis of this paper's own primary question. Under the fallback, the fp16→quantized
-contrast is simply not measured for this arm, Q1a's contrast is not comparable to the fp16-anchored 7B and
-32B arms, and the size axis rests on the 7B and 32B models with 70B reported as a supporting,
-non-comparable arm (§6).
+Every arm therefore runs its complete quantization ladder — fp16 baseline included — on a single
+available device. No arm requires a baseline at a different precision from any other, which keeps
+Q1a's fp16-anchored within-model contrast directly comparable across all five models. Models above
+32.5B are excluded from the design as a hard compute constraint (a single device cannot hold a 70B-class
+fp16 baseline), and this scale ceiling is recorded as a scope limitation in §8.
 
 ### 4.2 Data: contamination axis
 
@@ -382,6 +388,53 @@ Because the post-cutoff boundary is set by the *latest* cutoff among the models 
 model added to §4.1 can only move that boundary later and shrink the pool of eligible post-cutoff items.
 Confirming that the ≥1,000-item target still holds once Olmo3's actual cutoff is verified (§5, step 4) is
 therefore a risk item for §5, step 3, not a formality.
+
+**Pre-specified boundary rule.** Cutoff evidence quality differs by arm, so the boundary is defined to
+remain valid under the weakest evidence rather than under the most optimistic reading:
+
+| Arm | Cutoff evidence | Evidence tier | Conservative exposure bound |
+|---|---|---|---|
+| Olmo3-7B / Olmo3-32B | Open pretraining corpus's own document-date metadata | Corpus metadata (strongest) | Corpus end date (verified in §5, steps 3–4) |
+| Llama-3.1-8B | Declared 2023-12; externally verified by LLMLagBench (detected drop 2023-03) | Verified declaration | 2023-12 (declared) |
+| Qwen2.5-7B / Qwen2.5-32B | No unambiguous official declaration | Release-date bound (weakest) | 2024-09 (release date) |
+
+A release date is an unconditionally valid upper bound — a model cannot have trained on data published
+after its own release — so an arm with no declaration still has a defensible boundary. The LCB
+post-cutoff boundary is pre-specified as **the latest of the per-arm conservative bounds** (provisionally
+Qwen2.5's 2024-09 release date or Olmo3's corpus end date, whichever proves later), and it moves earlier
+only when stronger evidence replaces a weaker bound (e.g., a maintainer evaluation from §5, step 4).
+This makes the design self-sufficient: an unanswered or inconclusive LLMLagBench request degrades the
+boundary to a later date and a smaller post-cutoff pool — never to an unusable design. The ≥1,000-item
+post-cutoff target is accordingly checked against this worst-case boundary in §5, step 3, not deferred
+until external requests resolve.
+
+One asymmetry specific to the Llama-3.1-8B arm: LLMLagBench detects its knowledge-drop changepoint at
+2023-03, nine months before the declared 2023-12 cutoff (§4.1). We use the declared, later date as the
+conservative boundary for what the model *may have seen* — a knowledge drop is evidence of thin coverage,
+not proof of non-exposure. But if the effective pretraining boundary is in fact earlier, this arm's LCB
+pre-cutoff pool (which begins 2023-05) contains items the model plausibly never saw, diluting its
+contamination-suspect condition toward the clean side. Its secondary suspect conditions (HumanEval,
+MBPP+, both released 2021) are unaffected.
+
+Rather than merely flagging this, we pre-specify a **boundary sensitivity analysis**. Every analysis
+that consumes this arm's LCB contamination labels (Q1b, Q2) is run twice: once under the **declared
+boundary** (2023-12; the 2023-05–2023-12 window counts as contamination-suspect) and once under the
+**detected boundary** (2023-03; the window counts as clean — which empties this arm's LCB-pre set,
+since LCB collection begins 2023-05, and drops the arm from the LCB contrast, leaving HumanEval and
+MBPP+ as its only suspect conditions). The declared-boundary run is primary; the detected-boundary run
+is sensitivity. **Which run is which is fixed here, in advance, and is not revisited after seeing
+results.** Agreement between the runs demonstrates robustness to the nine-month ambiguity; disagreement
+quantifies exactly how much rides on it — either way a reportable outcome. The re-run costs no
+additional generation or scoring: only analysis-time label assignment changes, and the item-level
+raw-data requirement (§5, step 8) exists precisely to make such re-analyses possible.
+
+The rule generalizes beyond this arm: **any arm whose cutoff evidence tier is below corpus metadata is
+re-analyzed under its bracketing bounds** — for Qwen2.5, the release-date bound versus any
+maintainer-provided estimate that later arrives (§5, step 4). Olmo3, with corpus-metadata evidence,
+needs no sensitivity run. As a purely descriptive check, we also compare the ambiguous-window items'
+full-precision detector-score distribution against the definitely-clean (post-boundary) and
+definitely-suspect distributions; this comparison is reported separately and is **never fed back into
+Q1b's labels** — doing so would let the detectors under evaluation adjudicate their own ground truth.
 
 HumanEval and MBPP+ are usable for **Q1** at their native sample sizes (§3.0) but are demoted to secondary
 evidence for **Q2**, where the 164-item ceiling on HumanEval is the binding constraint on detectable
@@ -442,7 +495,7 @@ Item-level, same-item comparison across precision; a paired t-test / mixed-effec
 | 0.2 | 196 |
 
 **Caveat:** these d values are illustrative, not predictions. §2.4 establishes that CDD behaves as a step
-function around a memorization threshold whose location for 32B–70B models is unknown; if quantization
+function around a memorization threshold whose location for 32B models is unknown; if quantization
 moves a model across that threshold, d could be far larger or smaller than either row above. Probability-
 based detectors are not reported to exhibit step-function behavior, so their d is expected to be more
 stable — an additional reason (beyond §2.4's AUC argument) to treat them as the primary detector family
@@ -498,12 +551,15 @@ very corpus — which is precisely why measuring rather than assuming *e* matter
 
 | Items per condition | Power @ 5pp | @ 10pp | @ 20pp |
 |---|---|---|---|
-| 50 | 0.07 | 0.11 | 0.29 |
-| 164 (HumanEval ceiling) | 0.10 | 0.24 | 0.72 |
-| 400 | 0.17 | 0.51 | 0.98 |
+| 50 | 0.06 | 0.11 | 0.29 |
+| 164 (HumanEval ceiling) | 0.10 | 0.25 | 0.73 |
+| 400 | 0.17 | 0.52 | 0.98 |
 | 800 | 0.29 | 0.81 | 1.00 |
-| 1,600 | 0.51 | 0.98 | 1.00 |
+| 1,600 | 0.52 | 0.98 | 1.00 |
 | 3,200 | 0.81 | 1.00 | 1.00 |
+
+*Every cell is computed from the single formula power = Φ(δ/SE − z_{α/2}) + Φ(−δ/SE − z_{α/2}) with
+SE = √(4·p(1−p)/n) at p = 0.5 — stated so that no cell can silently mix conventions.*
 
 Items needed for 80% power: **≈196** (20pp effect), **≈785** (10pp), **≈3,140** (5pp).
 
@@ -513,14 +569,20 @@ Items needed for 80% power: **≈196** (20pp effect), **≈785** (10pp), **≈3,
 |---|---|---|
 | Unpaired, p=0.5 both conditions | **785** | — (assumption-free upper bound; **use this for planning**) |
 | Unpaired, actual base rates 0.85/0.35 | 557 | Base rate alone: −29% (extreme base rates shrink binomial variance) |
-| Paired (item difficulty SD=1.5 model), p=0.5 | 549 (implied r≈0.30) | Pairing alone: −30% |
+| Paired (item difficulty SD=1.5 model), p=0.5 | 555 (implied r = 0.293) | Pairing alone: −29% |
 | Paired (SD=1.5 model), actual base rates | **≈415–419** | Both effects combined: −47% |
+
+*Rows are computed under different conventions and must not be read as one continuum: row 2 evaluates
+binomial variance at the null (no-drop) base rates; row 3 applies the σ=1.5 item model's implied
+cross-precision correlation (r = 0.293, by numerical integration) to the row-1 figure. That rows 2 and 3
+land within two items of each other (557 vs. 555) is coincidence — different mechanisms — and they do
+not compose multiplicatively; row 4 is a separate joint computation.*
 
 785 and ≈417 differ by nearly 2×; **785 is the number to plan against**, since it assumes nothing about
 base rates or item-level correlation, both of which must be *measured*, not assumed. (Note that these
 reductions do not compose: applying a base-rate-derived correlation estimate to the p=0.5 sample-size
 formula mixes two different scales and is not a valid shortcut to the paired-and-base-rate-adjusted
-figure.) The true item-level correlation between precisions may exceed the model's implied r≈0.29–0.30 — the same
+figure.) The true item-level correlation between precisions may exceed the model's implied r ≈ 0.293 — the same
 prompt and decoding strategy is used for both precisions, so more is shared between conditions than
 difficulty alone — and could plausibly reach 0.6–0.9, which would bring the requirement down to 157–314.
 This is unverified and must be measured in the pilot (§4.7), not assumed in the plan.
@@ -583,6 +645,29 @@ assume a value for the item-level correlation r in advance. (A two-sample test s
 not appropriate here, since the estimand is a 4-cell difference-in-differences with repeated measures on
 items.)
 
+#### 4.5.6 Multiplicity and confirmatory scope
+
+The design generates many tests — three detectors × several precision contrasts × Q1a/Q1b × five
+models — and declaring all of them at α=0.05 would make some spuriously significant results
+near-certain. We therefore pre-specify a small **confirmatory family** and demote everything else to
+exploratory status:
+
+- **C1–C3 (Q1a):** the paired fp16 → BNB-nf4 detector-score shift on the LCB conditions, one test per
+  detector (perplexity, Min-k% Prob, CDD) — the largest-expected-effect arm (§4.3) on the primary
+  condition axis (§4.2).
+- **C4 (Q1b):** whether the detector-family AUC ranking (probability-based vs. peakedness-based)
+  differs between fp16 and BNB-nf4.
+
+Holm correction is applied within this four-test family. Everything else — other quantization levels,
+other models' arms, the HumanEval/MBPP+ secondary conditions, Q2 in its entirety, and the boundary
+sensitivity re-runs of §4.2 — is reported as exploratory estimates with confidence intervals and exact
+p-values, without significance claims. Powering the confirmatory family at the Holm-adjusted worst case
+(α/4 for the smallest p-value; multiplier 3.339 in place of 2.802) raises Q1a's item requirement from
+87 to ≈124 at d=0.3 — still within HumanEval's 164-item ceiling — and from 196 to ≈279 at d=0.2, which
+requires the LCB conditions. The pilot-based power recomputation (§5, step 7) sizes the confirmatory
+tests at these adjusted thresholds; the unadjusted tables in §4.5.1–§4.5.3 remain valid for the
+exploratory analyses they describe.
+
 ### 4.6 Pilot gate: CDD baseline AUC
 
 Because CDD's behavior is a step function around an unknown threshold (§2.4), Q1b's feasibility must be
@@ -597,7 +682,7 @@ checked empirically before committing to the full run. Using the 542-item, r=0.8
 | 0.95 | 0.019 | 0.012 | Yes |
 
 The break-even point is a baseline AUC of **≈0.79**. The failure mode to plan for is not a ceiling effect
-but a **floor** effect: if 32B–70B models sit near CDD's chance-level regime, ΔAUC ≈ 0 regardless of
+but a **floor** effect: if 32B models sit near CDD's chance-level regime, ΔAUC ≈ 0 regardless of
 sample size, and no amount of additional data recovers detectability. **Gate:** measure CDD's 16-bit
 baseline AUC in the pilot; if it is below 0.79, drop CDD from the primary analysis and report Q1 using the
 probability-based detectors only, with CDD's (in)ability to function at this scale reported as a
@@ -632,27 +717,45 @@ high label noise in the proxy contamination labels (§4.5.2).
 2. **Build the detector-scoring pipeline** (CDD, perplexity, Min-k% Prob per item, per precision) —
    required for Q1. Budget CDD's per-item multi-sample requirement (§4.4) into the generation-cost
    estimate; design steps 1 and 2 to share underlying generations wherever possible.
-3. **Count available LiveCodeBench pre-/post-cutoff items** against the latest model's actual cutoff.
-   Target ≥1,000 each. If this target cannot be met, **demote Q2 to a secondary, confidence-interval-only
-   analysis** — this does not block the project, since Q1 does not depend on it.
+3. **Count available LiveCodeBench pre-/post-cutoff items** against the pre-specified worst-case
+   boundary of §4.2 (the latest per-arm conservative bound — provisionally Qwen2.5's 2024-09 release
+   date or Olmo3's corpus end date, whichever is later), not against an optimistic boundary that assumes
+   the step-4 requests resolve favorably. Target ≥1,000 each. If this target cannot be met, **demote Q2
+   to a secondary, confidence-interval-only analysis** — this does not block the project, since Q1 does
+   not depend on it.
 4. **Verify actual training cutoffs** via LLMLagBench (arXiv:2511.12116) rather than trusting declared
-   dates.
-5. **Measure residual contamination** in LCB pre/post and HumanEval via TRACER (arXiv:2605.24079). This is
-   a prerequisite for Q1b specifically (§4.5.2) and can proceed in parallel with step 6, since Q1a does not
-   require it. **For the Olmo3 arm, also derive ground-truth labels directly**: search the released
-   pretraining corpus for each benchmark item by n-gram and semantic match, then score both the
-   pre/post-cutoff proxy and TRACER's output against those labels. This yields the measured *e* of §4.5.2
-   and, separately, a validation of TRACER itself against known-contaminated items — the only point in the
-   design where either can be checked rather than assumed. Note the scope limit recorded in §6: these
-   labels are specific to Olmo3 and validate the *method*, not the labels of the closed-corpus arms.
+   dates. Llama-3.1-8B is already on the public leaderboard (declared 2023-12, detected 2023-03; §4.1).
+   LLMLagBench's question set is withheld by its maintainers to prevent leakage, so the Qwen2.5 arms
+   require an evaluation request to the maintainers rather than a local run. For the Olmo3 arms, the open
+   pretraining corpus's own date metadata bounds the cutoff directly — stronger evidence than behavioral
+   probing — so LLMLagBench is unnecessary there. Note the method can fail on refusal-heavy models
+   (its Qwen2.5-Omni-7B entry shows an 87% refusal rate and no detectable changepoint), so a request
+   that comes back inconclusive is a foreseeable outcome; under §4.2's pre-specified rule this simply
+   leaves the affected arm's conservative bound at its release date rather than blocking the design.
+5. **Measure residual contamination via TRACER (arXiv:2605.24079), against the Olmo3 pretraining
+   corpus** — the only corpus in the design open enough to run it on: TRACER is defined as a function of
+   a training corpus and a test set, and Qwen2.5's and Llama-3.1's corpora are closed (§4.5.2). This is
+   a prerequisite for Q1b specifically (§4.5.2) and can proceed in parallel with step 6, since Q1a does
+   not require it. TRACER has no confirmed public code release; we reimplement it from the paper's own
+   specification (its appendix publishes the prompts for all three LLM stages, the embedding model, and
+   the triage thresholds), with a retrieval pre-stage (n-gram/BM25 top-k candidates per benchmark item)
+   in front, since exhaustive pairwise comparison against a pretraining-scale corpus is infeasible.
+   **For the Olmo3 arm, also derive ground-truth labels directly**: search the released training
+   data — the pretraining corpus *and* the post-training (instruction-tuning) sets, both public for
+   Olmo3, since the instruct checkpoints (§4.1) can absorb benchmark items at either stage — for each
+   benchmark item by n-gram and semantic match, then score both the pre/post-cutoff proxy and the
+   TRACER reimplementation's output against those labels. This yields the measured *e* of
+   §4.5.2 and, separately, a fidelity measurement for the reimplementation itself against
+   known-contaminated items — the only point in the design where either can be checked rather than
+   assumed. Note the scope limit recorded in §6: these labels are specific to Olmo3 and validate the
+   *method*, not the labels of the closed-corpus arms.
 6. **Pilot** (§4.7): Qwen2.5-7B and Olmo3-7B, BNB-nf4 arm first. Precondition: measure the CDD baseline AUC
    gate (§4.6) before interpreting any Q1b pilot numbers; if the gate fails, switch the primary detector to
    probability-based methods for the remainder of the pilot. **Also record measured throughput** (items per
    hour per precision, separately for CDD's multi-sample generation and for the single-pass log-probability
-   scoring of §4.4) and convert it into a wall-clock estimate for the full run. Two decisions depend on this
-   number and cannot be made without it: the scope of the multi-GPU rental window for the 70B fp16 pass
-   (§4.1), and whether CDD's sample count *n* must be reduced — which, per §4.4, costs precision only in the
-   CDD arm.
+   scoring of §4.4) and convert it into a wall-clock estimate for the full run. One decision depends on this
+   number and cannot be made without it: whether CDD's sample count *n* must be reduced — which, per §4.4,
+   costs precision only in the CDD arm.
 7. **Recompute power** from pilot-measured effect sizes and correlations (§4.5.4). If Q2's required *n*
    is unreachable, keep it as a confidence-interval-only secondary result rather than forcing significance.
 8. **Full run.** Store item-level raw data for every condition: pass@1, partial credit, token
@@ -666,26 +769,33 @@ high label noise in the proxy contamination labels (§4.5.2).
    - *Q2:* `correct ~ precision * contaminated + (1|item) + (1|model)`, log-odds interaction term and CI;
      interpret only after the difficulty-stratification check (§4.5.3) confirms the constant-odds-ratio
      assumption.
+   - *Boundary sensitivity (pre-specified, §4.2):* re-run the Q1b/Q2 label assignments under each
+     non-corpus-tier arm's bracketing cutoff bounds — declared/primary versus detected/sensitivity, roles
+     fixed in advance — plus the descriptive ambiguous-window detector-score comparison, which is never
+     fed back into labels.
 
 ---
 
 ## 6. Threats to Validity
 
 - **Observational, not causal.** Contamination status cannot be randomly assigned to off-the-shelf,
-  already-pretrained 7B–70B models; it is an observed covariate, not a treatment. Results are reported as
+  already-pretrained 7B–32B models; it is an observed covariate, not a treatment. Results are reported as
   associations, following arXiv:2501.18771's causally-identified design as an aspirational reference this
   study cannot replicate at this model scale (§2.3).
-- **Declared training-cutoff dates may be wrong.** Mitigated via LLMLagBench verification (§5, step 4);
-  even so, residual uncertainty in cutoff dates should be reported as a limitation on the pre/post-cutoff
-  split's precision.
+- **Declared training-cutoff dates may be wrong, and cutoff evidence quality is heterogeneous across
+  arms.** Mitigated via LLMLagBench verification (§5, step 4) and, structurally, via §4.2's evidence-tier
+  rule (corpus metadata > verified declaration > bare declaration > release-date bound): the primary LCB
+  contrast uses the most conservative per-arm bound, trading post-cutoff pool size for validity, and the
+  per-arm evidence tier is reported alongside results. Residual uncertainty within each tier remains a
+  limitation on the pre/post-cutoff split's precision.
 - **"Filtered by date" does not guarantee "uncontaminated."** arXiv:2602.12413 and arXiv:2311.04850
   document that semantic duplication and paraphrase evade time- and n-gram-based filtering. We do not
   claim LiveCodeBench-post is a clean ground truth; we describe it as "lower-contamination" and use
   TRACER (§5, step 5) to measure, rather than assume, residual contamination in every condition, feeding
   that measurement into the label-noise correction in §4.5.2.
 - **Extrapolation risk from arXiv:2603.03203, on two independent dimensions.** *Scale:* that paper's
-  findings are established at 70M–410M, roughly one to three orders of magnitude below this design's
-  7B–70B range, and the paper itself disclaims extrapolation. *Mechanism:* separately from scale, the
+  findings are established at 70M–410M, roughly one to two and a half orders of magnitude below this
+  design's 7B–32B range, and the paper itself disclaims extrapolation. *Mechanism:* separately from scale, the
   contamination in that paper is **injected via LoRA fine-tuning**, whereas the contamination this design
   studies **arises naturally during pretraining** (§2.4). This matters because the threshold that governs
   CDD's behavior is stated there in terms of the *absolute number of trainable parameters* — a quantity
@@ -695,27 +805,28 @@ high label noise in the proxy contamination labels (§4.5.2).
   a standalone contribution. The gate measures the **composite** of both extrapolations and cannot separate
   them: a failed gate does not tell us whether CDD failed because of scale, because the memorization was
   never adapter-shaped to begin with, or both.
-- **Compute-constrained baseline asymmetry.** If the multi-GPU rental described in §4.1 cannot be
-  obtained, the 70B arm's baseline precision is int8 while every other arm's is fp16. That asymmetry is
-  imposed by hardware, not chosen as a controlled contrast, and it makes the 70B arm's Q1a comparison
-  non-comparable to the others rather than merely noisier. We report it as such and do not fold the 70B
-  arm into the size-axis claim under the fallback.
 - **Olmo3's ground-truth labels are model-local.** The corpus search in §5, step 5 establishes
-  contamination status for Olmo3 only. Qwen2.5's and Llama-3.3's training corpora remain closed, so those
+  contamination status for Olmo3 only. Qwen2.5's and Llama-3.1's training corpora remain closed, so those
   arms keep the proxy labels and their unmeasured error rate. Olmo3's labels therefore validate the
   *labelling method* — how well a release-date split tracks actual corpus membership on this benchmark
   family — and must not be presented as ground truth for the other arms. A measured *e* on the Olmo3 arm
   transfers to the others only under the assumption that the proxy behaves similarly against a different
   corpus, which we state as an assumption rather than a result.
-- **Version mismatch in the bnb-nf4 effect-size prior.** The 32% BNB-nf4 drop cited to motivate treating
-  Llama-3.3-70B as the largest-expected-effect arm (§4.1, §4.3) was measured in arXiv:2505.20276 on
-  **Llama-3.1-70B**. Llama-3.3-70B is a later, instruction-tuned-differently release in the same nominal
-  family; whether it shares 3.1's specific BNB-nf4 fragility has not been established and should be
-  treated as an open question the pilot (§4.7) can speak to, not an assumption carried into the main
-  analysis.
-- **Gemma-4-31B-it's confounds** (official QAT checkpoint, thinking-mode toggle, multimodality) make it
-  unsuitable for the naive-PTQ comparison this design otherwise controls for. It is excluded from the
-  primary analysis and used only in an appendix QAT-vs-PTQ comparison.
+- **Scale mismatch in the bnb-nf4 effect-size prior.** The 32% BNB-nf4 drop cited in §2.7 and §4.3 was
+  measured in arXiv:2505.20276 on **Llama-3.1-70B**. Our Llama arm, Llama-3.1-8B, shares the family and
+  data recipe but is roughly 9× smaller, and quantization fragility is known to vary with scale. The
+  prior therefore identifies the *family* of the expected effect, not its magnitude; the nf4 arm's
+  largest-expected-effect status rests on the calibration-free-vs-calibration-based distinction (§4.3),
+  not on this per-model figure, and the pilot (§4.7) measures the actual effect before the full run is
+  sized.
+- **Cutoff uncertainty on the Llama-3.1-8B arm.** LLMLagBench's detected knowledge-drop changepoint
+  (2023-03) precedes the declared cutoff (2023-12) by nine months (§4.1, §4.2). We adopt the declared
+  date as the conservative exposure boundary and quantify — rather than merely flag — the risk via the
+  pre-specified boundary sensitivity analysis of §4.2: the arm's label-dependent analyses are run under
+  both bounds and the divergence between runs is itself reported. Note the failure direction is benign:
+  if the effective boundary is earlier than declared, the declared-boundary run's suspect condition is
+  diluted with clean items, which *attenuates* effects toward null (the same direction as label noise,
+  §4.5.2) rather than manufacturing false positives.
 - **Base-rate confound between conditions** (§4.5.3) is mitigated on the log-odds scale under a
   constant-odds-ratio assumption, which is itself validated (not assumed) via difficulty stratification.
   If that assumption fails, the design falls back to a difficulty-matched comparison rather than reporting
@@ -723,6 +834,12 @@ high label noise in the proxy contamination labels (§4.5.2).
 - **Proxy contamination labels carry error** until TRACER measurement is complete (§4.5.2); this
   attenuates, rather than adds noise to, the true effect being measured in Q1b, and is addressed by
   treating TRACER measurement as a Q1b prerequisite rather than an optional check.
+- **TRACER is a reimplementation, not the authors' code.** No public code release is confirmed for
+  TRACER; §5, step 5 rebuilds it from the paper's published prompts, embedding model, and thresholds.
+  Reimplementation fidelity is therefore itself a threat — mitigated, but only on the Olmo3 arm, by
+  scoring the reimplementation against the corpus-search ground truth (§5, step 5). Its accuracy on the
+  closed-corpus arms' conditions is an assumption inherited by every TRACER-dependent quantity: the
+  measured *e*, and Q1b's label-noise correction.
 - **Scope limits.** Five models, four quantization configurations, code generation only, predominantly
   Python. Findings need not generalize to other architectures (e.g., MoE), other tokenizers, or other
   domains (e.g., natural-language QA), and we do not claim they do.
@@ -734,7 +851,7 @@ high label noise in the proxy contamination labels (§4.5.2).
 Restated from §1 with their evidentiary basis:
 
 1. **Primary (Q1):** the first measurement of quantization's effect on contamination-detection signal
-   families at 7B–70B scale — either confirming that probability-based detectors remain reliable while
+   families at 7B–32B scale — either confirming that probability-based detectors remain reliable while
    peakedness-based detection is disrupted, or the reverse, or no differential effect. All three outcomes
    are informative and reportable (§3.1.1's asymmetry argument applies to Q2, not Q1).
 2. **Secondary (Q2):** a bounded, log-odds-scale, base-rate-corrected estimate (or confidence interval, if
@@ -744,7 +861,7 @@ Restated from §1 with their evidentiary basis:
    scores × 4 quantization levels × 5 models × 4+ benchmark conditions) intended to outlive this paper's
    specific conclusions and support future contamination-detection benchmarking.
 4. **Boundary result:** direct evidence on whether CDD (or contamination detection generally) is operative
-   at 32B–70B scale — a gap explicitly left open by arXiv:2603.03203 — regardless of which way Q1 comes
+   at 32B scale — a gap explicitly left open by arXiv:2603.03203 — regardless of which way Q1 comes
    out.
 
 ## 8. Limitations
@@ -757,10 +874,16 @@ section:
 - Q2 may remain underpowered even after all mitigations in §4.5; if so, it is reported as a
   confidence-interval-bounded secondary result, not as a significance claim, and the paper's contribution
   claim does not depend on it clearing significance.
-- CDD may be entirely inoperative at 32B–70B scale (the "floor" failure mode, §4.6); if the pilot gate
+- CDD may be entirely inoperative at 32B scale (the "floor" failure mode, §4.6); if the pilot gate
   fails, this is reported as Contribution 4, not treated as a design failure requiring a redesign.
-- The scope is limited to five code-generation-capable dense transformer models and four quantization
-  configurations; generalization beyond this scope is not claimed.
+- Cutoff evidence quality differs across arms (§4.2): Olmo3's boundary rests on corpus metadata,
+  Llama-3.1-8B's on an externally verified declaration, and Qwen2.5's — absent an unambiguous
+  declaration — on the release-date upper bound. The pre/post split's precision is therefore
+  arm-dependent; boundary evidence is tabulated per arm and the most conservative bound governs the
+  pooled contrast.
+- The scope is limited to five code-generation-capable dense transformer models (7B–32.5B) and four
+  quantization configurations; no model above 32.5B is tested — a hard single-device compute constraint
+  (§4.1) — and generalization beyond this scope, upward in scale included, is not claimed.
 
 ---
 
@@ -777,7 +900,7 @@ Numbered by arXiv ID.
 **Temporal-split contamination measurement**
 - arXiv:2310.10628 — *Data Contamination Through the Lens of Time*
 - arXiv:2403.07974 — *LiveCodeBench*
-- arXiv:2511.12116 — *LLMLagBench: Identifying Temporal Training Boundaries*
+- arXiv:2511.12116 — *LLMLagBench: Identifying Temporal Training Boundaries in Large Language Models*
 - arXiv:2504.14655 — *LeetCodeDataset: Temporal Dataset for Robust Evaluation*
 
 **Effect sizes of contamination**
@@ -794,7 +917,7 @@ Numbered by arXiv ID.
 - arXiv:2603.03203 — *No Memorization, No Detection: Output Distribution-Based Contamination Detection in Small Language Models*
 
 **Code-benchmark contamination**
-- arXiv:2605.24079 — *TRACER: Semantic-Aware Fine-Grained Code Contamination Detection*
+- arXiv:2605.24079 — *TRACER: A Semantic-Aware Framework for Fine-Grained Contamination Detection in Code LLMs*
 - arXiv:2411.10842 — *CodeCleaner: Contamination Mitigation Toolkit*
 - arXiv:2503.06643 — *Is Your Benchmark Still Useful? Dynamic Benchmarking for Code*
 - arXiv:2503.13572 — *VeriContaminated: LLM-Driven Verilog Coding*
@@ -812,5 +935,5 @@ Numbered by arXiv ID.
 - arXiv:2505.20276 — long-context quantization evaluation (title not independently verified in source documents; cited only for its BNB-nf4 / Llama-3.1-70B effect size, §2.7, §4.3)
 
 **Quantization × unlearning/memorization**
-- arXiv:2410.16454 — quantization reverses machine unlearning, 21%→83% retained knowledge after 4-bit quantization (title not independently verified; cited only for the 21%→83% figure, §1–§2)
+- arXiv:2410.16454 — *Catastrophic Failure of LLM Unlearning via Quantization* (ICLR 2025)
 - arXiv:2605.15138 — *Forgetting That Sticks: Quantization-Permanent Unlearning via Circuit Attribution*
