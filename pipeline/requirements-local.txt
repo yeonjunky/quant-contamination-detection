@@ -5,6 +5,12 @@ numpy
 pandas
 pyarrow
 pytest
+# CPU-only tokenizer for models/mock.py (GPT2TokenizerFast) — transformers
+# itself doesn't require torch to import or to do pure tokenization; the
+# GPU-requiring paths (model loading, generation) live in models/loader.py,
+# not here. Was missing from this file even though mock.py already imported
+# it — bug found while wiring up the dry-run harness.
+transformers
 evalplus
 datasets
 huggingface_hub
