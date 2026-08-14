@@ -9,6 +9,16 @@
 > "(a)-(d)" below is stale). The registry in `pipeline/src/qcd/models/registry.py` is the
 > authoritative roster.
 
+> **BUILD STATUS 2026-08-14 — the mock-verifiable scope of this plan is built.** Every module
+> below reachable without a CUDA GPU exists and is tested (data loaders, generation, scoring
+> incl. real sandboxed code execution, all three detectors, the full analysis layer, pilot
+> gate/report, io writers, `scripts/run_dry_run.py`/`run_pilot.py`/`run_main.py`/
+> `sync_from_h100.sh`). `models/loader.py`'s real `generate()`/`score_logprobs()`, the
+> GPTQ/AWQ backend, and `scripts/run_smoke_test.py` remain deferred to a session on an actual
+> CUDA machine (this build pass ran on a Mac, Apple Silicon, no CUDA — confirmed with the user
+> before starting). See `pipeline/README.md`'s "What's built vs. what's deferred" for current
+> status; this document's file tree below is otherwise still the accurate target design.
+
 ## Context
 
 The repo currently holds only the paper draft, review history, and reference CSVs —
