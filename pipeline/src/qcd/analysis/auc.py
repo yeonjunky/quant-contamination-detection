@@ -77,7 +77,15 @@ def quantization_delta_auc(auc: float, reduction: float) -> float:
     (AUC-0.5) directly. Reproduces the gate table's ΔAUC column exactly:
     AUC=0.52->0.002, 0.60->0.010, 0.70->0.019, 0.85->0.026, 0.95->0.019 at
     reduction=0.10 (verified during pipeline construction against a
-    (AUC-0.5)*reduction hypothesis, which does *not* reproduce the table)."""
+    (AUC-0.5)*reduction hypothesis, which does *not* reproduce the table).
+
+    `auc` is clamped away from {0, 1} before the Phi^-1 call: a *measured*
+    AUC on a small pilot sample can legitimately come back as exactly 1.0
+    (perfect separation), where Phi^-1 is undefined — found when the mock
+    dry run's small item count produced exactly this (pipeline
+    construction). The clamp keeps the gate check from crashing on real
+    small-n pilot data instead of only ever seeing this in a mock."""
+    auc = min(max(auc, 1e-9), 1 - 1e-9)
     d_prime = np.sqrt(2) * normal_ppf(auc)
     d_prime_reduced = (1 - reduction) * d_prime
     auc_reduced = normal_cdf(d_prime_reduced / np.sqrt(2))

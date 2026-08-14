@@ -18,3 +18,9 @@ transformers
 evalplus==0.3.1
 datasets
 huggingface_hub
+# CPU-only, no GPU implication. Used only by analysis/mixed_effects.py's
+# crossed-random-effects logistic GLMM (paper §4.5.5) — see that module's
+# docstring for why this is a deliberate, narrowly-scoped exception to
+# CLAUDE.md's "scipy 없음" rule (which is about hand-reproducing the paper's
+# own worked power/AUC tables, not fitting a GLMM on real experimental data).
+statsmodels
