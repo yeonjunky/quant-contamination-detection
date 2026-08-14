@@ -6,10 +6,16 @@ rest of the pipeline never branches on mock-vs-real.
 
 This is not random noise. The mock injects a *known* generative process so
 the dry run can assert expected-signed pipeline outputs, not just "didn't
-crash": the caller supplies whether a synthetic item is "contaminated" and a
-quality level (ground truth only the test harness that created the item
-would know), and the mock behaves the way a real memorized-vs-not model
-plausibly would:
+crash": the test harness calls `register_item()` to declare whether a
+synthetic item is "contaminated" and its quality level (ground truth only
+the test harness that created the item would know) *before* generating from
+it, and the mock behaves the way a real memorized-vs-not model plausibly
+would. This registration step — not a `contaminated` kwarg on `generate()`
+itself — is what keeps `MockModel.generate()`/`score_logprobs()` signature-
+compatible with `models.loader.LoadedModel`: a real backend must never
+receive the contamination label as a generation input, so the shared
+Protocol doesn't carry one, and the mock's extra ground-truth channel lives
+entirely outside it.
   - contaminated items produce peakier, more repeatable samples across
     temperature (low output diversity across the n=T=0.8 samples CDD needs)
     and higher-confidence (less negative) per-token log-probabilities
@@ -72,8 +78,9 @@ class MockTokenizer:
 class MockModel:
     """Synthetic stand-in for a real quantized code model.
 
-    Callers supply the hidden ground truth (`contaminated`, `quality`) that a
-    real model obviously isn't told. This exists purely to give the dry-run
+    Callers `register_item()` the hidden ground truth (`contaminated`,
+    `quality`) that a real model obviously isn't told, before calling
+    `generate()`/`score_logprobs()`. This exists purely to give the dry-run
     harness a known-answer generative process to check the rest of the
     pipeline against, not to simulate an actual model's behavior.
     """
@@ -84,16 +91,39 @@ class MockModel:
 
     def __init__(self, tokenizer: MockTokenizer | None = None) -> None:
         self.tokenizer = tokenizer or MockTokenizer()
+        self._contaminated: dict[str, bool] = {}
+        self._quality: dict[str, float] = {}
+
+    def register_item(self, item_id: str, *, contaminated: bool, quality: float) -> None:
+        """Declares a synthetic item's hidden ground truth ahead of any
+        generate()/score_logprobs()/partial_pass_rate() call for it. Must be
+        called before those — they raise KeyError otherwise, rather than
+        silently defaulting, so a test harness that forgets to register an
+        item fails loudly instead of scoring against an arbitrary default."""
+        self._contaminated[item_id] = contaminated
+        self._quality[item_id] = quality
+
+    def _is_contaminated(self, item_id: str) -> bool:
+        try:
+            return self._contaminated[item_id]
+        except KeyError:
+            raise KeyError(f"item_id={item_id!r} was never register_item()'d on this MockModel") from None
+
+    def _get_quality(self, item_id: str) -> float:
+        try:
+            return self._quality[item_id]
+        except KeyError:
+            raise KeyError(f"item_id={item_id!r} was never register_item()'d on this MockModel") from None
 
     def generate(
         self,
         item_id: str,
         prompt: str,
         *,
-        contaminated: bool,
         temperature: float,
         sample_id: int,
     ) -> GenerationSample:
+        contaminated = self._is_contaminated(item_id)
         is_greedy = temperature == 0.0
         vocab_size = self.tokenizer.vocab_size
 
@@ -115,18 +145,20 @@ class MockModel:
         text = self.tokenizer.decode(token_ids)
         return GenerationSample(text=text, token_ids=token_ids, token_logprobs=token_logprobs, is_greedy=is_greedy)
 
-    def score_logprobs(self, item_id: str, token_ids: list[int], *, contaminated: bool) -> list[float]:
+    def score_logprobs(self, item_id: str, token_ids: list[int]) -> list[float]:
         """Teacher-forced per-token log-probability for an already-generated
         sequence (needed by scoring/logprob.py, and by detectors like Min-k%
         that read the full per-token array rather than a summary scalar)."""
+        contaminated = self._is_contaminated(item_id)
         rng = np.random.RandomState(_seed_from(item_id, "score"))
         confidence = self._confidence(contaminated, is_greedy=True, rng=rng)
         return self._score_tokens(token_ids, confidence, rng)
 
-    def partial_pass_rate(self, item_id: str, quality: float) -> float:
+    def partial_pass_rate(self, item_id: str) -> float:
         """Fractional (not 0/1) partial test-case pass rate, a deterministic
-        function of quality plus small seeded noise — exercises the
-        continuous scorer rather than a pass/fail boolean."""
+        function of the item's registered quality plus small seeded noise —
+        exercises the continuous scorer rather than a pass/fail boolean."""
+        quality = self._get_quality(item_id)
         rng = np.random.RandomState(_seed_from(item_id, "pass_rate"))
         noise = rng.uniform(-0.05, 0.05)
         return float(np.clip(quality + noise, 0.0, 1.0))

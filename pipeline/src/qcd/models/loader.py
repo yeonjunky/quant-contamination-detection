@@ -19,13 +19,22 @@ from qcd.models.mock import MockModel, MockTokenizer
 class LoadedModel(Protocol):
     """The call surface every backend (real or mock) must expose — the rest
     of the pipeline (generation/sampler.py, scoring/logprob.py) is written
-    against this, never against a specific backend."""
+    against this, never against a specific backend.
+
+    Deliberately does NOT take a `contaminated` flag: a real quantized model
+    must never receive the contamination ground-truth label as a generation
+    input — that label is the withheld variable this whole design measures
+    via output statistics (detector scores, pass rate), not something the
+    model conditions on. `models/mock.py`'s synthetic generative process
+    needs that ground truth to produce known-signed test outputs, but it
+    gets it via `MockModel.register_item()` ahead of time, keyed by
+    `item_id` — not through this shared call surface."""
 
     tokenizer: object
 
-    def generate(self, item_id: str, prompt: str, *, contaminated: bool, temperature: float, sample_id: int): ...
+    def generate(self, item_id: str, prompt: str, *, temperature: float, sample_id: int): ...
 
-    def score_logprobs(self, item_id: str, token_ids: list[int], *, contaminated: bool) -> list[float]: ...
+    def score_logprobs(self, item_id: str, token_ids: list[int]) -> list[float]: ...
 
 
 def load_model(spec: ModelSpec, quant: Quant, *, mock: bool = False) -> LoadedModel:
@@ -86,8 +95,8 @@ class _RealModelAdapter:
         self.model = model
         self.tokenizer = tokenizer
 
-    def generate(self, item_id: str, prompt: str, *, contaminated: bool, temperature: float, sample_id: int):
+    def generate(self, item_id: str, prompt: str, *, temperature: float, sample_id: int):
         raise NotImplementedError("real generation path — implement alongside scripts/run_smoke_test.py")
 
-    def score_logprobs(self, item_id: str, token_ids: list[int], *, contaminated: bool) -> list[float]:
+    def score_logprobs(self, item_id: str, token_ids: list[int]) -> list[float]:
         raise NotImplementedError("real teacher-forced scoring path — implement alongside scripts/run_smoke_test.py")
