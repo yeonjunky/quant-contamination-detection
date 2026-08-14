@@ -11,6 +11,10 @@ pytest
 # not here. Was missing from this file even though mock.py already imported
 # it — bug found while wiring up the dry-run harness.
 transformers
-evalplus
+# Pinned: item counts (164 HumanEval+, 378 MBPP+) verified against this
+# exact version during pipeline construction (constants.HUMANEVAL_N_ITEMS /
+# MBPPPLUS_N_ITEMS) — a later release has historically shipped different
+# MBPP+ subset sizes, so this is not a "just take latest" pin.
+evalplus==0.3.1
 datasets
 huggingface_hub
