@@ -14,11 +14,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.10 python3.10-venv python3-pip git vim \
-        curl wget less unzip tmux htop nvtop \
-        rsync openssh-client ca-certificates \
-        build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3.12-venv python3-pip git vim \
+    curl wget less unzip tmux htop nvtop \
+    rsync openssh-client ca-certificates \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
 
 WORKDIR /workspace
 
@@ -26,18 +30,19 @@ WORKDIR /workspace
 # you're on the H100 box (git is installed above) and `pip install -e .`
 # from pipeline/ there, e.g.:
 #
-#   cp .env.example .env   # fill in HF_TOKEN (Llama-3.3-70B is gated) + paths
+#   cp .env.example .env   # fill in HF_TOKEN (meta-llama/Llama-3.1-8B-Instruct
+#                           # is gated) + paths
 #   docker run --gpus all -it \
-#     -v /path/on/h100/hf_cache:/hf_cache \
+#     -v /path/on/h100/hf_cache:/workspace/hf_cache \
 #     --env-file .env \
 #     qcd-h100 bash
 #   # inside the container:
 #   git clone <repo-url> repo && cd repo/pipeline && pip install -e .
-COPY requirements-h100.txt ./
-RUN python3.10 -m pip install --upgrade pip \
-    && python3.10 -m pip install -r requirements-h100.txt
 
-ENV HF_HOME=/hf_cache \
-    HF_HUB_CACHE=/hf_cache
+RUN python3 -m ensurepip --upgrade \
+    && python3 -m pip install --upgrade pip
+
+ENV HF_HOME=/workspace/hf_cache \
+    HF_HUB_CACHE=/workspace/hf_cache
 
 CMD ["bash"]
