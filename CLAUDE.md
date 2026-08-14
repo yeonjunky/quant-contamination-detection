@@ -33,7 +33,7 @@
 | `paper/revision_provenance.md` | 감사 추적 | 논문 본문에서 분리한 개정 이력. 투고 원고에 포함 안 함 |
 | `review/review_findings*.md`, `review/review_response.md` | 검토 기록 (1~5차) | 읽기 전용 사료. 수정하지 말 것 |
 | `superseded/topic3_experiment_plan.md`, `superseded/contamination_literature_review.md` | **SUPERSEDED** | 정본에 통합·대체됨. **인용 금지** (배너 참조) |
-| `reference/word_dict.md` | 비전문가용 용어 해설 | 3·4·5차 검토 내용 미반영 (알려진 공백) |
+| `reference/word_dict.md` | 비전문가용 용어 해설 | 8차 검토까지 반영 (2026-08-09 갱신). 정본 수정 시 여기 용어도 함께 볼 것 |
 | `reference/contamination_literature.csv`, `reference/experiment_design.csv`, `reference/experiment_models.csv` | 문헌·실험 설계 목록 | `contamination_literature.csv`는 일부 제목이 축약/부정확 — 투고 전 arXiv 대조 필요 |
 | `pdfs/2*.pdf` | 원문 PDF 5편 | **`.gitignore`에 `*.pdf`가 있어 git에 없다** (§6 참조) |
 | `figures/fig_*.png` | 검정력·관문 그림 | 표 수치를 고칠 때 그림과 어긋나지 않는지 확인 |
@@ -160,7 +160,11 @@
   misleading이라 경고한다.
 - **arXiv:2605.15138** (*Forgetting That Sticks*) — unlearning 파라미터 변화가 NF4 bin 폭보다
   47–828× 작다.
-- 제목 미확인 상태로 남은 것: arXiv:2311.04850, arXiv:2409.09927, 2505.20276.
+- 제목 미확인 상태로 남은 것: arXiv:2409.09927, 2505.20276.
+  **2026-08-09 해결:** arXiv:2311.04850 = *Rethinking Benchmark and Contamination **for Language Models**
+  with Rephrased Samples* (Yang, Chiang, Zheng, Gonzalez, Stoica), arXiv:2403.04811 =
+  *Quantifying Contamination in **Evaluating** Code Generation **Capabilities of Language Models***
+  (ACL 2024) — 둘 다 arXiv abs 페이지 직접 대조. 정본 References 반영 완료.
   **투고 전 arXiv에서 정식 제목 확인 필요** (본문에 액션으로 남겨 둠). 2410.16454는 위와 같이
   해결됨. 2605.24079(TRACER)와 2511.12116(LLMLagBench)의 정식 제목도 7차 검토에서 PDF로 확인됨
   (`review/review_findings_round7.md` 부록 A 및 2.5 참조).

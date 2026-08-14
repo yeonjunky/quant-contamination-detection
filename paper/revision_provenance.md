@@ -250,3 +250,51 @@ instruct 체크포인트는 post-training 데이터로도 벤치마크를 흡수
 ground-truth 검색 범위를 "사전학습 코퍼스"에서 "사전학습 + post-training 셋(둘 다 공개)"으로
 확장. `pipeline/src/qcd/models/registry.py`의 이름·repo id 동기화 (repo id는 여전히 실사용 전
 확인 필요한 placeholder). 영/한 동시 반영.
+
+### (g) 8차 검토 오류 1·2 반영 (2026-08-05): §3.0 검정력 문장, §4.5.3 상관-표본수 범위
+
+`review/review_findings_round8.md` §1의 확정 오류 2건. 반영 전 독립 재검증 완료
+(§3.2 규율): Hanley–McNeil SE 재계산으로 n=164 → 검출 한계 0.0509, n=170 → 0.0500;
+n = 785×(1−r)로 r=0.6→314, 0.8→157, 0.9→78.5.
+
+- **§3.0:** "Q1b can detect a 0.05 AUC difference at n=164" — §4.5.2 자신이 명시한
+  한계(0.051, "just short", 정확해 170)와 모순되던 문장을 "0.051 ... (detecting exactly
+  0.05 requires 170 items; §4.5.2)"로 정정. §3.0과 §4.5.2가 이제 같은 값을 말한다.
+- **§4.5.3:** "r이 0.6–0.9까지 갈 개연성 → 요건 157–314" — 157–314는 r∈[0.6, 0.8]에만
+  해당(r=0.9는 78.5). 개연성 범위(0.6–0.9)는 실질 주장이므로 유지하고 숫자를 문서 전반의
+  동일 공식(785×(1−r)) 그대로 **≈79–314**로 정정.
+
+영/한 동시 반영. grep 검증: 구 문자열("157–314", "0.05 ... at n=164", "차이 0.05를 검출")
+잔존 0건, 신규 수치 영/한 대조 0.051 3:3, 170 3:3, 79–314 1:1, 157 0:0.
+
+### (h) §5 5번 open-data 라벨링 방법 구체화 + 제목 2건 확정 (2026-08-09)
+
+arXiv:2404.00699 Figure 1의 open-data 분류를 §5 5번에 적용. 기존 서술은 "n-gram 및 의미적
+매칭"이라는 한 구절뿐이어서 방법이 특정되지 않았다.
+
+- **세 계열을 모두 실행하도록 명시** — (i) instance-level 문자열 매칭, (ii) 표면+AST 의미 매칭
+  (arXiv:2403.04811), (iii) 패러프레이즈 탐지(arXiv:2311.04850, post-training 셋 중점).
+  하나만 고르지 않는 이유를 근거와 함께 기록: **Olmo3 사전학습 혼합 자체가 벤치마크 테스트셋에
+  대한 명시적 decontamination을 거쳐 구성**되었으므로 (i)만 돌리면 코퍼스 제작자의 필터가 이미
+  제거한 것을 다시 재게 되어 *e* ≈ 0이 나오고, 그 값이 §4.5.2 표의 낙관적 행으로 표본 수 계획에
+  전파된다. (i)은 하한선으로만 보고하고, 채택 *e* 는 완료된 것 중 가장 강한 방법의 값으로 하되
+  평균내지 않는다. (i)과 (ii)–(iii)의 격차 자체를 기술적 결과로 보고 — §2.4의 78% 의미적 중복
+  (arXiv:2602.12413)이 큰 격차를 예측하므로, 격차가 작으면 그쪽이 보고 가치가 있는 결과다.
+- **§2.3 보강:** arXiv:2403.04811이 효과 크기 출처로만 소개되어 있어, §5가 이 논문을 방법론
+  출처로 인용하는 근거가 Related Work에 없었다. 방법론적 역할을 한 문장으로 추가.
+- 인프라는 미해결 항목으로 명시: suffix-array/FM-index 검색(후보 구현 infini-gram)에서 Olmo3
+  코퍼스 릴리스용 공개 인덱스 존재 여부, 그리고 arXiv:2403.04811이 탐색한 규모(The Pile 380B)와
+  Olmo3 코퍼스 규모의 차이에 따른 전수 AST 탐색 비용.
+
+**제목 2건 arXiv 원문 대조로 확정** (§4.3 액션 해소):
+
+| arXiv | 구 표기 | 확정 |
+|---|---|---|
+| 2311.04850 | *Rethinking Benchmark and Contamination with Rephrased Samples* | *Rethinking Benchmark and Contamination **for Language Models** with Rephrased Samples* |
+| 2403.04811 | *Quantifying Contamination in Code Generation Evaluation* | *Quantifying Contamination in **Evaluating** Code Generation **Capabilities of Language Models*** (ACL 2024) |
+
+2311.04850의 "제목 축약 가능성" 단서 문구는 제거. 2409.09927과 2505.20276은 **미확인 상태 유지**.
+
+**미결 (사용자 판단 대기):** Dolma 3의 명시적 벤치마크 decontamination이 Olmo3 arm의 오염 의심
+조건 자체를 약화시킬 수 있다는 위협을 §6에 별도 항목으로 추가할지. 이번 반영에서는 §5 5번의
+방법 선택 근거로만 서술했고 §6은 건드리지 않았다.

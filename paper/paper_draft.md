@@ -143,7 +143,10 @@ scales, and formats. We treat this as the methodological reference point for cau
 7B–32B models in the code domain. We can therefore only approximate its causal design observationally
 (§6). arXiv:2403.04811 and arXiv:2506.02791 quantify contamination's effect size specifically in code
 generation, with the latter noting that most prior work measures only sample-level contamination and
-under-counts the more common partial-contamination case. arXiv:2507.19219 offers a one-time-pad-based
+under-counts the more common partial-contamination case. arXiv:2403.04811 is additionally a
+*methodological* source for this design, not only an effect-size one: its surface-plus-AST matching
+pipeline, developed for HumanEval and MBPP against pretraining-scale corpora, is what we adopt for the
+Olmo3 ground-truth labelling in §5, step 5. arXiv:2507.19219 offers a one-time-pad-based
 framework for quantifying benchmark-score overestimation generally.
 
 ### 2.4 Limits of contamination detection
@@ -266,8 +269,8 @@ Q2 was this design's original primary question; we demote it after computing tha
 realistically available (in particular, HumanEval's fixed ceiling of 164 items), Q2's minimum detectable
 effect is **15.5 percentage points** even with infinite clean-condition data (§4.5.3), which is larger
 than any effect size the quantization-in-code literature (§2.7) would lead us to expect. Q1, in contrast,
-is answerable at the same 164-item ceiling: Q1b can detect a 0.05 AUC difference at n=164 with paired
-detector scores (§4.5.2), and Q1a — which does not depend on contamination labels at all — needs as few
+is answerable at the same 164-item ceiling: Q1b can detect a 0.051 AUC difference at n=164 with paired
+detector scores (detecting exactly 0.05 requires 170 items; §4.5.2), and Q1a — which does not depend on contamination labels at all — needs as few
 as 87–196 items depending on effect size (§4.5.1). **Q1a is therefore the result this design is guaranteed
 to be able to report; Q2 is best-effort.**
 
@@ -584,7 +587,7 @@ reductions do not compose: applying a base-rate-derived correlation estimate to 
 formula mixes two different scales and is not a valid shortcut to the paired-and-base-rate-adjusted
 figure.) The true item-level correlation between precisions may exceed the model's implied r ≈ 0.293 — the same
 prompt and decoding strategy is used for both precisions, so more is shared between conditions than
-difficulty alone — and could plausibly reach 0.6–0.9, which would bring the requirement down to 157–314.
+difficulty alone — and could plausibly reach 0.6–0.9, which would bring the requirement down to ≈79–314.
 This is unverified and must be measured in the pilot (§4.7), not assumed in the plan.
 
 **The base-rate confound.** HumanEval (fp16 pass@1 ≈ 0.85) and LiveCodeBench-post (≈0.35) have very
@@ -740,15 +743,42 @@ high label noise in the proxy contamination labels (§4.5.2).
    specification (its appendix publishes the prompts for all three LLM stages, the embedding model, and
    the triage thresholds), with a retrieval pre-stage (n-gram/BM25 top-k candidates per benchmark item)
    in front, since exhaustive pairwise comparison against a pretraining-scale corpus is infeasible.
-   **For the Olmo3 arm, also derive ground-truth labels directly**: search the released training
-   data — the pretraining corpus *and* the post-training (instruction-tuning) sets, both public for
-   Olmo3, since the instruct checkpoints (§4.1) can absorb benchmark items at either stage — for each
-   benchmark item by n-gram and semantic match, then score both the pre/post-cutoff proxy and the
-   TRACER reimplementation's output against those labels. This yields the measured *e* of
-   §4.5.2 and, separately, a fidelity measurement for the reimplementation itself against
-   known-contaminated items — the only point in the design where either can be checked rather than
-   assumed. Note the scope limit recorded in §6: these labels are specific to Olmo3 and validate the
-   *method*, not the labels of the closed-corpus arms.
+   **For the Olmo3 arm, also derive ground-truth labels directly** from the released training data — the
+   pretraining corpus *and* the post-training (instruction-tuning) sets, both public for Olmo3, since the
+   instruct checkpoints (§4.1) can absorb benchmark items at either stage. We run all three open-data
+   detection families in arXiv:2404.00699's taxonomy rather than choosing one, because on this corpus they
+   are expected to disagree sharply, and the disagreement is itself the measurement:
+
+   - **(i) Instance-level string matching** — exact and near-exact *n*-gram overlap between each benchmark
+     item and the corpus, via a suffix-array/FM-index over the training data (candidate implementation:
+     infini-gram; whether a public index exists for Olmo3's corpus release, or whether one must be built,
+     is an open engineering item). This is reported as a **lower bound only.** Olmo3's pretraining mix was
+     itself constructed with explicit decontamination against benchmark test sets, so lexical matching here
+     largely re-measures what the corpus builders' own filter already removed. Treating its output as *e*
+     would report *e* ≈ 0 and propagate a spuriously optimistic row of §4.5.2's table into the sample-size
+     plan — the specific failure this step exists to prevent.
+   - **(ii) Surface- and semantic-level program matching** — the primary source of the labels. We follow
+     the pipeline of arXiv:2403.04811, which addresses exactly this problem for exactly these benchmarks:
+     edit distance for surface similarity plus AST-based similarity for semantic equivalence, applied with
+     a sliding window over the corpus. Because that work evaluates HumanEval and MBPP against
+     pretraining-scale corpora and releases its matching outputs, its thresholds and pipeline transfer here
+     with minimal adaptation, and its reported rates supply a prior for what to expect.
+   - **(iii) Paraphrase detection** — following the retrieval-then-LLM-judge design of arXiv:2311.04850
+     (embedding retrieval of top-*k* candidates, then a strong-model judgment on semantic equivalence),
+     applied with particular attention to the **post-training sets**, where rephrased benchmark items are
+     most likely to appear and where that work reports its own positive findings on instruction data.
+
+   Report *e* from each family separately. The design's operative *e* is the one from the strongest
+   method that completes, not the mean, and the spread between (i) and (ii)–(iii) is reported as a
+   descriptive result: it quantifies how much contamination survives lexical decontamination. §2.4's
+   finding of 78% semantic duplication in this corpus's CodeForces-derived data (arXiv:2602.12413)
+   predicts a large spread, and a small one would be the surprising outcome worth reporting.
+
+   Score both the pre/post-cutoff proxy and the TRACER reimplementation's output against these labels.
+   This yields the measured *e* of §4.5.2 and, separately, a fidelity measurement for the reimplementation
+   itself against known-contaminated items — the only point in the design where either can be checked
+   rather than assumed. Note the scope limit recorded in §6: these labels are specific to Olmo3 and
+   validate the *method*, not the labels of the closed-corpus arms.
 6. **Pilot** (§4.7): Qwen2.5-7B and Olmo3-7B, BNB-nf4 arm first. Precondition: measure the CDD baseline AUC
    gate (§4.6) before interpreting any Q1b pilot numbers; if the gate fails, switch the primary detector to
    probability-based methods for the remainder of the pilot. **Also record measured throughput** (items per
@@ -905,12 +935,12 @@ Numbered by arXiv ID.
 
 **Effect sizes of contamination**
 - arXiv:2501.18771 — *Overestimation in LLM Evaluation* (controlled, machine translation)
-- arXiv:2403.04811 — *Quantifying Contamination in Code Generation Evaluation*
+- arXiv:2403.04811 — *Quantifying Contamination in Evaluating Code Generation Capabilities of Language Models* (ACL 2024)
 - arXiv:2506.02791 — *Rethinking the Effects of Data Contamination in Code Intelligence*
 - arXiv:2507.19219 — *How Much Do LLMs Cheat? One-Time-Pad Framework*
 
 **Limits of contamination detection**
-- arXiv:2311.04850 — *Rethinking Benchmark and Contamination with Rephrased Samples* (title may be abbreviated; confirm the full official title against arXiv before submission)
+- arXiv:2311.04850 — *Rethinking Benchmark and Contamination for Language Models with Rephrased Samples*
 - arXiv:2602.12413 — *Soft Contamination Means Benchmarks Test Shallow Generalization*
 - arXiv:2402.02823 — *Evading Data Contamination Detection is (too) Easy*
 - arXiv:2409.09927 — *Limitations, Inconsistencies, and Oracle Challenges* (title appears truncated in this project's source list; confirm against arXiv before submission)
