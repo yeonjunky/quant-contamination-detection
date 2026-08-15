@@ -870,9 +870,9 @@ high label noise in the proxy contamination labels (§4.5.2).
   scoring the reimplementation against the corpus-search ground truth (§5, step 5). Its accuracy on the
   closed-corpus arms' conditions is an assumption inherited by every TRACER-dependent quantity: the
   measured *e*, and Q1b's label-noise correction.
-- **Scope limits.** Five models, four quantization configurations, code generation only, predominantly
-  Python. Findings need not generalize to other architectures (e.g., MoE), other tokenizers, or other
-  domains (e.g., natural-language QA), and we do not claim they do.
+- **Scope limits.** Five models (7B–32.5B), four quantization configurations, code generation only,
+  predominantly Python. Findings need not generalize to other architectures (e.g., MoE), other
+  tokenizers, or other domains (e.g., natural-language QA), and we do not claim they do.
 
 ---
 
