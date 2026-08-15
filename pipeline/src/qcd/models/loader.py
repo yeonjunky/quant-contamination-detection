@@ -1,17 +1,26 @@
-"""load_model(spec, quant) — branches fp16/bnb-int8/bnb-nf4/gptqmodel/
-llm-compressor-awq/mock.
+"""load_model(spec, quant) — branches fp16/bnb-int8/bnb-nf4/gptq-awq-int4/mock.
 
 All real (non-mock) backends lazy-import their heavy dependencies inside the
 branch functions, not at module scope. This lets `import qcd.models.loader`
 succeed on the mock-only local profile (no torch/transformers-with-torch/
 bitsandbytes installed) — only actually calling a real backend requires the
 H100 GPU stack (requirements-h100.txt).
+
+**GPTQ_AWQ_INT4 (the paper's combined name for the fourth quant rung) is
+implemented via AWQ only, through llm-compressor, uniformly for every
+model — GPTQ itself is not implemented.** Rationale, the GPTQModel-vs-
+llm-compressor evidence, and the "try GPTQModel later" follow-up are
+recorded in `pipeline_build_plan.md`'s "Open assumptions" #1, not here —
+see that doc rather than re-deriving it. See `scripts/quantize_model.py`
+for the offline quantization step this backend loads from (quantize once
+and save, unlike bnb's load-time quantization).
 """
 
 from __future__ import annotations
 
 import dataclasses
 import hashlib
+from pathlib import Path
 from typing import Protocol
 
 from qcd.config import ModelSpec, Quant
@@ -21,6 +30,13 @@ from qcd.models.mock import MockModel, MockTokenizer
 # CLAUDE.md/paper_draft.md-derived statistical/design values) — deliberately
 # separate from that module.
 _DEFAULT_MAX_NEW_TOKENS = 512
+
+# Repo-root-anchored regardless of invoking CWD (matches
+# scripts/run_smoke_test.py's/scripts/quantize_model.py's own convention) —
+# lands under the gitignored `/data/` directory, which is root-anchored in
+# .gitignore, not `pipeline/data/`.
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_QUANTIZED_DIR = _REPO_ROOT / "data" / "quantized"
 
 
 def _seed_from(*parts: object) -> int:
@@ -108,16 +124,31 @@ def _load_bnb(spec: ModelSpec, quant: Quant) -> LoadedModel:
     return _RealModelAdapter(model, tokenizer)
 
 
+def _quantized_checkpoint_dir(spec: ModelSpec) -> Path:
+    """The one **canonical** local AWQ checkpoint path for a model — no
+    calibration-domain suffix. `scripts/quantize_model.py` saves to a
+    calibration-tagged directory (`<model>-awq-code`/`<model>-awq-chat`) for
+    comparison purposes; this function does not resolve those — the winning
+    variant must be copied/re-quantized to this exact path by hand, a
+    deliberate step (see module docstring)."""
+    return _QUANTIZED_DIR / f"{spec.name}-awq"
+
+
 def _load_gptq_or_awq(spec: ModelSpec, quant: Quant) -> LoadedModel:
-    # GPTQModel / llm-compressor, per pipeline_build_plan.md's substitution
-    # for the archived AutoGPTQ/AutoAWQ. Which of the two a given model arm
-    # uses is a per-model choice not yet pinned — raise loudly rather than
-    # guess, per CLAUDE.md §3.1's "don't guess it" discipline.
-    raise NotImplementedError(
-        "GPTQModel/llm-compressor loading path not yet implemented — pin the "
-        "per-model GPTQ-vs-AWQ choice and exact quantized checkpoint before "
-        "wiring this up (pipeline_build_plan.md, open assumption #1)."
-    )
+    checkpoint_dir = _quantized_checkpoint_dir(spec)
+    if not checkpoint_dir.exists():
+        raise FileNotFoundError(
+            f"no quantized AWQ checkpoint at {checkpoint_dir} for {spec.name!r} — quantization is "
+            "a deliberate, separate offline step, never implicit inside a real run. Run "
+            f"`python scripts/quantize_model.py {spec.name} --calibration <code|chat>`, then copy or "
+            "re-quantize the chosen calibration variant to this exact path (see module docstring)."
+        )
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: PLC0415
+
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
+    model = AutoModelForCausalLM.from_pretrained(checkpoint_dir, device_map="auto")
+    return _RealModelAdapter(model, tokenizer)
 
 
 class _RealModelAdapter:
