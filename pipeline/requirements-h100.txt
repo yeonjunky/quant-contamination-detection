@@ -1,33 +1,43 @@
 # H100 box: full GPU stack for the pilot + main experiment.
 #
 # PINNED 2026-08-15 against this session's actual H100 (driver 580.126.09,
-# CUDA 13.0, toolkit 12.4 present; torch installed from the cu124 wheel
-# index). Validated by pipeline/scripts/run_smoke_test.py (Qwen2.5-7B,
-# BNB-nf4, real generate()/score_logprobs()/sandbox/detector path) —
-# peak GPU memory 6.69GB, all checklist items passed. Exact `pip freeze`
-# snapshot from that run: pipeline/envs/local-smoke-freeze.txt.
+# CUDA 13.0). Two pins landed the same day, in this order — note the second
+# silently changed torch/transformers/numpy under the first without any
+# explicit "upgrade" step:
 #
-# fp16/bnb-int8/bnb-nf4 are covered by this pin. gptqmodel/llmcompressor
-# (below) are NOT yet installed or exercised — the GPTQ/AWQ backend
-# (models/loader.py's _load_gptq_or_awq) is still deferred: which model arm
-# uses GPTQ vs AWQ and which quantized checkpoint to use is an open,
-# unresolved design question (pipeline_build_plan.md open assumption #1),
-# not yet an installable/pinnable dependency. GPTQModel and llmcompressor
-# (PyPI name; GitHub repo is "llm-compressor") are the intended substitutes
-# for the archived AutoGPTQ/AutoAWQ (AutoGPTQ archived April 2025, AutoAWQ
-# archived ~May 2025, transformers dropped the AutoGPTQ backend) — confirm
-# and pin their exact versions once that backend is actually implemented.
-torch==2.6.0+cu124
-transformers==5.15.0
+# 1. torch==2.6.0+cu124 (explicitly installed from the cu124 wheel index) +
+#    transformers/bitsandbytes/accelerate. Validated by
+#    pipeline/scripts/run_smoke_test.py (Qwen2.5-7B, BNB-nf4) — peak GPU
+#    memory 6.69GB, all checklist items passed.
+# 2. `pip install llmcompressor` (for the GPTQ/AWQ backend, below) resolved
+#    a newer torch as a transitive dependency — torch silently became
+#    2.13.0+cu130, transformers 5.14.1, numpy 2.4.6. Re-verified after the
+#    fact: the bnb-nf4 smoke test still passes under these versions (peak
+#    6.57GB) — no regression, but the versions below are what actually ran
+#    for both the fp16/bnb work and the GPTQ/AWQ work by the end of this
+#    session, not what was installed first. Exact `pip freeze` snapshot:
+#    pipeline/envs/local-smoke-freeze.txt.
+#
+# GPTQModel is deliberately NOT installed — the GPTQ/AWQ backend
+# (models/loader.py's _load_gptq_or_awq) uses llm-compressor (AWQ)
+# uniformly for all five roster models, not GPTQModel, not a per-model
+# split: GPTQModel's own architecture registry has no `olmo3` entry (checked
+# against its source), so it would very likely fail on the two Olmo3 arms;
+# llm-compressor has no per-architecture registry and was confirmed working
+# on Olmo3-7B-Instruct empirically (see pipeline_implementation_log.md's
+# 2026-08-15 entry). See models/loader.py's module docstring for the full
+# rationale.
+torch==2.13.0+cu130
+transformers==5.14.1
 bitsandbytes==0.50.1
 accelerate==1.14.0
-# gptqmodel  # deferred — see note above
-# llmcompressor  # deferred — see note above
+llmcompressor==0.13.0
+compressed-tensors==0.18.0
 datasets==5.0.1
 huggingface_hub==1.27.0
 evalplus==0.3.1
 pyarrow==25.0.1
-numpy==2.5.2
+numpy==2.4.6
 pandas==3.0.5
 pytest==9.1.1
 # Pulled in by analysis/mixed_effects.py's GLMM (requirements-local.txt has
