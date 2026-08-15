@@ -57,7 +57,7 @@
 > asymmetric zero-points, vllm-project/llm-compressor#1550) — worth watching for the 32B arms'
 > memory headroom later. `requirements-h100.txt` re-pinned again: `pip install llmcompressor`
 > silently upgraded torch/transformers/numpy mid-session (re-verified the bnb path still passes
-> under the new versions). Full detail: `pipeline_implementation_log.md`'s 2026-08-15 entry, §8.
+> under the new versions). Full detail: `pipeline_implementation_log.md`'s 2026-08-15 entry, §7.
 
 ## Context
 
@@ -122,7 +122,8 @@ pipeline/
     models/
       registry.py            # mirrors paper's model table 1:1 (kept in sync manually)
       loader.py               # load_model(spec, quant) — branches fp16/bnb-int8/bnb-nf4/
-                              #   gptqmodel/llm-compressor-awq/mock
+                              #   gptq-awq-int4 (llm-compressor AWQ only, see "Open
+                              #   assumptions" #1)/mock
       mock.py                # same interface as loader.py, deterministic synthetic outputs
     data/
       schema.py               # canonical Item dataclass
@@ -198,8 +199,9 @@ installed):**
 - Confirm its own driver/CUDA compatibility independently — don't assume it matches the
   laptop.
 - Fully pinned `requirements-h100.txt` (exact versions, not ranges) — `bitsandbytes`/
-  GPTQModel/llm-compressor are CUDA-runtime sensitive, and a silent version mismatch is
-  worse than a crash for numbers that need to be trustworthy.
+  llm-compressor are CUDA-runtime sensitive, and a silent version mismatch is worse than a
+  crash for numbers that need to be trustworthy. (GPTQModel was evaluated but not used —
+  see "Open assumptions" #1.)
 - `HF_HOME`/`HF_HUB_CACHE` pointed at large disk **outside** the git repo (weights run up
   to ~141GB for Llama-3.3-70B fp16).
 - The one-time multi-GPU rental for the 70B fp16 pass reuses the same lockfile to avoid a
@@ -302,7 +304,7 @@ runner) — the explicit go/no-go gate before spending H100 time.
    llm-compressor has no per-architecture registry at all — its `AWQModifier`/
    `QuantizationModifier` recipe targets any HF-loadable causal LM's `nn.Linear` layers by
    name pattern, and was confirmed empirically to work on Olmo3-7B-Instruct with no
-   workaround (`pipeline_implementation_log.md`'s 2026-08-15 entry, §8). Paper §4.3 treats
+   workaround (`pipeline_implementation_log.md`'s 2026-08-15 entry, §7). Paper §4.3 treats
    "GPTQ-int4 or AWQ-int4" as interchangeable representatives of one calibration-based
    4-bit condition, not a per-model design axis, so using AWQ uniformly is more consistent
    with that framing than a per-model GPTQ/AWQ split would have been, not less.
