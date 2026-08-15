@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -40,6 +41,32 @@ from qcd.models.loader import load_model
 from qcd.scoring.pass_rate import partial_pass_rate
 
 _EVALPLUS_DATASETS = (Dataset.HUMANEVAL, Dataset.MBPPPLUS)
+
+# Matches a ```-fenced block, optional language tag (```python, ```py, bare
+# ```, ...). DOTALL so the fence content can span multiple lines.
+_CODE_FENCE_RE = re.compile(r"```(?:[a-zA-Z0-9_+-]*)\n?(.*?)```", re.DOTALL)
+
+
+def _strip_markdown_fence(text: str) -> str:
+    """If `text` contains one or more ```-fenced blocks, return the content
+    of the LAST one (a chat model sometimes shows an earlier/wrong attempt
+    before settling on a final answer); otherwise return `text` unchanged
+    (a model can answer with a bare, un-fenced continuation).
+
+    Run before evalplus's sanitize()/code_extract() rather than relying on
+    those alone: evalplus's `code_extract` searches for the longest
+    syntactically-valid *contiguous* line range, but the fence delimiter
+    lines themselves (` ```python `, ` ``` `) are never valid Python, so a
+    short, single-line fenced answer surrounded by prose can end up with no
+    valid ≥2-line window at all — confirmed empirically (a
+    `print('hi')`-only LCB-style completion silently fell back to returning
+    the completion's first line, unrelated prose, with no signal that
+    extraction had failed). Stripping the fence first removes the
+    delimiters that caused that, and evalplus's extractors still run
+    afterward as a backstop for any residual prose inside or around the
+    fence."""
+    matches = _CODE_FENCE_RE.findall(text)
+    return matches[-1] if matches else text
 
 
 @dataclasses.dataclass
@@ -75,16 +102,49 @@ def load_all_items(config: RealRunConfig) -> list[Item]:
 
 
 def _assemble_candidate_code(item: Item, completion_text: str) -> str:
-    """HumanEval+/MBPP+ prompts are Python code prefixes the completion
-    continues (evalplus's own `prompt + canonical_solution` convention,
-    scoring/sandbox.py's docstring). LiveCodeBench prompts are natural-
-    language problem statements — the completion is assumed to already be
-    complete, runnable source with no markdown fencing. Extracting a code
-    block out of a raw chat-style model response (```python ... ```) is a
-    known gap, not handled here — flagged rather than silently assumed."""
+    """The roster is entirely -Instruct models queried through a chat
+    template (models/loader.py's `_RealModelAdapter._build_input_ids`), so
+    `completion_text` is chat-style output — prose plus a markdown code
+    fence, not a raw code continuation — for every dataset, not just
+    LiveCodeBench. Confirmed on real HumanEval output during the 2026-08-15
+    real-GPU smoke test (pipeline_implementation_log.md): concatenating
+    `item.prompt + completion_text` verbatim produced unrunnable code and a
+    0.0 partial-pass-rate on all 5 real items; extracting first raised 4/5
+    to 1.0 (the 5th's near-zero score was a genuine model logic error, not
+    an extraction failure).
+
+    First strips a ```-fenced block via `_strip_markdown_fence` (see its
+    docstring for why that has to happen before, not instead of, the next
+    step), then reuses evalplus's own post-processing (`evalplus/
+    sanitize.py` — the same step evalplus's own leaderboard runs on LLM
+    output before scoring) rather than reimplementing the rest:
+    - HumanEval+/MBPP+: `sanitize(prompt + completion, entrypoint=...)` —
+      exactly `evalplus.sanitize.script()`'s own recipe for instruct-model
+      output. AST-extracts (tree-sitter) only the definitions reachable from
+      the target function, discarding prose and any extraneous code.
+      Empirically validated on 5 real HumanEval completions (2026-08-15 real
+      GPU smoke test): 4/5 went from 0.0 (no extraction) to 1.0 partial-pass
+      after this fix; the 5th's near-zero score was a genuine model logic
+      error, not an extraction failure.
+    - LiveCodeBench: `code_extract(completion)` alone, no entrypoint.
+      `sanitize()`'s AST path only preserves import/class/function/
+      assignment nodes — an LCB stdin-style candidate is often a plain
+      imperative script (bare `input()`/`print()` calls, no wrapping
+      function), which that path would silently drop. `code_extract`'s
+      "longest syntactically valid contiguous line range" has no such
+      requirement, so it's the safer of evalplus's two extractors for LCB's
+      more varied shapes (stdin scripts and `class Solution` alike). Not
+      empirically validated against a real LCB completion in this session
+      (only HumanEval was exercised on real hardware) — worth confirming
+      once a real LCB generation is available.
+    """
+    from evalplus.sanitize import code_extract, sanitize  # noqa: PLC0415
+
+    fenced = _strip_markdown_fence(completion_text)
     if item.dataset in _EVALPLUS_DATASETS:
-        return item.prompt + completion_text
-    return completion_text
+        entry_point = item.metadata["evalplus_problem"]["entry_point"]
+        return sanitize(item.prompt + fenced, entrypoint=entry_point)
+    return code_extract(fenced)
 
 
 def run(config: RealRunConfig) -> None:

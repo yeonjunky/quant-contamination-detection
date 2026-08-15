@@ -52,14 +52,68 @@ def test_load_all_items_can_exclude_evalplus_datasets(tmp_path):
     assert Dataset.MBPPPLUS not in datasets
 
 
-def test_assemble_candidate_code_prepends_prompt_for_evalplus():
-    item = Item(item_id="HumanEval/0", dataset=Dataset.HUMANEVAL, prompt="def f():\n    ")
-    assert _assemble_candidate_code(item, "return 1\n") == "def f():\n    return 1\n"
+# Real evalplus prompts (evalplus.data.get_human_eval_plus()) always end
+# with a *closed* signature+docstring stub, never a dangling open indent —
+# an unclosed prompt like "def f():\n    " would make prompt+completion
+# concatenation parse as a (broken) nested function rather than two
+# sibling top-level definitions, an artifact of the test fixture, not a
+# real prompt shape.
+_EVALPLUS_STUB_PROMPT = 'def f():\n    """docstring"""\n'
 
 
-def test_assemble_candidate_code_uses_completion_alone_for_lcb():
+def _evalplus_item(entry_point: str, prompt: str = _EVALPLUS_STUB_PROMPT) -> Item:
+    return Item(
+        item_id="HumanEval/0", dataset=Dataset.HUMANEVAL, prompt=prompt,
+        metadata={"evalplus_problem": {"entry_point": entry_point}},
+    )
+
+
+def test_assemble_candidate_code_prepends_prompt_for_evalplus_raw_continuation():
+    # A raw, un-fenced continuation (no chat wrapping) should still work —
+    # sanitize()'s AST extraction accepts this shape too, not just chat
+    # output. The completion supplies its own leading indent, matching a
+    # real raw-completion model continuing the prompt's closed docstring
+    # stub as a fresh body line (not appended mid-line).
+    item = _evalplus_item("f")
+    result = _assemble_candidate_code(item, "    return 1\n")
+    assert "return 1" in result
+
+
+def test_assemble_candidate_code_extracts_function_from_chat_style_evalplus_completion():
+    # Real shape confirmed on Qwen2.5-7B-Instruct output (2026-08-15 smoke
+    # test): prose explanation + a fenced code block, not a raw continuation.
+    item = _evalplus_item("f")
+    completion = (
+        "Sure! Here's the completed function:\n\n"
+        "```python\ndef f():\n    return 1\n```\n\n"
+        "This function takes no arguments and returns 1."
+    )
+    result = _assemble_candidate_code(item, completion)
+    assert "def f():" in result
+    assert "return 1" in result
+    assert "Sure!" not in result
+    assert "This function" not in result
+
+
+def test_assemble_candidate_code_uses_completion_alone_for_lcb_raw():
     item = Item(item_id="q1", dataset=Dataset.LCB_PRE, prompt="Solve this problem.")
-    assert _assemble_candidate_code(item, "print('hi')\n") == "print('hi')\n"
+    result = _assemble_candidate_code(item, "print('hi')\n")
+    assert "print('hi')" in result
+
+
+def test_assemble_candidate_code_extracts_fenced_code_for_lcb_chat_completion():
+    item = Item(item_id="q1", dataset=Dataset.LCB_PRE, prompt="Solve this problem.")
+    completion = (
+        "Looking at this problem, I need to read two integers and print their sum.\n\n"
+        "```python\nimport sys\n\ndef main():\n    a, b = map(int, sys.stdin.readline().split())\n"
+        "    print(a + b)\n\nmain()\n```\n\n"
+        "This reads the input line, splits it, and prints the sum."
+    )
+    result = _assemble_candidate_code(item, completion)
+    assert "def main():" in result
+    assert "a + b" in result
+    assert "Looking at this problem" not in result
+    assert "This reads the input" not in result
 
 
 def test_run_fails_at_model_loading_not_earlier(tmp_path, monkeypatch):
