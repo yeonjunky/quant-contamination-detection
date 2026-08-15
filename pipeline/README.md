@@ -40,10 +40,48 @@ error, not an extraction failure. Applied uniformly to LCB too, but that
 side is **not yet empirically validated against a real LCB completion** —
 only HumanEval was exercised on real hardware this session.
 
-**Still deferred:** the GPTQ/AWQ backend (`models/loader.py`'s
-`_load_gptq_or_awq`) — which model arm uses GPTQ vs AWQ and which quantized
-checkpoint to use is an open, unresolved design question
-(`pipeline_build_plan.md` open assumption #1), not yet implementation work.
+**Built and validated on real H100 hardware, same day:** the
+`Quant.GPTQ_AWQ_INT4` quant rung (`models/loader.py`'s `_load_gptq_or_awq`)
+— via **AWQ only; GPTQ itself was not implemented.** Resolved "open
+assumption #1" differently than originally planned: llm-compressor (AWQ)
+uniformly for all five roster models, not GPTQModel, not a per-model
+GPTQ/AWQ split — GPTQModel's own architecture registry has no `olmo3` entry
+(checked against source), while llm-compressor has no per-architecture
+registry and was confirmed to work on Olmo3-7B-Instruct with no workaround
+needed. Full rationale — including a "worth trying GPTQModel later" note —
+lives in `pipeline_build_plan.md`'s "Open assumptions" #1, not in code. See
+`scripts/quantize_model.py` for the offline quantization step (quantize
+once and save, unlike bnb's load-time quantization).
+
+Also ran a live comparison this design deliberately didn't shortcut: is
+code-domain calibration data actually better than the library's own general-
+chat reference default, as the paper's literature review (§2.7/§4.3)
+implies? Quantized Qwen2.5-7B-Instruct twice (code-domain:
+`flytech/python-codes-25k`; chat: `HuggingFaceH4/ultrachat_200k`) and
+compared on the same 5-item smoke-test checklist — **no detectable
+difference at this sample size** (both: 4/5 items pass_rate 1.00, the same
+5th item near-zero from a genuine model error, near-identical detector
+scores). n=5 is far too small to resolve a real effect either way; this
+just confirms the mechanism works and gives no evidence to prefer one
+calibration domain yet. Canonicalized the code-domain variant (consistent
+with the original hypothesis, not contradicted by this result) to
+`data/quantized/<model>-awq/`; the chat-domain comparison checkpoint stays
+on disk as `-awq-chat` for a future re-comparison at real pilot scale.
+
+**Real finding along the way:** `AutoModelForCausalLM.from_pretrained()` on
+our AWQ (W4A16, asymmetric) checkpoints uses ~15-16GB peak GPU memory for a
+7B model, not the ~4-5GB the on-disk int4 size would suggest — bnb-nf4's
+dedicated kernels keep weights packed through inference; plain-transformers
+AWQ decompression apparently doesn't, matching a known compressed-tensors/
+transformers rough edge with asymmetric zero-points
+(vllm-project/llm-compressor#1550). Still fits comfortably on the 80GB H100
+for the 7B/8B arms; worth watching for the 32B arms later, where it would
+erode the memory headroom the paper's own compute table assumed AWQ/GPTQ
+would provide over fp16.
+
+**Still not empirically exercised:** Llama-3.1-8B-Instruct and the two 32B
+models (Qwen2.5-32B, Olmo3-32B) — deliberately deferred to the real
+pilot/main run, not attempted in this validation pass.
 
 ## Environments
 
@@ -53,10 +91,15 @@ Machines and install profiles this design targets:
   dry run, optionally layered with the real-smoke profile for the nf4 smoke
   test.
 - **H100 box (validated 2026-08-15)** — `requirements-h100.txt` is now a
-  pinned lockfile for the fp16/bnb stack (torch 2.6.0+cu124, transformers
-  5.15.0, bitsandbytes 0.50.1, accelerate 1.14.0, ...), confirmed working via
-  `scripts/run_smoke_test.py`. `gptqmodel`/`llmcompressor` remain commented
-  out — see "What's built" above.
+  pinned lockfile covering fp16/bnb *and* GPTQ/AWQ (llm-compressor):
+  torch 2.13.0+cu130, transformers 5.14.1, bitsandbytes 0.50.1,
+  accelerate 1.14.0, llmcompressor 0.13.0, compressed-tensors 0.18.0, ...
+  Note torch/transformers/numpy are newer here than what was first installed
+  — `pip install llmcompressor` silently pulled a newer torch as a
+  transitive dependency partway through this session; the bnb-nf4 smoke
+  test was re-verified afterward and still passes (see requirements-h100.txt's
+  own comment for the full sequence). GPTQModel is deliberately not
+  installed — see "What's built" above for why.
 - **A Mac (Apple Silicon, no CUDA)** — mock-only profile plus the real,
   GPU-free pieces (dataset downloads, sandboxed code execution, statistics):
   everything under "Running the dry run" and the full `pytest` suite below.
@@ -75,13 +118,19 @@ pip install -r requirements-smoke.txt        # local laptop-scale smoke test
 # or: pip install -r requirements-h100.txt   # full pinned H100 stack
 ```
 
-## Local smoke-test checklist (Qwen2.5-7B, BNB-nf4)
+## Local smoke-test checklist
 
-**Run and passing (2026-08-15, real H100).** `scripts/run_smoke_test.py`
-runs this as an automated checklist against 5 real HumanEval items and exits
-non-zero if any item fails — the numbers below are from that run:
+**Run and passing (2026-08-15, real H100), against fp16/bnb *and* AWQ.**
+`scripts/run_smoke_test.py` runs this as an automated checklist against 5
+real HumanEval items and exits non-zero if any item fails —
+`--model`/`--quant`/`--checkpoint-path` select which backend/checkpoint (see
+the script's own docstring for examples, including pointing it at one of
+`quantize_model.py`'s calibration-comparison checkpoints directly). Numbers
+below are from the default bnb-nf4 run; the AWQ runs (Qwen2.5-7B ×2
+calibration variants, Olmo3-7B ×1) all passed the same checklist too, with
+peak memory in the ~15-16GB band documented above instead:
 
-- [x] nf4 load fits in a plausible few-GB band — peak 6.69GB (script checks 2-12GB, no OOM on the 80GB card)
+- [x] quantized load fits in a plausible memory band (quant-dependent — see `PLAUSIBLE_PEAK_GB` and the AWQ memory finding above) — bnb-nf4 peak 6.69GB, no OOM on the 80GB card
 - [x] teacher-forced logprob scoring returns finite values (no NaN/-inf)
 - [x] repeated T=0.8 samples for the same item actually differ
 - [x] the real sandboxed code-execution path runs generated code correctly (runs — see the README's "What's built" note on `partial_pass_rate` currently coming back 0.0 for HumanEval+/MBPP+ for an unrelated, separate reason: markdown-fenced chat output, not a sandbox execution failure)
@@ -89,6 +138,15 @@ non-zero if any item fails — the numbers below are from that run:
 - [x] the real raw-data writer's output matches the mock's schema exactly
 - [x] per-item wall-clock is sane — model load 10.7s (weights cached), ~10-19s/item
 - [x] `pip freeze` saved to `envs/local-smoke-freeze.txt`
+
+Each invocation uses a fresh, ephemeral generation cache, not a persistent
+one — comparing checkpoints back to back across separate script runs found
+that reusing `GenerationCache` across processes lets a cache hit skip
+`generate()` on the new run's model instance, which then breaks
+`score_logprobs()`'s "prompt tracked via generate()'s call history"
+assumption (models/loader.py). Not a problem for the real pipeline today —
+`real_run.py`/`dry_run.py` don't call `score_logprobs()` — but real if that
+ever changes.
 
 ## Running the dry run
 

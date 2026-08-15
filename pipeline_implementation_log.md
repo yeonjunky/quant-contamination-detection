@@ -421,9 +421,119 @@ Environments 섹션, §5 수정 완료로 갱신), `pipeline_build_plan.md`(BUIL
 이번 실행의 `pip freeze` 기준 고정, gptqmodel/llmcompressor는 여전히 주석 처리 —
 미설치·미검증) 전부 갱신.
 
-## 7. 남은 것
+## 7. GPTQ_AWQ_INT4 양자화 단계 구현 및 검증 — AWQ만, GPTQ는 구현 안 함 (같은 날 이어서)
 
-- GPTQModel/llm-compressor 기반 GPTQ/AWQ 백엔드 (모델별 GPTQ vs AWQ 선택, 체크포인트
-  핀 필요 — open assumption #1, 미해결)
+**대상:** `models/loader.py`의 마지막 남은 `NotImplementedError` 스텁 `_load_gptq_or_awq`.
+**정확히 말하면 "GPTQ/AWQ 백엔드"가 아니라 AWQ 백엔드다** — `Quant.GPTQ_AWQ_INT4`는 논문이
+넷째 양자화 단계에 붙인 이름을 그대로 가져온 것일 뿐이고, 실제로 구현·검증한 건 AWQ(via
+llm-compressor) 하나뿐이다. GPTQ(GPTQModel)는 §7.1에 적힌 이유로 시도 자체를 안 했다 —
+"안 됨을 확인"이 아니라 "시도 안 함"이니 혼동하지 말 것. 상세 근거와 "나중에 시도해볼 것"은
+`pipeline_build_plan.md`의 "Open assumptions" #1에 문서로 옮겨 기록(원래 `models/loader.py`
+모듈 docstring에 길게 적어뒀던 걸, 코드가 아니라 문서에 있어야 한다는 지적을 받고 이동함).
+
+사용자와 사전 합의한 범위: 메커니즘은 범용으로 구현하되 실제 검증은 Qwen2.5-7B와
+Olmo3-7B(둘 다 7B급) 두 모델까지만 — Llama-3.1-8B와 32B 두 모델은 실제 파일럿 단계로 미룸.
+
+### 7.1 open assumption #1 재해결 — 원래 계획과 다르게
+
+`pipeline_build_plan.md`는 원래 GPTQModel(GPTQ)+llm-compressor(AWQ) 이원 구성에 모델별로
+어느 쪽을 쓸지 나중에 정하기로 했었다. 실제 조사 결과 다르게 풀림:
+
+- **GPTQModel 자체 소스(`gptqmodel/models/auto.py`)를 직접 fetch해서 확인 — `olmo3` 항목이
+  아예 없다.** `olmo2`는 `LlamaQModel`(llama 클론)로 매핑되지만 `olmo`/`olmo3`는 없음. Olmo3
+  arm에서 실패할 가능성이 높다고 판단.
+- **llm-compressor는 아키텍처 전용 레지스트리가 없이** `AWQModifier`/`QuantizationModifier`를
+  아무 HF `nn.Linear` 레이어에나 이름 패턴으로 적용하는 방식이라 Olmo3에서도 될 가능성이 높음.
+- 논문 §4.3은 "GPTQ-int4 or AWQ-int4"를 사실상 동등한 넷째 조건으로 다루지 모델별로 다른
+  기법을 요구하지 않음 → **다섯 모델 모두 llm-compressor(AWQ) 하나로 통일**하는 게 오히려
+  더 일관된 설계라고 판단, 사용자 확인 받음.
+- **캘리브레이션 데이터 도메인(코드 vs 일반 채팅)도 이론만으로 정하지 말고 실측 비교하기로**
+  사용자가 제안 — Qwen2.5-7B를 두 도메인으로 각각 양자화해서 직접 비교.
+
+### 7.2 GPTQ/AWQ의 구조적 차이 — bnb와 다른 2단계 구조
+
+bnb는 로드할 때마다 즉시 양자화하지만, GPTQ/AWQ(llm-compressor)는 **캘리브레이션 데이터로
+한 번 오프라인 양자화해서 디스크에 저장해두고, 그 이후엔 평범한
+`AutoModelForCausalLM.from_pretrained(경로)`로 불러오는 방식**이다. 이 레시피는
+`vllm-project/llm-compressor`의 공식 예제(`examples/awq/llama_example.py`)를 직접 fetch해서
+확인(추측 아님): `AWQModifier(duo_scaling="both")` + `QuantizationModifier(scheme="W4A16_ASYM",
+targets=["Linear"], ignore=["lm_head"])` 레시피를 `oneshot()`에 넘기고,
+`model.save_pretrained(dir, save_compressed=True)`로 저장하면 이후 재로드는 특별한 로더
+클래스 없이 그대로 `AutoModelForCausalLM.from_pretrained`로 된다.
+
+이 구조 때문에 `scripts/quantize_model.py`(신규, 1회성 오프라인 스크립트)와
+`_load_gptq_or_awq`(런타임 로더, 이미 양자화된 체크포인트가 없으면 `FileNotFoundError`로
+명확히 안내)를 분리해서 구현. 양자화 자체는 절대 실제 실행 도중 암묵적으로 일어나지 않게
+설계.
+
+### 7.3 캘리브레이션 데이터셋 — 두 번 막히고 세 번째로 확정
+
+원래 권장했던 `bigcode/the-stack-smol`(코드 도메인)은 **게이트 데이터셋**이라 인증 없이
+막힘(`DatasetNotFoundError`, 실제로 돌려보고 발견). 대안으로 시도한
+`codeparrot/github-code-clean`은 **레거시 로딩 스크립트 방식이라 `datasets>=5`에서 아예 로드가
+안 됨**(LiveCodeBench 로더가 이미 겪었던 것과 동일한 `RuntimeError: Dataset scripts are no
+longer supported`). 여러 후보를 직접 로드 테스트해서 `flytech/python-codes-25k`로 최종
+확정 — 게이트 없고, `text` 필드에 "지시문 + 짧은 설명 + ```python 코드펜스" 형태가 이미
+들어있어서 오히려 우리 파이프라인의 실제 추론 시점 분포(-Instruct 모델이 코드 생성
+지시에 답하는 형태)에 더 가깝다는 걸 확인.
+
+### 7.4 실행 중 만난 환경 문제 2건
+
+1. **Triton CUDA 커널 컴파일이 `Python.h` 없어서 실패.** 이 머신의 `python3`가
+   deadsnakes PPA로 설치된 3.12.13인데 `python3.12-dev`가 안 깔려 있었음(`apt-get install -y
+   python3.12-dev`로 해결. 참고로 처음에 잘못 짚어서 `python3-dev`를 먼저 깔았는데, 이건
+   우분투 기본 python3.10용 헤더라 실제로는 도움이 안 됐음).
+2. **`pip install llmcompressor`가 torch/transformers/numpy를 조용히 업그레이드함**
+   (torch 2.6.0+cu124 → 2.13.0+cu130, transformers 5.15.0 → 5.14.1, numpy 2.5.2 → 2.4.6).
+   `requirements-h100.txt` 1차 고정(§6) 이후에 일어난 일이라, 이후 모든 GPTQ/AWQ 작업은
+   새 버전으로 돌아갔다. bnb 스모크 테스트를 새 버전에서 재확인(peak 6.57GB, 체크리스트 전부
+   통과) — 회귀 없음을 확인한 뒤 `requirements-h100.txt`를 새 버전 기준으로 다시 고정.
+
+### 7.5 실제 실행 결과
+
+세 번 양자화 실행(전부 성공, Olmo3도 별도 조치 없이 그대로 동작):
+
+| 모델 | 캘리브레이션 | 체크포인트 크기 | 샘플 생성 |
+|---|---|---|---|
+| Qwen2.5-7B-Instruct | code | 5.2GB | 정상(사칙연산 함수) |
+| Qwen2.5-7B-Instruct | chat | 5.2GB | 정상 |
+| Olmo3-7B-Instruct | code | 4.7GB | 정상 |
+
+`scripts/run_smoke_test.py`에 `--quant`/`--checkpoint-path` 플래그를 추가해 동일 체크리스트를
+AWQ 체크포인트에도 그대로 재사용(3개 전부 체크리스트 8항목 통과, 문항별 pass_rate/탐지기
+점수도 콘솔에 출력하도록 개선).
+
+**캘리브레이션 도메인 비교 결과 (Qwen2.5-7B, 5문항):**
+
+| 캘리브레이션 | pass_rate (5문항) | peak 메모리 |
+|---|---|---|
+| code | 1.00, 0.00, 1.00, 1.00, 1.00 | 16.12GB |
+| chat | 1.00, 0.02, 1.00, 1.00, 1.00 | 16.02GB |
+
+n=5로는 통계적으로 아무것도 판별할 수 없는 크기고(실제로 둘 다 같은 문항에서 실패), **이
+표본에서는 코드 도메인 캘리브레이션이 일반 채팅 대비 감지 가능한 우위를 보이지 않았다.**
+원 가설(코드 도메인이 유리할 것)을 반증하지도 않으므로, code-calibration 쪽을 canonical
+경로(`data/quantized/<model>-awq/`)로 채택 — 실제 파일럿 스케일에서 재비교가 필요한 열린
+질문으로 남김.
+
+### 7.6 실행 중 발견해 즉시 고친 버그 2건 (스모크 테스트 스크립트 자체)
+
+계획에는 없었지만 두 체크포인트를 나란히 비교하는 과정에서 실제로 만난 것들:
+
+| 문제 | 원인 | 수정 |
+|---|---|---|
+| 두 번째 비교 실행이 `score_logprobs() called before generate()`로 죽음 | `GenerationCache`의 캐시 키가 `--checkpoint-path`를 반영 안 해서, 서로 다른 체크포인트인데도 같은 `(model, quant)`로 캐시 히트 — 두 번째 실행의 모델 인스턴스는 `generate()`가 실제로 호출된 적이 없는데 `score_logprobs()`만 불림 | `quant_label`을 도입해 체크포인트 경로가 다르면 캐시 키·출력 디렉터리도 달라지게 함. 근본적으로는 재실행마다 임시 캐시 디렉터리를 새로 만들도록 변경(이 스크립트는 재현성보다 "매번 실제 경로를 탄다"가 목적이므로) |
+| 세 번째 재실행도 같은 에러로 죽음 | 위 수정 후에도 **같은 명령을 두 번 돌리면** 두 번째 실행이 첫 번째 실행이 남긴 캐시를 정당하게 히트하면서 동일한 근본 문제가 재현됨 — `score_logprobs()`가 "이 프로세스에서 방금 generate()를 호출했는가"를 메모리로만 추적하는 설계가 프로세스 간 캐시 재사용과 근본적으로 안 맞음 | 캐시를 프로세스 간 공유하지 않도록 매 실행마다 `tempfile.mkdtemp()`로 새 캐시 디렉터리 사용. 실제 파이프라인(`real_run.py`/`dry_run.py`)은 현재 `score_logprobs()`를 아예 안 부르므로 이 문제가 없지만, 나중에 쓰게 되면 같은 함정에 빠질 수 있음 — README에 명시 |
+
+또한 AWQ 체크포인트의 peak GPU 메모리가 16GB 안팎으로 nf4(2-12GB 기대)와 확연히 다르게
+나와서 체크리스트가 계속 실패했는데, 원인을 llm-compressor GitHub 이슈 #1550(비대칭
+zero-point 압축 해제 관련 알려진 한계)로 특정하고, `PLAUSIBLE_PEAK_GB`를 quant별 딕셔너리로
+바꿔 정직하게 반영(임의로 통과시키지 않음).
+
+## 8. 남은 것
+
+- Llama-3.1-8B-Instruct, Qwen2.5-32B, Olmo3-32B — GPTQ/AWQ 미양자화(의도적으로 이번 범위 밖)
 - §5의 LCB 마크다운 추출 경로 — 실측 LCB 응답으로 아직 검증 안 됨(HumanEval만 실측)
+- 캘리브레이션 도메인(코드 vs 채팅) 비교 — n=5라 결론 낼 수 없음, 실제 파일럿 스케일에서
+  재확인 필요
 - 실제 파일럿 스케일 실행(§7 6단계) — 이번 세션은 5문항 스모크 테스트까지만

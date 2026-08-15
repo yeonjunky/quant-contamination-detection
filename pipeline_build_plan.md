@@ -36,6 +36,28 @@
 > to LCB too, but that side is not yet validated against a real LCB completion — see
 > `pipeline_implementation_log.md`'s 2026-08-15 entry for detail. `pipeline/README.md`'s "What's
 > built vs. what's deferred" has the current authoritative status.
+>
+> **BUILD STATUS 2026-08-15 (same day, continued) — the GPTQ_AWQ_INT4 quant rung is
+> implemented and validated, via AWQ only — GPTQ itself was not implemented.** "Open
+> assumption #1" below resolved differently than originally planned: llm-compressor (AWQ)
+> uniformly for all five roster models, not GPTQModel, not a per-model GPTQ/AWQ split —
+> GPTQModel's own architecture registry has no `olmo3` entry (checked against source), while
+> llm-compressor confirmed working on Olmo3-7B-Instruct with no workaround. GPTQModel
+> remains a possible follow-up (see "Open assumptions" #1's "worth trying later" note), not
+> ruled out on technical merit for the non-Olmo3 arms. New `scripts/quantize_model.py`
+> does the one-time offline quantization (quantize-once-and-save, unlike bnb's
+> load-time quantization); `models/loader.py`'s `_load_gptq_or_awq` loads the result. Validated
+> on Qwen2.5-7B-Instruct (×2 calibration variants) and Olmo3-7B-Instruct (×1) — Llama-3.1-8B and
+> the two 32B models are deliberately not quantized in this pass, left for the real pilot/main
+> run. Also ran a live comparison of code-domain vs. general-chat calibration data (motivated by
+> §2.7/§4.3's literature review) — no detectable difference at n=5 (too small to resolve either
+> way); canonicalized the code-domain variant, consistent with the original hypothesis. Real
+> finding: AWQ checkpoints use ~15-16GB peak GPU memory through plain transformers, not the
+> ~4-5GB on-disk size would suggest (known compressed-tensors/transformers rough edge with
+> asymmetric zero-points, vllm-project/llm-compressor#1550) — worth watching for the 32B arms'
+> memory headroom later. `requirements-h100.txt` re-pinned again: `pip install llmcompressor`
+> silently upgraded torch/transformers/numpy mid-session (re-verified the bnb path still passes
+> under the new versions). Full detail: `pipeline_implementation_log.md`'s 2026-08-15 entry, §8.
 
 ## Context
 
@@ -269,6 +291,34 @@ runner) — the explicit go/no-go gate before spending H100 time.
 
 1. **GPTQModel / llm-compressor substitution** for the archived AutoGPTQ/AutoAWQ —
    confirm before locking `requirements-h100.txt`.
+
+   **Resolved 2026-08-15 — AWQ only, via llm-compressor, uniformly for all five models. GPTQ
+   was not implemented.** The original plan here assumed *both* libraries, GPTQModel for a
+   GPTQ arm and llm-compressor for an AWQ arm, with the split decided per model. That was
+   dropped, not deferred: GPTQModel's own architecture registry
+   (`gptqmodel/models/auto.py`, fetched and read directly from source) has no `olmo3` entry
+   — `olmo2` maps to `LlamaQModel` (a Llama clone), but `olmo`/`olmo3` are absent — so
+   GPTQModel would very likely fail on the two Olmo3 roster arms without upstream support.
+   llm-compressor has no per-architecture registry at all — its `AWQModifier`/
+   `QuantizationModifier` recipe targets any HF-loadable causal LM's `nn.Linear` layers by
+   name pattern, and was confirmed empirically to work on Olmo3-7B-Instruct with no
+   workaround (`pipeline_implementation_log.md`'s 2026-08-15 entry, §8). Paper §4.3 treats
+   "GPTQ-int4 or AWQ-int4" as interchangeable representatives of one calibration-based
+   4-bit condition, not a per-model design axis, so using AWQ uniformly is more consistent
+   with that framing than a per-model GPTQ/AWQ split would have been, not less.
+
+   `models/loader.py`'s `Quant.GPTQ_AWQ_INT4` — the paper's own combined name for this
+   quantization rung — is therefore backed by AWQ only. GPTQ itself was never attempted, not
+   ruled out on technical merit for the non-Olmo3 arms.
+
+   **Worth trying later:** GPTQModel on the non-Olmo3 arms (Qwen2.5, Llama-3.1) specifically,
+   if a true GPTQ-vs-AWQ technique comparison becomes useful, or if GPTQModel gains Olmo3
+   support upstream and a uniform-technique run becomes possible again. Also worth
+   revisiting if AWQ's plain-transformers memory overhead (README's "Real finding" —
+   ~15-16GB peak for a 7B model, not the ~4-5GB the on-disk size suggests, a known
+   compressed-tensors/transformers asymmetric-zero-point rough edge,
+   vllm-project/llm-compressor#1550) turns out to matter at 32B scale — GPTQModel's own
+   inference path may not have the same overhead.
 2. **CDD's exact statistic** must be pulled verbatim from Dong et al. 2024 / cross-checked
    against arXiv:2603.03203's replication when `detectors/cdd.py` is written — not guessed.
 3. **evalplus version** yielding exactly 164/378 items must be pinned and confirmed — different
