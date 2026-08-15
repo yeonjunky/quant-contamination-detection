@@ -18,6 +18,24 @@
 > CUDA machine (this build pass ran on a Mac, Apple Silicon, no CUDA — confirmed with the user
 > before starting). See `pipeline/README.md`'s "What's built vs. what's deferred" for current
 > status; this document's file tree below is otherwise still the accurate target design.
+>
+> **BUILD STATUS 2026-08-15 — real GPU path validated on H100.** `models/loader.py`'s real
+> `generate()`/`score_logprobs()` implemented for fp16/bnb-int8/bnb-nf4 and validated end-to-end
+> by the now-written `scripts/run_smoke_test.py` (Qwen2.5-7B-Instruct, BNB-nf4, 5 real HumanEval
+> items, real H100: peak GPU memory 6.69GB, all checklist items passing). `requirements-h100.txt`
+> is now a pinned lockfile (previously an unpinned placeholder), captured from this run
+> (`pipeline/envs/local-smoke-freeze.txt`). Open items unchanged from before this pass except as
+> noted: the GPTQ/AWQ backend is still deferred (open assumption #1, below, still unresolved —
+> not attempted this pass, out of its agreed scope). One real finding surfaced by running on real
+> hardware: HumanEval+/MBPP+ candidate-code assembly (`real_run.py`'s `_assemble_candidate_code`)
+> assumed a raw code continuation, but the -Instruct roster answers in prose + a markdown code
+> fence, so `partial_pass_rate` came back 0.0 for these two conditions on the first pass. Fixed
+> in the same session — markdown-fence stripping + evalplus's own `sanitize`/`code_extract`
+> post-processing, re-verified against the same 5 real HumanEval completions (4/5: 0.0 -> 1.0;
+> the 5th's near-zero score is a genuine model error, not an extraction bug). Applied uniformly
+> to LCB too, but that side is not yet validated against a real LCB completion — see
+> `pipeline_implementation_log.md`'s 2026-08-15 entry for detail. `pipeline/README.md`'s "What's
+> built vs. what's deferred" has the current authoritative status.
 
 ## Context
 

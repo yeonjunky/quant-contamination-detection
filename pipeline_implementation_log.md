@@ -295,3 +295,135 @@ io 9, dry-run e2e 5, real_run 5, 기존 schema/bootstrap/auc 관련 테스트 �
 
 `pipeline/README.md`의 "What's built vs. what's deferred" 절과 `pipeline_build_plan.md`
 상단의 BUILD STATUS 배너에도 같은 내용을 남겨둠.
+
+---
+
+# 실 GPU 경로 구현 및 검증 (2026-08-15)
+
+**대상:** `pipeline/src/qcd/models/loader.py`의 `_RealModelAdapter.generate()`/
+`score_logprobs()` (fp16/bnb-int8/bnb-nf4), `scripts/run_smoke_test.py` 신규 작성.
+**환경:** 이번 세션은 실제 H100 80GB 박스(드라이버 580.126.09, CUDA 13.0, 툴킷 12.4) —
+지난 세션(2026-08-14, macOS)이 CUDA 없어 스텁으로 남겨둔 지점을 여기서 이어받음.
+사용자와 사전 합의한 범위: **fp16/bnb 실경로 + 스모크 테스트까지**만, GPTQ/AWQ 백엔드는
+별도 세션으로 분리(모델별 GPTQ vs AWQ 선택·양자화 체크포인트가 미해결 open assumption이라
+조사 성격의 작업이지 구현 작업이 아님).
+
+## 1. 환경 설정
+
+`pipeline/.venv` 생성 후 `requirements-local.txt` + `pip install -e .`, 이어서
+`torch==2.6.0+cu124`(cu124 wheel index), `transformers==5.15.0`,
+`bitsandbytes==0.50.1`, `accelerate==1.14.0` 설치. `HF_HOME`/`HF_HUB_CACHE`는
+`/root/hf_cache`(로컬 오버레이 디스크, 1.6TB 여유) — 레포 밖, `.env.example` 지침대로.
+Qwen2.5-7B는 비공개(gated)가 아니라 `HF_TOKEN` 없이 다운로드됨(Llama-3.1-8B-Instruct는
+나중에 필요).
+
+## 2. `models/loader.py` — `_RealModelAdapter` 구현
+
+- `_RealGenerationSample`, `_seed_from()`을 이 모듈에 독립적으로 새로 둠 —
+  `generation/sampler.py`의 `ItemGenerations.greedy`가 "untyped to avoid coupling
+  to models.mock"이라고 이미 명시했던 설계 의도를 따라 mock.py의 동명 클래스/헬퍼를
+  import하지 않음.
+- `score_logprobs(item_id, token_ids)`는 프롬프트를 받지 않는 공유 Protocol 시그니처를
+  그대로 유지하면서, `generate()` 호출 시 `self._prompts[item_id] = prompt`로 저장해두고
+  나중에 조회하는 방식으로 해결. 등록 전에 호출되면 `RuntimeError`(mock의 `KeyError`
+  등록-계약과 구분되도록 별도 예외 타입).
+- `generate()`: `output_scores=True, return_dict_in_generate=True`로 생성 자체의 로짓을
+  재사용해 토큰별 로그확률을 별도 forward pass 없이 계산. `torch.manual_seed(_seed_from(...))`
+  로 재현성 확보.
+- `score_logprobs()`: 저장된 프롬프트 + 전달받은 token_ids를 이어붙여 단일 forward pass로
+  teacher-forced 로그확률 산출.
+- `_load_bnb`의 nf4 분기에 `bnb_4bit_compute_dtype=torch.bfloat16` 추가 — 원래 없어서
+  fp32 연산으로 떨어지던 것을 H100 bf16 텐서 코어를 쓰도록 수정(양자화된 가중치 자체는
+  그대로 nf4, 연산 정밀도만 변경).
+
+**실행 중 발견한 실제 버그:** `tokenizer.apply_chat_template(..., return_tensors="pt")`가
+이 transformers 버전(5.15.0)에서 순수 텐서가 아니라 `BatchEncoding`(dict형, `input_ids`/
+`attention_mask` 키)을 반환함. 이걸 그대로 `model.generate()`의 위치 인자로 넘기니
+`inputs_tensor.shape[0]` 조회 시 `BatchEncoding.__getattr__`을 타고 들어가 의미 불명확한
+`AttributeError`로 죽음(모델 로딩 384초 걸린 뒤라 재현 비용이 컸음 — 5-6분 다운로드 후
+실패). 첫 스모크 테스트 실행에서 실제로 이 오류로 죽었고, `_build_input_ids()`가
+`(input_ids, attention_mask)` 튜플을 명시적으로 언패킹해 반환하도록 수정하고
+`model.generate()`/`model()` 양쪽에 `attention_mask`를 명시적으로 전달하도록 고쳐서
+해결. 가중치가 캐시된 두 번째 실행에서 정상 통과.
+
+## 3. `tests/test_real_model_adapter.py` (신규)
+
+`hf-internal-testing/tiny-random-gpt2`(chat_template 없음 — plain-tokenization 폴백 경로
+전용) 기준 CPU-only 회귀 테스트 5개: 생성 결과 token_ids/token_logprobs 길이 일치, greedy
+결정성, `score_logprobs()` 유한값·길이 일치, 등록 전 호출 시 `RuntimeError`. `pytest.
+importorskip("torch")`로 게이팅해 mock-only 프로파일에 영향 없음. `_RealModelAdapter`에
+`max_new_tokens` 생성자 오버라이드를 추가해 이 테스트가 짧게 끝나도록 함(실제 7B 스모크
+테스트의 기본값 512와 무관).
+
+## 4. `scripts/run_smoke_test.py` (신규) — 실행 결과
+
+Qwen2.5-7B-Instruct, BNB-nf4, HumanEval 최단 프롬프트 5개, greedy+T=0.8 샘플 2개.
+실측값(H100, 가중치 캐시된 두 번째 실행 기준):
+
+- 모델 로드: 10.7초 (첫 실행은 다운로드 포함 384초)
+- 문항당: 10~19초 (greedy 236~512 토큰)
+- **peak GPU 메모리: 6.69GB** (기대했던 ~4-6GB 대역과 부합, fp16 로드 시 예상되는
+  15GB+와 확실히 구분됨 — nf4 양자화가 실제로 적용됐다는 증거)
+- 체크리스트 8개 항목 전부 통과: 로그확률 유한, 반복 샘플이 실제로 다름, 샌드박스 pass
+  rate가 [0,1] 범위, teacher-forced 재채점이 generate()와 길이·유한성 일치, 탐지기 3종
+  전부 정상 범위, writer 스키마 정상, wall-clock 정상, `pip freeze` 저장.
+
+## 5. 실행 중 발견한 별도 설계 결함 — 같은 세션에서 수정 완료
+
+**HumanEval 실제 출력을 까본 결과, `partial_pass_rate`가 5문항 전부 0.0이었다.** 원인은
+`real_run.py`의 `_assemble_candidate_code()`가 `item.prompt + completion_text`를 그대로
+이어붙이는 방식인데, -Instruct 모델은 원시 코드 이어쓰기가 아니라 산문 설명 +
+마크다운 코드펜스로 답한다(예: HumanEval/53 응답이 "Sure! The function `add` takes two
+integer parameters..."로 시작하고 실제 코드는 ```python 블록 안에 있음). 기존 docstring은
+이 문제를 LCB에만 국한해 명시했었는데("Extracting a code block out of a raw chat-style
+model response... is a known gap, not handled here"), 실측 결과 -Instruct 로스터 전체를
+쓰는 이상 HumanEval+/MBPP+에도 동일하게 적용된다 — 즉 두 조건의 pass rate는 현재
+구조적으로 항상 과소추정(사실상 0)된다는 뜻. 샌드박스 실행 자체는 정상 동작하는 것으로
+확인됐으므로(스모크 테스트 체크리스트 통과) 이건 스코어링 버그이지 실행 인프라 버그가
+아님.
+
+**사용자와 상의 후(프롬프트를 "이 코드를 완성하라"는 지시로 바꾸는 대안도 검토했으나
+기각 — 벤치마크 프롬프트의 표면형을 바꾸면 Q1 탐지기가 근거로 삼는 "정확히 이 프롬프트에
+대한 암기" 신호 자체가 흐트러질 위험이 있고, LCB는 애초에 코드-이어쓰기 프레이밍이 안 맞아
+데이터셋별로 다른 프롬프트 템플릿이 필요해짐 — 대신 후처리 추출 방식으로 확정) 같은
+세션에서 수정.** `real_run.py`의 `_assemble_candidate_code()`에 `_strip_markdown_fence()`
+(마지막 ` ``` ` 펜스 블록 추출, 없으면 원문 그대로)를 먼저 적용한 뒤, evalplus 자체의
+후처리(`evalplus.sanitize.sanitize`/`code_extract` — evalplus 리더보드가 LLM 출력을
+채점하기 전에 쓰는 바로 그 모듈, `tree-sitter` 기반 AST 추출)를 재사용:
+
+- **HumanEval+/MBPP+:** `sanitize(prompt + fenced, entrypoint=entry_point)` —
+  `evalplus.sanitize.script()` 자신의 레시피 그대로. 목표 함수에 도달 가능한 정의만
+  AST로 추출해 산문·불필요 코드를 버림.
+- **LiveCodeBench:** `code_extract(fenced)` — entrypoint 없이. `sanitize()`의 AST 경로는
+  import/class/function/assignment 노드만 보존하므로, 함수 래핑 없이 `input()`/`print()`를
+  바로 쓰는 LCB stdin형 스크립트에서는 실행 로직이 통째로 날아갈 위험이 있음. `code_extract`
+  는 그런 제약이 없어 더 안전한 선택. **이번 세션에서 실측 LCB 응답으로 검증하지는
+  못함**(스모크 테스트가 HumanEval만 실행) — 추후 확인 필요.
+
+**펜스를 먼저 벗겨내야 하는 이유(실측으로 발견):** `code_extract`만 단독으로 쓰면, 펜스
+구분자 줄(` ```python `, ` ``` `) 자체가 유효한 파이썬이 아니라서 짧은 한 줄짜리 코드가
+펜스에 둘러싸여 있을 때 유효한 2줄 이상 윈도우를 전혀 찾지 못하고 아무 경고 없이 완성문의
+**첫 줄**(보통 산문)을 그대로 반환해버리는 실제 사례를 발견함(`print('hi')` 한 줄짜리
+LCB 스타일 완성문 테스트에서 재현). 펜스를 먼저 벗겨내면 이 문제가 사라짐.
+
+**검증:** 이미 수집해둔 실제 HumanEval 5문항 응답(재생성 없이, 저장된 raw 데이터 재사용)에
+파이프라인의 실제 `_assemble_candidate_code`+`partial_pass_rate` 경로를 그대로 통과시킨
+결과 — HumanEval/53·23·45·34: 0.00 → **1.00**, HumanEval/55(피보나치): 0.00 → 0.02
+(모델 자체의 로직 오류, 추출 실패 아님). `tests/test_real_run.py`에 chat-style 완성문
+케이스 2건 추가(HumanEval류·LCB류 각 1건), 기존 raw-continuation 케이스도 실제 evalplus
+프롬프트 형태(닫힌 docstring 스텁)에 맞게 수정. 전체 pytest 126개 통과.
+
+## 6. 문서 갱신
+
+`pipeline/README.md`("What's built vs. what's deferred", 스모크 테스트 체크리스트,
+Environments 섹션, §5 수정 완료로 갱신), `pipeline_build_plan.md`(BUILD STATUS 배너에
+2026-08-15 항목 추가, §5 수정 완료로 갱신), `pipeline/requirements-h100.txt`(placeholder →
+이번 실행의 `pip freeze` 기준 고정, gptqmodel/llmcompressor는 여전히 주석 처리 —
+미설치·미검증) 전부 갱신.
+
+## 7. 남은 것
+
+- GPTQModel/llm-compressor 기반 GPTQ/AWQ 백엔드 (모델별 GPTQ vs AWQ 선택, 체크포인트
+  핀 필요 — open assumption #1, 미해결)
+- §5의 LCB 마크다운 추출 경로 — 실측 LCB 응답으로 아직 검증 안 됨(HumanEval만 실측)
+- 실제 파일럿 스케일 실행(§7 6단계) — 이번 세션은 5문항 스모크 테스트까지만
