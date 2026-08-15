@@ -752,11 +752,19 @@ high label noise in the proxy contamination labels (§4.5.2).
    - **(i) Instance-level string matching** — exact and near-exact *n*-gram overlap between each benchmark
      item and the corpus, via a suffix-array/FM-index over the training data (candidate implementation:
      infini-gram; whether a public index exists for Olmo3's corpus release, or whether one must be built,
-     is an open engineering item). This is reported as a **lower bound only.** Olmo3's pretraining mix was
-     itself constructed with explicit decontamination against benchmark test sets, so lexical matching here
-     largely re-measures what the corpus builders' own filter already removed. Treating its output as *e*
-     would report *e* ≈ 0 and propagate a spuriously optimistic row of §4.5.2's table into the sample-size
-     plan — the specific failure this step exists to prevent.
+     is an open engineering item). Decontamination in Olmo 3's own pipeline is stage-specific, not
+     corpus-wide (arXiv:2512.13961): the midtraining/long-context stages (~150B tokens) and all
+     post-training stages are filtered against exactly HumanEval, MBPP, and LiveCodeBench (the OLMES
+     suite used for the midtraining filter, and the post-training evaluation set, both name these three
+     benchmarks explicitly), but the bulk pretraining stage (~5.9T tokens, over 97% of the token budget)
+     is not — the report concentrates decontamination effort late in training on the stated rationale
+     that memorization occurs most strongly there. Run against the **bulk pretraining stage**, family (i)
+     is therefore not pre-suppressed and supplies a genuine lower bound, not a spurious *e* ≈ 0. The
+     opposite risk — a near-zero result that just re-measures the corpus builders' own filter rather than
+     the absence of exposure — applies if family (i) is instead run against the midtraining or
+     post-training slices, which *are* filtered against these benchmarks; reporting *e* without noting
+     which stage it came from would risk exactly the spuriously optimistic row this step exists to
+     prevent, just from the opposite source than originally assumed here.
    - **(ii) Surface- and semantic-level program matching** — the primary source of the labels. We follow
      the pipeline of arXiv:2403.04811, which addresses exactly this problem for exactly these benchmarks:
      edit distance for surface similarity plus AST-based similarity for semantic equivalence, applied with
@@ -948,6 +956,7 @@ Numbered by arXiv ID.
 
 **Code-benchmark contamination**
 - arXiv:2605.24079 — *TRACER: A Semantic-Aware Framework for Fine-Grained Contamination Detection in Code LLMs*
+- arXiv:2512.13961 — *Olmo 3* (Ai2 technical report; cited for its per-stage training-data decontamination methodology, §5 step 5)
 - arXiv:2411.10842 — *CodeCleaner: Contamination Mitigation Toolkit*
 - arXiv:2503.06643 — *Is Your Benchmark Still Useful? Dynamic Benchmarking for Code*
 - arXiv:2503.13572 — *VeriContaminated: LLM-Driven Verilog Coding*

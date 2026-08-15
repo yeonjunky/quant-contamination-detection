@@ -726,11 +726,18 @@ CDD 기저 AUC가 0.6 미만이면 진행 전에 TRACER 잔여 오염 측정(§5
    - **(i) Instance-level 문자열 매칭** — 각 벤치마크 문항과 코퍼스 간의 정확·근사 *n*-gram 중복을
      학습 데이터에 대한 suffix-array/FM-index로 검색한다(후보 구현: infini-gram; Olmo3 코퍼스
      릴리스에 대한 공개 인덱스가 존재하는지, 아니면 직접 구축해야 하는지는 미해결 엔지니어링
-     항목이다). 이것은 **하한선으로만** 보고한다. Olmo3의 사전학습 혼합 자체가 벤치마크 테스트셋에
-     대한 명시적 decontamination을 거쳐 구성되었으므로, 여기서의 어휘적 매칭은 코퍼스 제작자의
-     필터가 이미 제거한 것을 상당 부분 다시 재는 셈이다. 이 출력을 *e* 로 취급하면 *e* ≈ 0을
-     보고하게 되어 §4.5.2 표의 낙관적으로 편향된 행이 표본 수 계획으로 전파된다 — 이 단계가 막으려는
-     실패가 바로 그것이다.
+     항목이다). Olmo 3 자체 기술 보고서(arXiv:2512.13961)에 따르면 decontamination은 코퍼스
+     전체가 아니라 **단계별로 다르게** 적용됐다: 미드트레이닝/장문맥 단계(합쳐서 ~150B 토큰)와
+     post-training 전 3단계는 정확히 HumanEval·MBPP·LiveCodeBench를 대상으로 필터링됐지만(미드트레이닝
+     필터가 쓰는 OLMES 스위트와 post-training 평가셋 둘 다 이 세 벤치마크를 명시적으로 포함),
+     대량 사전학습 본체(~5.9T 토큰, 전체 토큰 예산의 97% 이상)는 필터링되지 않았다 — 보고서는
+     "암기는 학습 후반부에 가장 강하게 일어난다"는 근거로 decontamination을 학습 후반 단계에
+     집중시켰다고 밝힌다. **대량 사전학습 본체**를 대상으로 돌리면 family (i)는 사전에 억제되지
+     않은, 진짜 하한선을 제공한다 — 스푸리어스한 *e* ≈ 0이 아니다. 반대 위험 — 코퍼스 제작자의
+     필터가 이미 제거한 것을 다시 재는 것에 불과한 근사-0 결과 — 은 family (i)를 미드트레이닝이나
+     post-training 슬라이스(이 벤치마크들에 대해 실제로 필터링된 부분)에 돌릴 때 적용된다; 어느
+     단계에서 나온 값인지 명시하지 않고 *e*를 보고하면, 원래 이 단계가 막으려던 것과 정확히
+     같은 종류의 낙관 편향을 — 다만 반대 원인에서 — 초래할 위험이 있다.
    - **(ii) 표면·의미 수준 프로그램 매칭** — 라벨의 주 출처. arXiv:2403.04811의 파이프라인을
      따르는데, 그 연구가 바로 이 벤치마크들에 대해 바로 이 문제를 다루기 때문이다: 표면 유사도를
      위한 edit distance와 의미적 등가성을 위한 AST 기반 유사도를 코퍼스에 sliding window로 적용한다.
@@ -907,6 +914,7 @@ arXiv ID로 표기.
 
 **코드 벤치마크 오염**
 - arXiv:2605.24079 — *TRACER: A Semantic-Aware Framework for Fine-Grained Contamination Detection in Code LLMs*
+- arXiv:2512.13961 — *Olmo 3* (Ai2 기술 보고서; 단계별 학습 데이터 decontamination 방법론을 인용, §5 5번)
 - arXiv:2411.10842 — *CodeCleaner: Contamination Mitigation Toolkit*
 - arXiv:2503.06643 — *Is Your Benchmark Still Useful? Dynamic Benchmarking for Code*
 - arXiv:2503.13572 — *VeriContaminated: LLM-Driven Verilog Coding*
