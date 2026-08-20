@@ -3,7 +3,7 @@
 table changes, update this module in the same edit and re-run
 tests/test_registry.py.
 
-`hf_repo_id` values are engineering placeholders, not verified citations:
+`hf_repo_id` values are execution identifiers, not citations:
 the paper draft names models by their public label (e.g. "Qwen2.5-7B"), not
 by HF hub repo id. Confirm every id against the actual hub listing (gated
 status, exact revision) before the first real H100 load — see
@@ -49,10 +49,10 @@ OLMO3_7B = ModelSpec(
     hf_repo_id="allenai/Olmo-3-7B-Instruct",
     role="Ground-truth label validation + size axis",
 )
-OLMO3_32B = ModelSpec(
-    name="Olmo3-32B-Instruct",
+OLMO3_1_32B = ModelSpec(
+    name="Olmo3.1-32B-Instruct",
     param_count_b=32,
-    hf_repo_id="allenai/Olmo-3-32B-Instruct",
+    hf_repo_id="allenai/Olmo-3.1-32B-Instruct",
     role="Ground-truth label validation + size axis",
 )
 
@@ -61,7 +61,7 @@ MAIN_ANALYSIS_MODELS: tuple[ModelSpec, ...] = (
     QWEN2_5_32B,
     LLAMA3_1_8B,
     OLMO3_7B,
-    OLMO3_32B,
+    OLMO3_1_32B,
 )
 
 ALL_MODELS: tuple[ModelSpec, ...] = MAIN_ANALYSIS_MODELS
