@@ -399,17 +399,20 @@ remain valid under the weakest evidence rather than under the most optimistic re
 |---|---|---|---|
 | Olmo3-7B / Olmo3-32B | Open pretraining corpus's own document-date metadata | Corpus metadata (strongest) | Corpus end date (verified in §5, steps 3–4) |
 | Llama-3.1-8B | Declared 2023-12; externally verified by LLMLagBench (detected drop 2023-03) | Verified declaration | 2023-12 (declared) |
-| Qwen2.5-7B / Qwen2.5-32B | No unambiguous official declaration | Release-date bound (weakest) | 2024-09 (release date) |
+| Qwen2.5-7B / Qwen2.5-32B | No unambiguous official declaration; maintainer evaluation requested, with no result available by 2026-08-19 | Release-date bound (weakest) | 2024-09-19 ([official release announcement](https://qwenlm.github.io/blog/qwen2.5/)); at day-level resolution, LCB-post eligibility begins 2024-09-20 |
 
 A release date is an unconditionally valid upper bound — a model cannot have trained on data published
 after its own release — so an arm with no declaration still has a defensible boundary. The LCB
-post-cutoff boundary is pre-specified as **the latest of the per-arm conservative bounds** (provisionally
-Qwen2.5's 2024-09 release date or Olmo3's corpus end date, whichever proves later), and it moves earlier
-only when stronger evidence replaces a weaker bound (e.g., a maintainer evaluation from §5, step 4).
-This makes the design self-sufficient: an unanswered or inconclusive LLMLagBench request degrades the
-boundary to a later date and a smaller post-cutoff pool — never to an unusable design. The ≥1,000-item
-post-cutoff target is accordingly checked against this worst-case boundary in §5, step 3, not deferred
-until external requests resolve.
+post-cutoff boundary is pre-specified as **the latest of the per-arm conservative bounds**: Qwen2.5's
+official 2024-09-19 release date or Olmo3's corpus end date, whichever is later. Because LCB dates have
+day-level resolution, the Qwen-bound post-cutoff window begins on 2024-09-20, excluding the release day
+itself. The requested maintainer evaluation had produced no result when the boundary was frozen on
+2026-08-19, so the pre-specified release-date fallback now remains Qwen2.5's primary bound. Any estimate
+that arrives later is used only in the already pre-specified sensitivity analysis below; it does not
+replace the frozen primary label assignment. This makes the design self-sufficient: the
+unanswered request yields a later date and a smaller post-cutoff pool rather than blocking execution.
+The ≥1,000-item post-cutoff target is accordingly checked against this worst-case boundary in §5,
+step 3, not deferred until an external request resolves.
 
 One asymmetry specific to the Llama-3.1-8B arm: LLMLagBench detects its knowledge-drop changepoint at
 2023-03, nine months before the declared 2023-12 cutoff (§4.1). We use the declared, later date as the
@@ -721,19 +724,22 @@ high label noise in the proxy contamination labels (§4.5.2).
    required for Q1. Budget CDD's per-item multi-sample requirement (§4.4) into the generation-cost
    estimate; design steps 1 and 2 to share underlying generations wherever possible.
 3. **Count available LiveCodeBench pre-/post-cutoff items** against the pre-specified worst-case
-   boundary of §4.2 (the latest per-arm conservative bound — provisionally Qwen2.5's 2024-09 release
-   date or Olmo3's corpus end date, whichever is later), not against an optimistic boundary that assumes
-   the step-4 requests resolve favorably. Target ≥1,000 each. If this target cannot be met, **demote Q2
+   boundary of §4.2 (the latest per-arm conservative bound — Qwen2.5's 2024-09-19 release date, operationally
+   2024-09-20 for the first eligible post-cutoff day, or Olmo3's corpus end date, whichever is later), not
+   against an optimistic boundary that assumes stronger cutoff evidence. Target ≥1,000 each. If this target cannot be met, **demote Q2
    to a secondary, confidence-interval-only analysis** — this does not block the project, since Q1 does
    not depend on it.
 4. **Verify actual training cutoffs** via LLMLagBench (arXiv:2511.12116) rather than trusting declared
    dates. Llama-3.1-8B is already on the public leaderboard (declared 2023-12, detected 2023-03; §4.1).
    LLMLagBench's question set is withheld by its maintainers to prevent leakage, so the Qwen2.5 arms
-   require an evaluation request to the maintainers rather than a local run. For the Olmo3 arms, the open
+   required an evaluation request to the maintainers rather than a local run. The request produced no
+   result by 2026-08-19; the pre-specified release-date fallback is therefore applied, fixing the primary
+   Qwen2.5 bound at its official 2024-09-19 release date (LCB-post begins 2024-09-20 at day resolution).
+   A later maintainer estimate is retained only as a sensitivity bound. For the Olmo3 arms, the open
    pretraining corpus's own date metadata bounds the cutoff directly — stronger evidence than behavioral
    probing — so LLMLagBench is unnecessary there. Note the method can fail on refusal-heavy models
    (its Qwen2.5-Omni-7B entry shows an 87% refusal rate and no detectable changepoint), so a request
-   that comes back inconclusive is a foreseeable outcome; under §4.2's pre-specified rule this simply
+   that comes back inconclusive is a foreseeable outcome; under §4.2's pre-specified rule such an outcome
    leaves the affected arm's conservative bound at its release date rather than blocking the design.
 5. **Measure residual contamination via TRACER (arXiv:2605.24079), against the Olmo3 pretraining
    corpus** — the only corpus in the design open enough to run it on: TRACER is defined as a function of

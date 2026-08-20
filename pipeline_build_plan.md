@@ -244,8 +244,8 @@ Mapped onto the paper's own step numbering (CLAUDE.md §7):
 |---|---|---|
 | (pre-step) | Env setup + pinned lockfile + known-answer check | e.g. Qwen2.5-7B fp16 pass@1 roughly matches its public HumanEval score — real-hardware sanity gate before trusting anything downstream |
 | 1-2 | Continuous scoring + detector scoring pipelines, at scale | Built/tested locally first (dry-run + smoke); CDD's multi-sample cost shares generations with step 1 via the cache |
-| 3 | Count LCB pre/post items (≥1,000 target each) | No GPU needed; do a provisional count now, re-confirm after step 4 verifies actual cutoffs |
-| 4 | LLMLagBench cutoff verification | Needs all 5 models loaded; keep on H100 for environment consistency |
+| 3 | Count LCB pre/post items (≥1,000 target each) | Qwen2.5's bound is frozen at its official 2024-09-19 release date; with day-level labels, use 2024-09-20 as the first post-cutoff day. Current release_v6 count at that boundary: pre 690 / post 365 (availability check, not an experiment result). Re-confirm after the Olmo3 corpus end date is fixed. |
+| 4 | Cutoff verification | Llama-3.1 is externally verified. The Qwen2.5 maintainer request returned no result by 2026-08-19, so the pre-specified release-date fallback now governs the primary labels; any later estimate is sensitivity-only. Olmo3 still requires direct corpus-metadata verification. |
 | 5 | TRACER residual contamination (+ Olmo3 corpus ground-truth search) | Confirm H100 disk can hold the Olmo3 pretraining corpus before assuming it fits — not yet verified. Parallelizable with step 4 |
 | 6 | Pilot: Qwen2.5-7B + Olmo3-7B, BNB-nf4 | **Check the CDD gate (≥0.7936) before trusting any Q1b pilot number** — if it fails, fall back to probability-based detectors only for the rest of the pilot |
 | 7 | Recompute power from pilot values | Pure computation, local or H100; decide final main-experiment n |
