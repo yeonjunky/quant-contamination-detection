@@ -122,29 +122,37 @@ GPU 경로가 이미 구현됐는데도 일부 docstring과 CLI 설명에는 `No
 - 공식 데이터셋: <https://huggingface.co/datasets/livecodebench/code_generation_lite/tree/main>
 - v7 요청: <https://github.com/LiveCodeBench/LiveCodeBench/issues/139>
 
-2026-08-19에 현재 로더로 직접 센 값:
+2026-08-20에 현재 로더로 직접 센 값:
 
 | 경계 | pre | post | 총합 |
 |---|---:|---:|---:|
 | 2023-03-01 | 0 | 1,055 | 1,055 |
 | 2023-12-01 | 286 | 769 | 1,055 |
 | 2024-09-20 | 690 | 365 | 1,055 |
-| 2024-12-31 | 873 | 182 | 1,055 |
+| 2025-01-01 | 873 | 182 | 1,055 |
 
-Dolma 3의 Common Crawl 원천은 `CC-MAIN-2024-51`까지 포함한다. 따라서 Olmo3의 최종
-보수적 경계가 2024년 말 부근이면 post 조건은 약 182문항까지 줄어들 수 있다. 이는
-Common Crawl 부분만을 이용한 **잠정 추론**이며, 실제 경계는 pretraining의 다른 소스와
-midtraining·post-training 데이터의 날짜까지 확인해 확정해야 한다.
+Olmo3-7B-Instruct와 Olmo3.1-32B-Instruct의 공식 모델 카드는 모두 `Date cutoff: Dec. 2024`를
+명시한다. 두 카드가 Base→SFT→DPO→RLVR의 최종 Instruct 계보에 붙은 모델 수준 cutoff이므로
+공통 경계에 적용한다. 월 단위 선언에서는 12월 전체를 노출 가능 구간으로 보고
+**2025-01-01**을 첫 post-cutoff 날짜로 사용한다.
+
+Olmo 3 기술 보고서도 pretraining Common Crawl이 `CC-MAIN-2024-51`에서 끝나고, PDF 수집
+cutoff가 2024년 12월이라고 명시한다. post-training은 Dolci SFT·DPO·RLVR로 구성되며 모델
+카드의 Dec. 2024 cutoff가 최종 체크포인트 수준의 경계를 제공한다. corpus ground-truth
+검색에서는 이 선언을 검증하고 각 단계를 별도로 검색한다.
 
 - Ai2 Dolma 3 문서: <https://docs.allenai.org/in_depth/pretraining>
+- Olmo3-7B-Instruct 모델 카드: <https://huggingface.co/allenai/Olmo-3-7B-Instruct>
+- Olmo3.1-32B-Instruct 모델 카드: <https://huggingface.co/allenai/Olmo-3.1-32B-Instruct>
+- Olmo 3 기술 보고서: <https://arxiv.org/abs/2512.13961>
 
 Qwen2.5는 명확한 공식 cutoff 선언이 없으므로 공식 출시일 **2024-09-19**를 보수적 경계로
 사용한다. 일 단위 라벨에서는 출시 당일을 제외하여 LCB-post를 **2024-09-20**부터 시작한다.
 
 - Qwen2.5 공식 발표: <https://qwenlm.github.io/blog/qwen2.5/>
 
-`pipeline/scripts/run_pilot.py`의 기본값도 `2024-09-20`으로 고정했다. 전체 주 분석에는
-Olmo3 경계까지 확정한 뒤 두 상한 중 더 늦은 날짜를 전달한다.
+Qwen2.5보다 Olmo3 경계가 늦으므로 공통 경계는 **2025-01-01**이다.
+`pipeline/scripts/run_pilot.py`의 기본값도 이 날짜로 고정했다.
 
 ### 2.2 지금 고정할 분석 지위
 
@@ -176,9 +184,8 @@ Olmo3 경계까지 확정한 뒤 두 상한 중 더 늦은 날짜를 전달한�
 
 프로토콜 수정 후 다음 순서로 진행한다.
 
-1. Olmo3의 pretraining, midtraining, long-context, SFT, DPO, RLVR 데이터 전체에서 가장 늦은
-   적격 날짜를 확인한다.
-2. 그 날짜로 LCB pre/post 수를 다시 계산하고 경계를 동결한다.
+1. Olmo3 공식 모델 카드의 Dec. 2024 cutoff를 확인했다. **완료.**
+2. 월 단위 보수 경계 2025-01-01로 LCB pre/post를 다시 계산하고 경계를 동결했다. **완료.**
 3. Qwen2.5의 주 경계는 출시일 2024-09-19로 동결하고, 운영상 LCB-post 시작일은
    2024-09-20으로 사용한다.
 4. Olmo3 corpus ground-truth 라벨링을 구축한다.
@@ -213,7 +220,7 @@ Q1b는 이 단계가 완료되어야 확증적으로 해석할 수 있다. Q1a�
 3. 실제 파일럿 집계기와 power-recompute 산출물을 구현한다. **완료.**
 4. LCB stdin/functional 실응답 smoke test를 수행한다. **완료.**
 5. LCB 표본 수와 Q2의 분석 지위를 영문·한국어 정본에 동시 반영한다.
-6. Olmo3의 실제 날짜 경계와 corpus ground truth를 구축한다.
+6. Olmo3 날짜 경계는 확정했다. corpus ground truth를 구축한다.
 7. TRACER 재구현을 ground truth에 검증하고 *e*를 측정한다.
 8. Qwen2.5-7B와 Olmo3-7B의 16-bit→BNB-nf4 파일럿을 실행한다.
 9. CDD AUC ≥ 0.7936 관문을 판정한다.
