@@ -4,7 +4,7 @@ MAIN_ANALYSIS_MODELS, the full quantization ladder. Thin CLI wrapper over
 qcd.real_run.run(); the real bf16/bnb/AWQ loading and scoring paths are
 implemented. Run the pre-pilot audit and pilot gate before this full driver.
 
-Usage: python scripts/run_main.py --lcb-cutoff 2024-09-01
+Usage: python scripts/run_main.py --lcb-cutoff <final-common-boundary>
 """
 
 import argparse
