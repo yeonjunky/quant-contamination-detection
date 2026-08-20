@@ -533,7 +533,6 @@ zero-point 압축 해제 관련 알려진 한계)로 특정하고, `PLAUSIBLE_PE
 ## 8. 남은 것
 
 - Llama-3.1-8B-Instruct, Qwen2.5-32B, Olmo3.1-32B — GPTQ/AWQ 미양자화(의도적으로 이번 범위 밖)
-- §5의 LCB 마크다운 추출 경로 — 실측 LCB 응답으로 아직 검증 안 됨(HumanEval만 실측)
 - 캘리브레이션 도메인(코드 vs 채팅) 비교 — n=5라 결론 낼 수 없음, 실제 파일럿 스케일에서
   재확인 필요
 - 실제 파일럿 스케일 실행(§7 6단계) — 이번 세션은 5문항 스모크 테스트까지만
@@ -574,3 +573,14 @@ dtype이 모두 `torch.bfloat16`임을 재확인했다. manifest의 hashed confi
 원자료에 명시적 `passed`와 생성·프롬프트 확률 채점·샌드박스 시간을 추가했다.
 Olmo3 proxy 오류율은 ground truth 전까지 pending으로 남긴다. 검증 결과는
 **137 passed**다.
+
+# LiveCodeBench 실제 출력 smoke test (2026-08-20)
+
+Qwen2.5-7B-Instruct BNB-NF4로 LCB pre/post와 stdin/functional 조합 4개를
+실제 H100에서 실행했다. 첫 실행에서 생성 프롬프트에 functional `starter_code`와 stdin
+실행 형식 지시가 빠져 있음을 발견했다. 확률 탐지기는 원래 문제만 채점하도록 유지하면서,
+생성 프롬프트에만 유형별 형식을 추가했다.
+
+수정 후 코드 블록·산문 제거, stdin 프로그램, `Solution` 메서드, 공개·비공개 테스트 디코딩,
+부분 통과율, pass@1, Parquet 왕복 검사가 모두 통과했다. 문항별 pass rate는 1.000, 0.061,
+0.024, 1.000이었다. 전용 재현 스크립트는 `scripts/run_lcb_smoke_test.py`다.

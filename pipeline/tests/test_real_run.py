@@ -16,7 +16,7 @@ import pytest
 from qcd.config import ModelSpec, Quant
 from qcd.data.schema import Dataset, Item
 from qcd.models.registry import QWEN2_5_7B
-from qcd.real_run import RealRunConfig, _assemble_candidate_code, load_all_items, run
+from qcd.real_run import RealRunConfig, _assemble_candidate_code, _generation_prompt, load_all_items, run
 
 
 def _small_config(tmp_path, **overrides) -> RealRunConfig:
@@ -116,6 +116,30 @@ def test_assemble_candidate_code_extracts_fenced_code_for_lcb_chat_completion():
     assert "a + b" in result
     assert "Looking at this problem" not in result
     assert "This reads the input" not in result
+
+
+def test_lcb_generation_prompt_adds_starter_without_changing_detector_prompt():
+    original = "Return the smallest number."
+    item = Item(
+        item_id="functional", dataset=Dataset.LCB_POST, prompt=original,
+        metadata={"starter_code": "class Solution:\n    def solve(self, n):\n        "},
+    )
+    rendered = _generation_prompt(item)
+    assert original in rendered
+    assert "class Solution" in rendered
+    assert "Return only the complete code" in rendered
+    assert item.prompt == original
+
+
+def test_lcb_stdin_generation_prompt_requires_complete_program():
+    item = Item(
+        item_id="stdin", dataset=Dataset.LCB_POST, prompt="Add two integers.",
+        metadata={"starter_code": ""},
+    )
+    rendered = _generation_prompt(item)
+    assert "standard input" in rendered
+    assert "standard output" in rendered
+    assert "Return only the code" in rendered
 
 
 def test_run_fails_at_model_loading_not_earlier(tmp_path, monkeypatch):

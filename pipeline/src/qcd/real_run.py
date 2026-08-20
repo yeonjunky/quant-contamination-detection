@@ -67,6 +67,27 @@ def _strip_markdown_fence(text: str) -> str:
     return matches[-1] if matches else text
 
 
+def _generation_prompt(item: Item) -> str:
+    """Add execution-format instructions without changing detector text.
+
+    Probability detectors continue to teacher-force ``item.prompt`` alone.
+    LiveCodeBench generation additionally needs the official starter code for
+    functional tasks, or an explicit stdin-program contract for contest tasks.
+    """
+    if item.dataset not in (Dataset.LCB_PRE, Dataset.LCB_POST):
+        return item.prompt
+    starter_code = item.metadata.get("starter_code")
+    if starter_code:
+        return (
+            f"{item.prompt}\n\nComplete this Python starter code. Return only the complete code.\n"
+            f"```python\n{starter_code}\n```"
+        )
+    return (
+        f"{item.prompt}\n\nWrite a complete Python program that reads from standard input and writes "
+        "to standard output. Return only the code."
+    )
+
+
 @dataclasses.dataclass
 class RealRunConfig:
     models: tuple[ModelSpec, ...]
@@ -131,10 +152,8 @@ def _assemble_candidate_code(item: Item, completion_text: str) -> str:
       function), which that path would silently drop. `code_extract`'s
       "longest syntactically valid contiguous line range" has no such
       requirement, so it's the safer of evalplus's two extractors for LCB's
-      more varied shapes (stdin scripts and `class Solution` alike). Not
-      empirically validated against a real LCB completion in this session
-      (only HumanEval was exercised on real hardware) — worth confirming
-      once a real LCB generation is available.
+      more varied shapes (stdin scripts and `class Solution` alike). Validated
+      on real Qwen2.5-7B BNB-NF4 outputs for both task types (2026-08-20).
     """
     from evalplus.sanitize import code_extract, sanitize  # noqa: PLC0415
 
@@ -177,7 +196,7 @@ def run(config: RealRunConfig) -> None:
                 started = time.perf_counter()
                 generations = sample_item(
                     model, cache, model_name=model_spec.name, quant=quant.value,
-                    item_id=item.item_id, prompt=item.prompt, n_samples=config.n_cdd_samples,
+                    item_id=item.item_id, prompt=_generation_prompt(item), n_samples=config.n_cdd_samples,
                 )
                 generation_seconds = time.perf_counter() - started
                 candidate_code = _assemble_candidate_code(item, generations.greedy.text)

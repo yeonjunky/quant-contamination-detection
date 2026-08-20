@@ -88,8 +88,8 @@ Olmo3 오류율 *e*는 corpus ground truth 구축 전까지 `null`과
 
 ### 1.4 LiveCodeBench 실제 출력 경로 smoke test
 
-HumanEval의 markdown 코드 추출과 샌드박스 실행은 실제 H100 출력으로 검증되었다. 반면
-LiveCodeBench의 stdin형과 functional형은 실제 모델 출력으로 아직 검증되지 않았다.
+**상태: 2026-08-20 완료.** Qwen2.5-7B BNB-NF4로 pre/post 각 1개씩, stdin/functional
+각 2개씩 총 4문항을 실제 H100에서 실행했다.
 
 파일럿 전에 Qwen2.5-7B BNB-nf4로 각 유형 1–5문항을 실행하여 다음을 확인한다.
 
@@ -98,6 +98,11 @@ LiveCodeBench의 stdin형과 functional형은 실제 모델 출력으로 아직 
 - `Solution` 메서드 추출
 - 공개·비공개 테스트 디코딩
 - 부분 통과율과 pass@1 기록
+
+첫 실행에서 LCB 생성 프롬프트가 `starter_code`와 실행 형식 지시를 누락한 문제를 발견했다.
+고정 문제 확률 채점은 원문 `item.prompt`를 유지하고, 생성에만 functional starter code 또는
+stdin 입출력 계약을 추가하도록 분리했다. 수정 후 네 문항 모두 구조 검사와 Parquet 왕복을
+통과했고 pass@1은 2/4였다. 나머지 두 문항의 부분 점수는 0.061과 0.024였다.
 
 ### 1.5 문서와 코드의 낡은 상태 설명 정리
 
@@ -206,7 +211,7 @@ Q1b는 이 단계가 완료되어야 확증적으로 해석할 수 있다. Q1a�
 1. 확률 탐지기를 고정 프롬프트 teacher-forcing으로 수정한다.
 2. bf16 기준선을 확정하고 영문·한국어 정본과 코드를 동기화한다. **완료.**
 3. 실제 파일럿 집계기와 power-recompute 산출물을 구현한다. **완료.**
-4. LCB stdin/functional 실응답 smoke test를 수행한다.
+4. LCB stdin/functional 실응답 smoke test를 수행한다. **완료.**
 5. LCB 표본 수와 Q2의 분석 지위를 영문·한국어 정본에 동시 반영한다.
 6. Olmo3의 실제 날짜 경계와 corpus ground truth를 구축한다.
 7. TRACER 재구현을 ground truth에 검증하고 *e*를 측정한다.

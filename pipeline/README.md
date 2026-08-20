@@ -36,9 +36,9 @@ leaderboard runs on LLM output) rather than reimplementing extraction; see
 `_assemble_candidate_code`'s docstring for the HumanEval+/MBPP+-vs-LCB
 extractor choice. Re-scoring the same 5 real completions afterward: 4/5 went
 from 0.0 to 1.0, the 5th stayed near-zero (0.02) from a genuine model logic
-error, not an extraction failure. Applied uniformly to LCB too, but that
-side is **not yet empirically validated against a real LCB completion** —
-only HumanEval was exercised on real hardware this session.
+error, not an extraction failure. The LCB path was subsequently validated
+on four real Qwen2.5-7B BNB-NF4 outputs spanning pre/post and
+stdin/functional tasks; see `scripts/run_lcb_smoke_test.py`.
 
 **Built and validated on real H100 hardware, same day:** the
 `Quant.GPTQ_AWQ_INT4` quant rung (`models/loader.py`'s `_load_gptq_or_awq`)
