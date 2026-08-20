@@ -314,3 +314,16 @@ Qwen2.5에 명확한 공식 cutoff 선언이 없어 공식 출시일을 보수�
 
 영문 정본·한국어 미러의 §4.2 및 §5 3–4번, `pre_pilot_next_steps.md`,
 `pipeline_build_plan.md`, `AGENTS.md`에 동시 반영했다. 실험 결과 수치는 추가하지 않았다.
+
+### (j) Olmo 공식 cutoff 확정 및 공통 LCB 경계 재계수 (2026-08-20)
+
+- Olmo3-7B-Instruct와 Olmo3.1-32B-Instruct의 공식 모델 카드가 모두
+  `Date cutoff: Dec. 2024`를 명시함을 확인했다.
+- 월 단위 보수성을 적용해 2024년 12월 전체를 잠재 노출 기간으로 보고, 공통
+  LCB-post 시작일을 **2025-01-01**로 확정했다.
+- LiveCodeBench `release_v6`를 재계수한 결과는 pre **873** / post **182** / 총 **1,055**다.
+  이는 데이터 가용성 점검이지 실험 결과가 아니다.
+- 두 셀 모두 사전 지정한 ≥1,000 목표를 미달했으므로 Q2를 보조·신뢰구간
+  분석으로 격하했다. Q1은 영향받지 않는다.
+- 공개 사전학습·post-training 코퍼스 검색은 cutoff 결정이 아니라 문항 단위 오염
+  ground truth 구축 단계로 남겼다.

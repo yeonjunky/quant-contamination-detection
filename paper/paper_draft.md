@@ -360,8 +360,8 @@ bf16 baseline), and this scale ceiling is recorded as a scope limitation in §8.
 
 | Axis | Condition | Target *n* | Rationale | Note |
 |---|---|---|---|---|
-| Primary contamination | LiveCodeBench, pre-cutoff | ≥ 1,000 | Same source and format as the clean control; only publication date differs, minimizing the difficulty confound in §4.5.3 | Promoted from secondary status after §4.5.3's power analysis |
-| Primary control | LiveCodeBench, post-cutoff | ≥ 1,000 | After the **latest** of the five main-analysis models' training cutoffs | "Clean," subject to the caveats in §6 |
+| Primary contamination | LiveCodeBench, pre-cutoff | 873 available | Same source and format as the clean control; only publication date differs, minimizing the difficulty confound in §4.5.3 | The pre-specified ≥1,000 target is not met |
+| Primary control | LiveCodeBench, post-cutoff | 182 available | On or after 2025-01-01, the first day after the latest model-level cutoff | The pre-specified ≥1,000 target is not met; Q2 is secondary and confidence-interval-only |
 | Secondary contamination | HumanEval | 164 (hard ceiling) | Released 2021; plausible contamination for all five models | Sufficient for Q1 (§3.0) but not Q2 (§4.5.3) |
 | Secondary contamination | MBPP+ | 378 | Separate arm | **Not pooled** with HumanEval — different difficulty distributions would reintroduce the base-rate confound *inside* a nominally single condition. The combined n=542 is a sample-size reference only, never a pooled analysis cell. |
 
@@ -370,27 +370,25 @@ source/format/difficulty roughly constant (ruling out "it's a different kind of 
 alternative explanation), and — because difficulty is held roughly constant — it also directly reduces
 the base-rate confound quantified in §4.5.3. One design change addresses two problems.
 
-Because the post-cutoff boundary is set by the *latest* cutoff among the models in the main analysis, each
-model added to §4.1 can only move that boundary later and shrink the pool of eligible post-cutoff items.
-Confirming that the ≥1,000-item target still holds once Olmo3's actual cutoff is verified (§5, step 4) is
-therefore a risk item for §5, step 3, not a formality.
+The common boundary is 2025-01-01. Under LiveCodeBench `release_v6`, it yields 873 pre-cutoff and 182
+post-cutoff items (1,055 total). This data-availability check fails the pre-specified ≥1,000 target in
+both cells, so Q2 is demoted to a secondary, confidence-interval-only analysis as specified below.
 
 **Pre-specified boundary rule.** Cutoff evidence quality differs by arm, so the boundary is defined to
 remain valid under the weakest evidence rather than under the most optimistic reading:
 
 | Arm | Cutoff evidence | Evidence tier | Conservative exposure bound |
 |---|---|---|---|
-| Olmo3-7B / Olmo3.1-32B | Open pretraining corpus's own document-date metadata | Corpus metadata (strongest) | Corpus end date (verified in §5, steps 3–4) |
+| Olmo3-7B / Olmo3.1-32B | Official model cards for both final Instruct checkpoints state `Date cutoff: Dec. 2024` ([7B](https://huggingface.co/allenai/Olmo-3-7B-Instruct), [32B](https://huggingface.co/allenai/Olmo-3.1-32B-Instruct)) | Official model-level declaration | 2024-12; month-level conservatism makes 2025-01-01 the first eligible post-cutoff day |
 | Llama-3.1-8B | Declared 2023-12; externally verified by LLMLagBench (detected drop 2023-03) | Verified declaration | 2023-12 (declared) |
 | Qwen2.5-7B / Qwen2.5-32B | No unambiguous official cutoff declaration | Release-date bound (weakest) | 2024-09-19 ([official release announcement](https://qwenlm.github.io/blog/qwen2.5/)); at day-level resolution, LCB-post eligibility begins 2024-09-20 |
 
 A release date is an unconditionally valid upper bound — a model cannot have trained on data published
 after its own release — so an arm with no declaration still has a defensible boundary. The LCB
-post-cutoff boundary is pre-specified as **the latest of the per-arm conservative bounds**: Qwen2.5's
-official 2024-09-19 release date or Olmo3's corpus end date, whichever is later. Because LCB dates have
-day-level resolution, the Qwen-bound post-cutoff window begins on 2024-09-20, excluding the release day
-itself. Qwen2.5 therefore uses the release-date bound. The ≥1,000-item post-cutoff target is checked
-against this worst-case boundary in §5, step 3.
+post-cutoff boundary is pre-specified as **the latest of the per-arm conservative bounds**. The Olmo
+model-level declaration is the latest: because it has month resolution, all of December 2024 remains
+potentially exposed and LCB-post begins on 2025-01-01. Qwen2.5 retains its arm-level 2024-09-19 release
+bound (LCB-post begins 2024-09-20), but it does not determine the common boundary.
 
 One asymmetry specific to the Llama-3.1-8B arm: LLMLagBench detects its knowledge-drop changepoint at
 2023-03, nine months before the declared 2023-12 cutoff (§4.1). We use the declared, later date as the
@@ -412,9 +410,9 @@ quantifies exactly how much rides on it — either way a reportable outcome. The
 additional generation or scoring: only analysis-time label assignment changes, and the item-level
 raw-data requirement (§5, step 8) exists precisely to make such re-analyses possible.
 
-The rule generalizes beyond this arm: **any arm whose cutoff evidence tier is below corpus metadata is
-re-analyzed under its bracketing bounds**. Qwen2.5 currently has only its release-date bound. Olmo3, with corpus-metadata evidence,
-needs no sensitivity run. As a purely descriptive check, we also compare the ambiguous-window items'
+The rule generalizes beyond this arm: **any arm whose cutoff evidence is bracketed by competing bounds is
+re-analyzed under those bounds**. Qwen2.5 currently has only its release-date bound. Olmo3 has matching
+model-card declarations and needs no sensitivity run. As a purely descriptive check, we also compare the ambiguous-window items'
 full-precision detector-score distribution against the definitely-clean (post-boundary) and
 definitely-suspect distributions; this comparison is reported separately and is **never fed back into
 Q1b's labels** — doing so would let the detectors under evaluation adjudicate their own ground truth.
@@ -698,18 +696,17 @@ high label noise in the proxy contamination labels (§4.5.2).
 2. **Build the detector-scoring pipeline** (CDD, perplexity, Min-k% Prob per item, per precision) —
    required for Q1. Budget CDD's per-item multi-sample requirement (§4.4) into the generation-cost
    estimate; design steps 1 and 2 to share underlying generations wherever possible.
-3. **Count available LiveCodeBench pre-/post-cutoff items** against the pre-specified worst-case
-   boundary of §4.2 (the latest per-arm conservative bound — Qwen2.5's 2024-09-19 release date, operationally
-   2024-09-20 for the first eligible post-cutoff day, or Olmo3's corpus end date, whichever is later), not
-   against an optimistic boundary that assumes stronger cutoff evidence. Target ≥1,000 each. If this target cannot be met, **demote Q2
-   to a secondary, confidence-interval-only analysis** — this does not block the project, since Q1 does
-   not depend on it.
+3. **Count available LiveCodeBench pre-/post-cutoff items** against the common 2025-01-01 boundary.
+   `release_v6` contains pre 873 / post 182 / total 1,055. The ≥1,000 target is therefore unmet in both
+   cells, so **Q2 is a secondary, confidence-interval-only analysis**; Q1 remains unaffected.
 4. **Verify actual training cutoffs** via LLMLagBench (arXiv:2511.12116) rather than trusting declared
    dates. Llama-3.1-8B is already on the public leaderboard (declared 2023-12, detected 2023-03; §4.1).
    Qwen2.5 has no unambiguous official cutoff declaration, so its primary bound is fixed at the official
    2024-09-19 release date (LCB-post begins 2024-09-20 at day resolution).
-   For the Olmo3 arms, the open pretraining corpus's own date metadata bounds the cutoff directly — stronger evidence than behavioral
-   probing — so LLMLagBench is unnecessary there.
+   Both final Olmo Instruct model cards state `Date cutoff: Dec. 2024`; month-level conservatism makes
+   2025-01-01 the first eligible post-cutoff day. Direct searches of the public pretraining and
+   post-training corpora remain necessary for item-level contamination ground truth, not for setting
+   this operational time boundary.
 5. **Measure residual contamination via TRACER (arXiv:2605.24079), against the Olmo3 pretraining
    corpus** — the only corpus in the design open enough to run it on: TRACER is defined as a function of
    a training corpus and a test set, and Qwen2.5's and Llama-3.1's corpora are closed (§4.5.2). This is
@@ -797,7 +794,7 @@ high label noise in the proxy contamination labels (§4.5.2).
   study cannot replicate at this model scale (§2.3).
 - **Declared training-cutoff dates may be wrong, and cutoff evidence quality is heterogeneous across
   arms.** Mitigated via LLMLagBench verification (§5, step 4) and, structurally, via §4.2's evidence-tier
-  rule (corpus metadata > verified declaration > bare declaration > release-date bound): the primary LCB
+  rule: the primary LCB
   contrast uses the most conservative per-arm bound, trading post-cutoff pool size for validity, and the
   per-arm evidence tier is reported alongside results. Residual uncertainty within each tier remains a
   limitation on the pre/post-cutoff split's precision.
@@ -868,7 +865,7 @@ high label noise in the proxy contamination labels (§4.5.2).
   claim does not depend on it clearing significance.
 - CDD may be entirely inoperative at 32B scale (the "floor" failure mode, §4.6); if the pilot gate
   fails, this is reported as Contribution 4, not treated as a design failure requiring a redesign.
-- Cutoff evidence quality differs across arms (§4.2): Olmo3's boundary rests on corpus metadata,
+- Cutoff evidence quality differs across arms (§4.2): Olmo3's boundary rests on official model-card declarations,
   Llama-3.1-8B's on an externally verified declaration, and Qwen2.5's — absent an unambiguous
   declaration — on the release-date upper bound. The pre/post split's precision is therefore
   arm-dependent; boundary evidence is tabulated per arm and the most conservative bound governs the
