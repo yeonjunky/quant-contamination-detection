@@ -36,7 +36,7 @@ IMPLIED_R_AT_P50 = 0.293089
 CONFIRMATORY_FAMILY_SIZE = 4
 HOLM_WORST_CASE_MULTIPLIER = 3.3393
 
-# Illustrative fp16 base rates used in that same worked table (paper §4.5.3,
+# Illustrative bf16 base rates used in that same worked table (paper §4.5.3,
 # "these two figures are illustrative values for a Qwen-class instruction-tuned
 # model" — NOT a claim about every model; real base rates are measured per
 # model in the pilot, §4.7 item (d)).

@@ -34,7 +34,7 @@ class CDDGateResult:
 
 
 def check_cdd_gate(measured_baseline_auc: float, *, threshold: float = CDD_GATE_AUC) -> CDDGateResult:
-    """`measured_baseline_auc` is CDD's 16-bit (fp16/bf16) AUC from the
+    """`measured_baseline_auc` is CDD's bf16 AUC from the
     pilot (paper §4.7 item (b))."""
     delta_auc = quantization_delta_auc(measured_baseline_auc, CDD_GATE_ASSUMED_SEPARATION_REDUCTION)
     detection_limit = paired_auc_detection_limit(CDD_GATE_REFERENCE_N, measured_baseline_auc, CDD_GATE_REFERENCE_R)

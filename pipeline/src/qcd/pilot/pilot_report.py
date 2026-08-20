@@ -76,9 +76,9 @@ def proxy_label_error_rate(proxy_labels, ground_truth_labels) -> float:
 
 @dataclasses.dataclass
 class PilotReport:
-    # (a) per-detector Cohen's d of the paired fp16->target-precision score shift
+    # (a) per-detector Cohen's d of the paired bf16->target-precision score shift
     q1a_effect_size_d: dict[str, float] = dataclasses.field(default_factory=dict)
-    # (b) per-detector baseline (fp16) AUC and cross-precision AUC correlation r
+    # (b) per-detector baseline (bf16) AUC and cross-precision AUC correlation r
     q1b_baseline_auc: dict[str, float] = dataclasses.field(default_factory=dict)
     q1b_cross_precision_r: dict[str, float] = dataclasses.field(default_factory=dict)
     # (c) Q2's log-odds interaction effect and item-level correlation r

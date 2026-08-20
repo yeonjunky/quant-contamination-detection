@@ -23,6 +23,15 @@ def test_score_logprobs_without_registration_raises():
         model.score_logprobs("unregistered", [1, 2, 3])
 
 
+def test_score_prompt_logprobs_uses_fixed_prompt_tokens():
+    model = MockModel()
+    model.register_item("x", contaminated=True, quality=1.0)
+    prompt = "Solve this fixed problem"
+    scores = model.score_prompt_logprobs("x", prompt)
+    assert len(scores) == len(model.tokenizer.encode(prompt))
+    assert all(score < 0 for score in scores)
+
+
 def test_partial_pass_rate_without_registration_raises():
     model = MockModel()
     with pytest.raises(KeyError, match="never register_item"):

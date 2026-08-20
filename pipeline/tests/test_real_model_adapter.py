@@ -11,6 +11,7 @@ unaffected — this file is simply skipped when torch isn't installed.
 """
 
 import pytest
+from types import SimpleNamespace
 
 torch = pytest.importorskip("torch")
 
@@ -62,3 +63,52 @@ def test_score_logprobs_returns_finite_values_of_requested_length(adapter):
 def test_score_logprobs_before_generate_raises_runtime_error(adapter):
     with pytest.raises(RuntimeError, match="called before generate"):
         adapter.score_logprobs("never-generated", [1, 2, 3])
+
+
+def test_score_prompt_logprobs_is_generation_independent(adapter):
+    scores = adapter.score_prompt_logprobs(
+        "never-generated", "def add(a, b):\n    return a + b"
+    )
+    assert scores
+    assert all(torch.isfinite(torch.tensor(scores)))
+
+
+def test_score_prompt_logprobs_excludes_chat_wrapper_tokens():
+    class CharacterChatTokenizer:
+        chat_template = "test-template"
+
+        def apply_chat_template(self, messages, *, add_generation_prompt, tokenize):
+            assert add_generation_prompt is True
+            assert tokenize is False
+            return "<user>" + messages[0]["content"] + "</user><assistant>"
+
+        def __call__(
+            self, text, *, add_special_tokens=False,
+            return_offsets_mapping=False, return_tensors=None,
+        ):
+            del add_special_tokens
+            ids = [ord(char) for char in text]
+            result = {
+                "input_ids": torch.tensor([ids]),
+                "attention_mask": torch.ones((1, len(ids)), dtype=torch.long),
+            }
+            if return_offsets_mapping:
+                result["offset_mapping"] = torch.tensor(
+                    [[(i, i + 1) for i in range(len(text))]]
+                )
+            assert return_tensors in (None, "pt")
+            return result
+
+    class UniformModel:
+        device = torch.device("cpu")
+
+        def __call__(self, input_ids, *, attention_mask):
+            del attention_mask
+            logits = torch.zeros((1, input_ids.shape[1], 128))
+            return SimpleNamespace(logits=logits)
+
+    prompt = "XY"
+    chat_adapter = _RealModelAdapter(UniformModel(), CharacterChatTokenizer())
+    scores = chat_adapter.score_prompt_logprobs("item", prompt)
+    assert len(scores) == len(prompt)
+    assert scores == pytest.approx([-torch.log(torch.tensor(128.0)).item()] * 2)

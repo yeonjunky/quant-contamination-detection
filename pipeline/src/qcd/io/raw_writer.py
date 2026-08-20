@@ -6,7 +6,8 @@ foreclose the paired and mixed-effects analyses this design depends on."
 - `items.parquet` — one row per item (id, dataset, condition, difficulty,
   contamination proxy label, TRACER label, release/version pin).
 - `generations.parquet` — one row per (model, quant, item, sample):
-  generated text, full per-token logprob array, partial pass rate, decoding
+  generated text, full completion per-token logprob array, fixed prompt
+  per-token logprob array on the greedy row, partial pass rate, decoding
   params, model/tokenizer revision hashes.
 - `detector_scores.parquet` — one row per (model, quant, item, detector):
   score, threshold used, source sample ids.
@@ -64,6 +65,7 @@ class RawDataWriter:
         text: str,
         token_ids: list[int],
         token_logprobs: list[float],
+        prompt_token_logprobs: list[float] | None = None,
         partial_pass_rate: float | None = None,
         decoding_temperature: float | None = None,
         model_revision: str | None = None,
@@ -79,6 +81,10 @@ class RawDataWriter:
                 "text": text,
                 "token_ids": list(token_ids),
                 "token_logprobs": list(token_logprobs),
+                "prompt_token_logprobs": (
+                    list(prompt_token_logprobs)
+                    if prompt_token_logprobs is not None else None
+                ),
                 "partial_pass_rate": partial_pass_rate,
                 "decoding_temperature": decoding_temperature,
                 "model_revision": model_revision,

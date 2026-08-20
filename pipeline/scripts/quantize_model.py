@@ -121,7 +121,7 @@ def quantize(model_name: str, calibration: str) -> Path:
     spec = get_model(model_name)
     save_dir = _checkpoint_dir(spec.name, calibration)
 
-    print(f"Loading {spec.hf_repo_id} (fp16) for quantization...")
+    print(f"Loading {spec.hf_repo_id} (bf16 source) for quantization...")
     model = AutoModelForCausalLM.from_pretrained(spec.hf_repo_id, torch_dtype="auto")
     tokenizer = AutoTokenizer.from_pretrained(spec.hf_repo_id)
 

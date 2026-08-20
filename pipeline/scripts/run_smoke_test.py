@@ -53,7 +53,7 @@ _QUANT_CHOICES = (Quant.BNB_NF4.value, Quant.GPTQ_AWQ_INT4.value)
 
 # bnb-nf4 keeps weights packed as nf4 through bitsandbytes' own inference
 # kernels, so real peak memory tracks the ~4-5GB on-disk size — a tight band
-# here catches "accidentally loaded fp16" (~15GB+).
+# here catches "accidentally loaded bf16" (~15GB+).
 #
 # AWQ (llm-compressor/compressed-tensors) does NOT get the same tight band:
 # real peak memory measured loading our W4A16_ASYM checkpoints through plain
@@ -196,24 +196,41 @@ def main() -> None:
         if not (0.0 <= pass_rate <= 1.0):
             pass_rates_ok = False
 
-        # Independent teacher-forced cross-check of score_logprobs() against
-        # generate()'s own reported logprobs for the same token sequence.
+        # Keep the completion-confidence cross-check, and separately exercise
+        # the paper's fixed-prompt detector path. The latter must work without
+        # relying on generate()'s in-memory prompt history.
         tf_scores = model.score_logprobs(item.item_id, generations.greedy.token_ids)
         if len(tf_scores) != len(generations.greedy.token_ids) or not _isfinite_all(tf_scores):
             teacher_forced_scoring_ok = False
+        prompt_logprobs = model.score_prompt_logprobs(item.item_id, item.prompt)
+        if not prompt_logprobs or not _isfinite_all(prompt_logprobs):
+            teacher_forced_scoring_ok = False
 
         cdd_score = peakedness(generations.greedy.token_ids, [s.token_ids for s in generations.samples])
-        ppl_score = negative_log_perplexity_score(generations.greedy.token_logprobs)
-        mink_score = mink_prob(generations.greedy.token_logprobs)
-        if not (0.0 <= cdd_score <= 1.0) or not math.isfinite(ppl_score) or not math.isfinite(mink_score):
+        ppl_score = negative_log_perplexity_score(prompt_logprobs)
+        mink_score = mink_prob(prompt_logprobs)
+        completion_ppl_score = negative_log_perplexity_score(generations.greedy.token_logprobs)
+        completion_mink_score = mink_prob(generations.greedy.token_logprobs)
+        if not all((
+            0.0 <= cdd_score <= 1.0,
+            math.isfinite(ppl_score), math.isfinite(mink_score),
+            math.isfinite(completion_ppl_score), math.isfinite(completion_mink_score),
+        )):
             detector_scores_ok = False
 
-        print(f"    pass_rate={pass_rate:.2f} cdd={cdd_score:.2f} ppl={ppl_score:.3f} mink={mink_score:.3f}")
+        print(
+            f"    pass_rate={pass_rate:.2f} cdd={cdd_score:.2f} "
+            f"prompt_ppl={ppl_score:.3f} prompt_mink={mink_score:.3f} "
+            f"completion_ppl={completion_ppl_score:.3f} "
+            f"completion_mink={completion_mink_score:.3f}"
+        )
 
         writer.add_generation(
             model=model_spec.name, quant=quant_label, item_id=item.item_id, sample_id=0, is_greedy=True,
             text=generations.greedy.text, token_ids=generations.greedy.token_ids,
-            token_logprobs=generations.greedy.token_logprobs, partial_pass_rate=pass_rate, decoding_temperature=0.0,
+            token_logprobs=generations.greedy.token_logprobs,
+            prompt_token_logprobs=prompt_logprobs,
+            partial_pass_rate=pass_rate, decoding_temperature=0.0,
         )
         for sample_id, sample in enumerate(generations.samples, start=1):
             writer.add_generation(
@@ -221,7 +238,13 @@ def main() -> None:
                 is_greedy=False, text=sample.text, token_ids=sample.token_ids,
                 token_logprobs=sample.token_logprobs, decoding_temperature=SAMPLE_TEMPERATURE,
             )
-        for detector, score in (("cdd", cdd_score), ("perplexity", ppl_score), ("mink_prob", mink_score)):
+        for detector, score in (
+            ("cdd", cdd_score),
+            ("perplexity", ppl_score),
+            ("mink_prob", mink_score),
+            ("completion_perplexity", completion_ppl_score),
+            ("completion_mink_prob", completion_mink_score),
+        ):
             writer.add_detector_score(model=model_spec.name, quant=quant_label, item_id=item.item_id, detector=detector, score=score)
 
     written = writer.flush()

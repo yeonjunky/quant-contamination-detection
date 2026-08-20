@@ -7,6 +7,8 @@ leaving items.parquet and manifest.json already written when it does.
 """
 
 import datetime as dt
+import json
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -20,7 +22,7 @@ from qcd.real_run import RealRunConfig, _assemble_candidate_code, load_all_items
 def _small_config(tmp_path, **overrides) -> RealRunConfig:
     defaults = dict(
         models=(QWEN2_5_7B,),
-        quant_levels=(Quant.FP16,),
+        quant_levels=(Quant.BF16,),
         output_dir=tmp_path,
         lcb_cutoff_boundary=dt.datetime(2023, 12, 1),
         lcb_release_version="release_v1",
@@ -142,3 +144,64 @@ def test_run_fails_at_model_loading_not_earlier(tmp_path, monkeypatch):
     assert (tmp_path / "manifest.json").exists()
     df = pd.read_parquet(tmp_path / "raw" / "items.parquet")
     assert len(df) > 0
+
+
+def test_run_scores_fixed_prompt_and_keeps_completion_confidence(tmp_path, monkeypatch):
+    import qcd.real_run as real_run_module
+
+    item = Item(item_id="q1", dataset=Dataset.LCB_PRE, prompt="fixed prompt")
+
+    class FakeModel:
+        tokenizer = object()
+
+        def __init__(self):
+            self.prompt_calls = []
+
+        def generate(self, item_id, prompt, *, temperature, sample_id):
+            del item_id, prompt, sample_id
+            return SimpleNamespace(
+                text="print(1)", token_ids=[1, 2],
+                token_logprobs=[-0.2, -0.3], is_greedy=temperature == 0.0,
+            )
+
+        def score_prompt_logprobs(self, item_id, prompt):
+            self.prompt_calls.append((item_id, prompt))
+            return [-1.0, -2.0, -3.0]
+
+    fake_model = FakeModel()
+    monkeypatch.setattr(real_run_module, "load_all_items", lambda config: [item])
+    monkeypatch.setattr(
+        real_run_module, "load_model", lambda spec, quant, mock=False: fake_model
+    )
+    monkeypatch.setattr(real_run_module, "_assemble_candidate_code", lambda item, text: text)
+    monkeypatch.setattr(real_run_module, "partial_pass_rate", lambda item, code: 1.0)
+
+    config = _small_config(
+        tmp_path, n_cdd_samples=2, include_humaneval=False, include_mbppplus=False
+    )
+    run(config)
+
+    assert fake_model.prompt_calls == [("q1", "fixed prompt")]
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["extra"] == {}
+    # The enforced dtype is part of the hashed run configuration itself.
+    expected_config = {
+        "models": [QWEN2_5_7B.name],
+        "quant_levels": [Quant.BF16.value],
+        "n_items": 1,
+        "lcb_cutoff_boundary": config.lcb_cutoff_boundary.isoformat(),
+        "lcb_release_version": config.lcb_release_version,
+        "baseline_dtype": "bfloat16",
+    }
+    from qcd.io.manifest import config_hash
+    assert manifest["config_hash"] == config_hash(expected_config)
+    generations = pd.read_parquet(tmp_path / "raw" / "generations.parquet")
+    greedy = generations[generations["is_greedy"]].iloc[0]
+    assert list(greedy["token_logprobs"]) == pytest.approx([-0.2, -0.3])
+    assert list(greedy["prompt_token_logprobs"]) == pytest.approx([-1.0, -2.0, -3.0])
+
+    scores = pd.read_parquet(tmp_path / "raw" / "detector_scores.parquet")
+    assert set(scores["detector"]) == {
+        "cdd", "perplexity", "mink_prob",
+        "completion_perplexity", "completion_mink_prob",
+    }

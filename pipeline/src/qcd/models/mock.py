@@ -154,6 +154,16 @@ class MockModel:
         confidence = self._confidence(contaminated, is_greedy=True, rng=rng)
         return self._score_tokens(token_ids, confidence, rng)
 
+    def score_prompt_logprobs(self, item_id: str, prompt: str) -> list[float]:
+        """Synthetic fixed-prompt counterpart of the real adapter API."""
+        token_ids = self.tokenizer.encode(prompt)
+        if not token_ids:
+            raise ValueError("benchmark prompt produced no scoreable tokens")
+        contaminated = self._is_contaminated(item_id)
+        rng = np.random.RandomState(_seed_from(item_id, prompt, "prompt-score"))
+        confidence = self._confidence(contaminated, is_greedy=True, rng=rng)
+        return self._score_tokens(token_ids, confidence, rng)
+
     def partial_pass_rate(self, item_id: str) -> float:
         """Fractional (not 0/1) partial test-case pass rate, a deterministic
         function of the item's registered quality plus small seeded noise —

@@ -1,10 +1,8 @@
 #!/usr/bin/env python
 """H100 main-experiment driver (paper §5 step 8): all five
 MAIN_ANALYSIS_MODELS, the full quantization ladder. Thin CLI wrapper over
-qcd.real_run.run() — see that module's docstring for what does and doesn't
-work yet: everything up through model loading is real and tested;
-`load_model(..., mock=False)` still raises NotImplementedError (GPU paths
-deferred to a future session).
+qcd.real_run.run(); the real bf16/bnb/AWQ loading and scoring paths are
+implemented. Run the pre-pilot audit and pilot gate before this full driver.
 
 Usage: python scripts/run_main.py --lcb-cutoff 2024-09-01
 """
@@ -35,7 +33,7 @@ def main() -> None:
 
     config = RealRunConfig(
         models=MAIN_ANALYSIS_MODELS,
-        quant_levels=(Quant.FP16, Quant.BNB_INT8, Quant.BNB_NF4, Quant.GPTQ_AWQ_INT4),
+        quant_levels=(Quant.BF16, Quant.BNB_INT8, Quant.BNB_NF4, Quant.GPTQ_AWQ_INT4),
         output_dir=args.output_dir,
         lcb_cutoff_boundary=dt.datetime.fromisoformat(args.lcb_cutoff),
         lcb_release_version=args.lcb_release,

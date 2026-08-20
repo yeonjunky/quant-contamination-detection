@@ -36,7 +36,7 @@ def _simulate(
     rows = []
     for i in range(n_items):
         for m in range(n_models):
-            for precision in ("fp16", "quant"):
+            for precision in ("bf16", "quant"):
                 is_quant = precision == "quant"
                 logit = (
                     true_intercept

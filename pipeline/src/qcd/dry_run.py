@@ -46,7 +46,7 @@ from qcd.pilot.cdd_gate import check_cdd_gate
 from qcd.pilot.pilot_report import PilotReport, base_rate, cohens_d_paired, pearson_r, proxy_label_error_rate
 
 _MOCK_MODEL_NAME = "MockModel"
-_PRECISIONS = (Quant.FP16.value, Quant.BNB_NF4.value)
+_PRECISIONS = (Quant.BF16.value, Quant.BNB_NF4.value)
 _DETECTOR_NAMES = ("cdd", "perplexity", "mink_prob")
 
 
@@ -119,11 +119,13 @@ def run_dry_run(
             )
             partial_pass = model.partial_pass_rate(item.item_id)
             partial_pass_by_item[item.item_id] = partial_pass
+            prompt_logprobs = model.score_prompt_logprobs(item.item_id, item.prompt)
 
             writer.add_generation(
                 model=_MOCK_MODEL_NAME, quant=precision, item_id=item.item_id, sample_id=0, is_greedy=True,
                 text=generations.greedy.text, token_ids=generations.greedy.token_ids,
                 token_logprobs=generations.greedy.token_logprobs, partial_pass_rate=partial_pass,
+                prompt_token_logprobs=prompt_logprobs,
                 decoding_temperature=0.0,
             )
             for sample_id, sample in enumerate(generations.samples, start=1):
@@ -134,23 +136,34 @@ def run_dry_run(
                 )
 
             cdd_score = peakedness(generations.greedy.token_ids, [s.token_ids for s in generations.samples])
-            ppl_score = negative_log_perplexity_score(generations.greedy.token_logprobs)
-            mink_score = mink_prob(generations.greedy.token_logprobs)
+            ppl_score = negative_log_perplexity_score(prompt_logprobs)
+            mink_score = mink_prob(prompt_logprobs)
 
             for detector, score in (("cdd", cdd_score), ("perplexity", ppl_score), ("mink_prob", mink_score)):
                 writer.add_detector_score(model=_MOCK_MODEL_NAME, quant=precision, item_id=item.item_id, detector=detector, score=score)
                 detector_scores[(precision, detector)][item.item_id] = score
 
+            writer.add_detector_score(
+                model=_MOCK_MODEL_NAME, quant=precision, item_id=item.item_id,
+                detector="completion_perplexity",
+                score=negative_log_perplexity_score(generations.greedy.token_logprobs),
+            )
+            writer.add_detector_score(
+                model=_MOCK_MODEL_NAME, quant=precision, item_id=item.item_id,
+                detector="completion_mink_prob",
+                score=mink_prob(generations.greedy.token_logprobs),
+            )
+
     writer.flush()
 
     # --- pilot report: the five §4.7 quantities ---
     report = PilotReport()
-    fp16, quant = _PRECISIONS
+    bf16, quant = _PRECISIONS
     item_ids = [item.item_id for item in items]
     labels = np.array([item.contamination_proxy for item in items])
 
     for detector in _DETECTOR_NAMES:
-        before = [detector_scores[(fp16, detector)][item_id] for item_id in item_ids]
+        before = [detector_scores[(bf16, detector)][item_id] for item_id in item_ids]
         after = [detector_scores[(quant, detector)][item_id] for item_id in item_ids]
         report.q1a_effect_size_d[detector] = cohens_d_paired(before, after)
         report.q1b_baseline_auc[detector] = empirical_auc(np.array(before), labels)
@@ -194,9 +207,9 @@ def run_dry_run(
     clean_ids = [item.item_id for item in items if not item.contamination_proxy]
     contaminated_higher = {}
     for detector in _DETECTOR_NAMES:
-        fp16_scores = detector_scores[(fp16, detector)]
-        mean_contaminated = float(np.mean([fp16_scores[i] for i in contaminated_ids]))
-        mean_clean = float(np.mean([fp16_scores[i] for i in clean_ids]))
+        bf16_scores = detector_scores[(bf16, detector)]
+        mean_contaminated = float(np.mean([bf16_scores[i] for i in contaminated_ids]))
+        mean_clean = float(np.mean([bf16_scores[i] for i in clean_ids]))
         contaminated_higher[detector] = mean_contaminated > mean_clean
 
     mean_pass_contaminated = float(np.mean([partial_pass_by_item[i] for i in contaminated_ids]))

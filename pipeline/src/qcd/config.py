@@ -14,12 +14,12 @@ from qcd.data.schema import Dataset
 
 
 class Quant(enum.Enum):
-    """The four-level quantization ladder (paper §4.3). fp16 is the baseline
+    """The four-level quantization ladder (paper §4.3). bf16 is the baseline
     every other level is compared against; GPTQ/AWQ is a placeholder label —
     which of the two a given model arm actually uses is resolved in
     models/registry.py, not here."""
 
-    FP16 = "fp16"
+    BF16 = "bf16"
     BNB_INT8 = "bnb_int8"
     BNB_NF4 = "bnb_nf4"
     GPTQ_AWQ_INT4 = "gptq_awq_int4"

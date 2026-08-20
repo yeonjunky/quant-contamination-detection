@@ -6,14 +6,10 @@ levels/item scope to use.
 
 Structurally mirrors `qcd.dry_run`'s generate -> score -> detect -> write
 loop, but against `load_model(mock=False)` and the real dataset loaders.
-Every step here already works end-to-end **except the one GPU-dependent
-link in the chain**: `models/loader.py`'s real `generate()`/
-`score_logprobs()` bodies still raise `NotImplementedError` (by design —
-deferred to a future session on a CUDA-capable machine, see
-`pipeline_build_plan.md`). Running this against a real model surfaces that
-`NotImplementedError` at exactly the point generation is first attempted,
-after items/manifest are already written to disk — this module doesn't
-paper over the gap.
+The real bf16/bnb/AWQ model paths and fixed-prompt probability scoring are
+implemented and H100-smoke-tested. Generated-completion log-probabilities
+remain stored as exploratory confidence data; Q1's perplexity/Min-k scores
+come from identical fixed benchmark prompts at every precision.
 """
 
 from __future__ import annotations
@@ -38,6 +34,7 @@ from qcd.generation.sampler import sample_item
 from qcd.io.manifest import build_manifest, write_manifest
 from qcd.io.raw_writer import RawDataWriter
 from qcd.models.loader import load_model
+from qcd.scoring.logprob import score_prompt_logprobs
 from qcd.scoring.pass_rate import partial_pass_rate
 
 _EVALPLUS_DATASETS = (Dataset.HUMANEVAL, Dataset.MBPPPLUS)
@@ -157,6 +154,7 @@ def run(config: RealRunConfig) -> None:
         {
             "models": [m.name for m in config.models],
             "quant_levels": [q.value for q in config.quant_levels],
+            "baseline_dtype": "bfloat16",
             "n_items": len(items),
             "lcb_cutoff_boundary": config.lcb_cutoff_boundary.isoformat(),
             "lcb_release_version": config.lcb_release_version,
@@ -168,7 +166,7 @@ def run(config: RealRunConfig) -> None:
 
     for model_spec in config.models:
         for quant in config.quant_levels:
-            model = load_model(model_spec, quant, mock=False)  # NotImplementedError today, by design (see module docstring)
+            model = load_model(model_spec, quant, mock=False)
             for item in items:
                 generations = sample_item(
                     model, cache, model_name=model_spec.name, quant=quant.value,
@@ -176,11 +174,15 @@ def run(config: RealRunConfig) -> None:
                 )
                 candidate_code = _assemble_candidate_code(item, generations.greedy.text)
                 pass_rate = partial_pass_rate(item, candidate_code)
+                prompt_logprobs = score_prompt_logprobs(
+                    model, item.item_id, item.prompt
+                )
 
                 writer.add_generation(
                     model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=0, is_greedy=True,
                     text=generations.greedy.text, token_ids=generations.greedy.token_ids,
                     token_logprobs=generations.greedy.token_logprobs, partial_pass_rate=pass_rate,
+                    prompt_token_logprobs=prompt_logprobs,
                     decoding_temperature=0.0,
                 )
                 for sample_id, sample in enumerate(generations.samples, start=1):
@@ -191,9 +193,19 @@ def run(config: RealRunConfig) -> None:
                     )
 
                 cdd_score = peakedness(generations.greedy.token_ids, [s.token_ids for s in generations.samples])
-                ppl_score = negative_log_perplexity_score(generations.greedy.token_logprobs)
-                mink_score = mink_prob(generations.greedy.token_logprobs)
-                for detector, score in (("cdd", cdd_score), ("perplexity", ppl_score), ("mink_prob", mink_score)):
+                ppl_score = negative_log_perplexity_score(prompt_logprobs)
+                mink_score = mink_prob(prompt_logprobs)
+                completion_ppl_score = negative_log_perplexity_score(
+                    generations.greedy.token_logprobs
+                )
+                completion_mink_score = mink_prob(generations.greedy.token_logprobs)
+                for detector, score in (
+                    ("cdd", cdd_score),
+                    ("perplexity", ppl_score),
+                    ("mink_prob", mink_score),
+                    ("completion_perplexity", completion_ppl_score),
+                    ("completion_mink_prob", completion_mink_score),
+                ):
                     writer.add_detector_score(model=model_spec.name, quant=quant.value, item_id=item.item_id, detector=detector, score=score)
 
     writer.flush()

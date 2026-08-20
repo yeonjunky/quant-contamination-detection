@@ -1,4 +1,4 @@
-"""load_model(spec, quant) — branches fp16/bnb-int8/bnb-nf4/gptq-awq-int4/mock.
+"""load_model(spec, quant) — branches bf16/bnb-int8/bnb-nf4/gptq-awq-int4/mock.
 
 All real (non-mock) backends lazy-import their heavy dependencies inside the
 branch functions, not at module scope. This lets `import qcd.models.loader`
@@ -81,13 +81,15 @@ class LoadedModel(Protocol):
 
     def score_logprobs(self, item_id: str, token_ids: list[int]) -> list[float]: ...
 
+    def score_prompt_logprobs(self, item_id: str, prompt: str) -> list[float]: ...
+
 
 def load_model(spec: ModelSpec, quant: Quant, *, mock: bool = False) -> LoadedModel:
     if mock:
         return MockModel(MockTokenizer())
 
     backend = {
-        Quant.FP16: _load_fp16,
+        Quant.BF16: _load_bf16,
         Quant.BNB_INT8: _load_bnb,
         Quant.BNB_NF4: _load_bnb,
         Quant.GPTQ_AWQ_INT4: _load_gptq_or_awq,
@@ -95,11 +97,14 @@ def load_model(spec: ModelSpec, quant: Quant, *, mock: bool = False) -> LoadedMo
     return backend(spec, quant)
 
 
-def _load_fp16(spec: ModelSpec, quant: Quant) -> LoadedModel:
+def _load_bf16(spec: ModelSpec, quant: Quant) -> LoadedModel:
+    import torch  # noqa: PLC0415
     from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: PLC0415
 
     tokenizer = AutoTokenizer.from_pretrained(spec.hf_repo_id)
-    model = AutoModelForCausalLM.from_pretrained(spec.hf_repo_id, torch_dtype="auto", device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained(
+        spec.hf_repo_id, dtype=torch.bfloat16, device_map="auto"
+    )
     return _RealModelAdapter(model, tokenizer)
 
 
@@ -256,3 +261,78 @@ class _RealModelAdapter:
         completion_logits = logits[0, prompt_len - 1 : -1, :].float()
         log_probs = F.log_softmax(completion_logits, dim=-1)
         return [log_probs[i, token_id].item() for i, token_id in enumerate(token_ids)]
+
+    def score_prompt_logprobs(self, item_id: str, prompt: str) -> list[float]:
+        """Teacher-force only benchmark-prompt tokens in model context.
+
+        Instruct models still receive their normal chat wrapper and assistant
+        generation marker.  Offset mappings select only tokens wholly inside
+        the literal user prompt, excluding wrapper/special tokens from the
+        returned statistic.  Unlike ``score_logprobs``, this API is independent
+        of generation history and is therefore safe when generations came from
+        a persistent cache.
+        """
+        import torch  # noqa: PLC0415
+        import torch.nn.functional as F  # noqa: PLC0415
+
+        del item_id  # kept in the shared API for item-level tracing symmetry
+        has_chat_template = bool(getattr(self.tokenizer, "chat_template", None))
+        if has_chat_template:
+            rendered = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                add_generation_prompt=True,
+                tokenize=False,
+            )
+        else:
+            rendered = prompt
+
+        prompt_start = rendered.find(prompt)
+        if prompt_start < 0:
+            raise ValueError("chat template did not preserve the benchmark prompt verbatim")
+        prompt_end = prompt_start + len(prompt)
+
+        try:
+            encoded = self.tokenizer(
+                rendered,
+                add_special_tokens=not has_chat_template,
+                return_offsets_mapping=True,
+                return_tensors="pt",
+            )
+            offsets = encoded.pop("offset_mapping")[0].tolist()
+            target_positions = [
+                position
+                for position, (token_start, token_end) in enumerate(offsets)
+                if token_end > token_start
+                and token_start >= prompt_start
+                and token_end <= prompt_end
+            ]
+        except (NotImplementedError, TypeError):
+            # Slow tokenizers may not expose offsets. This fallback uses the
+            # fully-contained prefix span; target-model tokenizers are fast
+            # tokenizers and take the exact offset path above.
+            prefix_ids = self.tokenizer(
+                rendered[:prompt_start], add_special_tokens=False
+            )["input_ids"]
+            through_prompt_ids = self.tokenizer(
+                rendered[:prompt_end], add_special_tokens=False
+            )["input_ids"]
+            encoded = self.tokenizer(
+                rendered, add_special_tokens=False, return_tensors="pt"
+            )
+            target_positions = list(range(len(prefix_ids), len(through_prompt_ids)))
+
+        input_ids = encoded["input_ids"].to(self.model.device)
+        attention_mask = encoded["attention_mask"].to(self.model.device)
+        # Position zero has no causal left context unless a BOS token precedes
+        # it, so it cannot supply a next-token probability.
+        target_positions = [position for position in target_positions if position > 0]
+        if not target_positions:
+            raise ValueError("benchmark prompt has no token with causal left context")
+
+        with torch.no_grad():
+            logits = self.model(input_ids, attention_mask=attention_mask).logits[0]
+        log_probs = F.log_softmax(logits.float(), dim=-1)
+        return [
+            log_probs[position - 1, input_ids[0, position]].item()
+            for position in target_positions
+        ]

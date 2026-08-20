@@ -1,11 +1,8 @@
 #!/usr/bin/env python
 """H100 pilot driver (paper §4.7): Qwen2.5-7B and Olmo3-7B, BNB-nf4 arm
-first. Thin CLI wrapper over qcd.real_run.run() — see that module's
-docstring for what does and doesn't work yet: everything up through model
-loading is real and tested; `load_model(..., mock=False)` still raises
-NotImplementedError (GPU paths deferred to a future session, per
-pipeline_build_plan.md and the scope agreed for this pipeline-construction
-pass).
+first. Thin CLI wrapper over qcd.real_run.run(); real bf16/bnb/AWQ loading,
+generation, fixed-prompt detector scoring, completion-confidence storage,
+sandbox scoring, and raw-data paths are implemented.
 
 Usage: python scripts/run_pilot.py [--output-dir data/raw/pilot]
                                     [--lcb-cutoff 2024-09-01] [--item-limit 50]
@@ -39,7 +36,7 @@ def main() -> None:
 
     config = RealRunConfig(
         models=PILOT_MODELS,
-        quant_levels=(Quant.FP16, Quant.BNB_NF4),
+        quant_levels=(Quant.BF16, Quant.BNB_NF4),
         output_dir=args.output_dir,
         lcb_cutoff_boundary=dt.datetime.fromisoformat(args.lcb_cutoff),
         lcb_release_version=args.lcb_release,
