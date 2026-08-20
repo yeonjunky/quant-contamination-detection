@@ -5,7 +5,7 @@ generation, fixed-prompt detector scoring, completion-confidence storage,
 sandbox scoring, and raw-data paths are implemented.
 
 Usage: python scripts/run_pilot.py [--output-dir data/raw/pilot]
-                                    [--lcb-cutoff 2024-09-20] [--item-limit 50]
+                                    [--lcb-cutoff 2025-01-01] [--item-limit 50]
 """
 
 import argparse
@@ -23,9 +23,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output-dir", type=Path, default=Path("data/raw/pilot"))
     parser.add_argument(
-        "--lcb-cutoff", type=str, default="2024-09-20",
-        help="First eligible LCB-post day for Qwen2.5, using its official "
-             "2024-09-19 release date as the conservative cutoff.",
+        "--lcb-cutoff", type=str, default="2025-01-01",
+        help="First eligible common LCB-post day. Olmo 3's official model "
+             "cards give a Dec. 2024 cutoff; month-level conservatism makes "
+             "2025-01-01 the first post-cutoff day.",
     )
     parser.add_argument("--lcb-release", type=str, default="release_v6")
     parser.add_argument(

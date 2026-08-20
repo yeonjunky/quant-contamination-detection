@@ -31,10 +31,10 @@ from qcd.scoring.sandbox import _load_test_cases
 
 _DEFAULT_OUTPUT = Path(__file__).resolve().parents[2] / "data" / "lcb_smoke_test"
 _CANDIDATES = {
-    ("pre", "stdin"): "abc333_a",
-    ("pre", "functional"): "3453",
-    ("post", "stdin"): "abc383_d",
-    ("post", "functional"): "3676",
+    ("pre", "stdin"): "1873_A",
+    ("pre", "functional"): "2727",
+    ("post", "stdin"): "abc387_b",
+    ("post", "functional"): "3702",
 }
 
 
@@ -42,7 +42,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=_DEFAULT_OUTPUT)
     parser.add_argument("--lcb-release", default="release_v6")
-    parser.add_argument("--lcb-cutoff", default="2024-09-20")
+    parser.add_argument("--lcb-cutoff", default="2025-01-01")
     return parser.parse_args()
 
 

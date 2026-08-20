@@ -152,7 +152,7 @@ GPU/downloads. Also runnable as `pytest tests/test_mock_pipeline_end_to_end.py`.
 ## Running and aggregating the pilot
 
 ```bash
-python scripts/run_pilot.py --lcb-cutoff 2024-09-20
+python scripts/run_pilot.py --lcb-cutoff 2025-01-01
 ```
 
 After writing item-level parquet, the driver creates `pilot_summary.json`
