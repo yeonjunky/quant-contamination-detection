@@ -38,7 +38,9 @@ def test_add_generation_and_flush_roundtrip(tmp_path):
         model="Qwen2.5-7B-Instruct", quant="bf16", item_id="x", sample_id=0, is_greedy=True,
         text="hello", token_ids=[1, 2, 3], token_logprobs=[-0.1, -0.2, -0.3],
         prompt_token_logprobs=[-1.1, -1.2],
-        partial_pass_rate=1.0, decoding_temperature=0.0,
+        partial_pass_rate=1.0, passed=True, decoding_temperature=0.0,
+        generation_seconds=2.0, prompt_scoring_seconds=0.5,
+        sandbox_scoring_seconds=0.25,
     )
     assert writer.n_buffered_generations == 1
 
@@ -48,6 +50,8 @@ def test_add_generation_and_flush_roundtrip(tmp_path):
     assert list(df.iloc[0]["token_ids"]) == [1, 2, 3]
     assert list(df.iloc[0]["prompt_token_logprobs"]) == pytest.approx([-1.1, -1.2])
     assert df.iloc[0]["partial_pass_rate"] == pytest.approx(1.0)
+    assert bool(df.iloc[0]["passed"]) is True
+    assert df.iloc[0]["generation_seconds"] == pytest.approx(2.0)
 
 
 def test_add_detector_score_and_flush_roundtrip(tmp_path):

@@ -15,6 +15,7 @@ from pathlib import Path
 from qcd.config import Quant
 from qcd.constants import CDD_N_SAMPLES
 from qcd.models.registry import PILOT_MODELS
+from qcd.pilot.aggregate import aggregate_pilot
 from qcd.real_run import RealRunConfig, run
 
 
@@ -44,6 +45,10 @@ def main() -> None:
         item_limit_per_condition=None if args.item_limit < 0 else args.item_limit,
     )
     run(config)
+    summary, power = aggregate_pilot(args.output_dir)
+    print(f"Pilot summary: {args.output_dir / 'pilot_summary.json'}")
+    print(f"Power recompute: {args.output_dir / 'power_recompute.json'}")
+    print(f"CDD gates: {summary['cdd_gate']}")
 
 
 if __name__ == "__main__":

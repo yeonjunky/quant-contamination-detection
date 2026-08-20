@@ -149,6 +149,20 @@ python scripts/run_dry_run.py
 Exercises the full step 1-9 code path on ~10-20 synthetic items with zero
 GPU/downloads. Also runnable as `pytest tests/test_mock_pipeline_end_to_end.py`.
 
+## Running and aggregating the pilot
+
+```bash
+python scripts/run_pilot.py --lcb-cutoff 2024-09-20
+```
+
+After writing item-level parquet, the driver creates `pilot_summary.json`
+and `power_recompute.json`. To rebuild only those summaries without loading
+models or regenerating answers:
+
+```bash
+python scripts/aggregate_pilot.py data/raw/pilot
+```
+
 ## Running the full test suite
 
 ```bash

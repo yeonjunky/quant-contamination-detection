@@ -62,8 +62,9 @@ Llama-3.1 gated access는 별도 모델 가용성 문제로 남아 있으며 dty
 
 ### 1.3 실제 파일럿 집계기 완성
 
-[pipeline/scripts/run_pilot.py](pipeline/scripts/run_pilot.py)는 현재 원자료 생성만 담당한다.
-정본 §4.7이 요구하는 파일럿 산출물을 parquet에서 계산하고 저장하는 경로를 추가한다.
+**상태: 2026-08-20 구현 완료.** [pipeline/scripts/run_pilot.py](pipeline/scripts/run_pilot.py)는
+원자료 생성 후 parquet 집계기를 호출한다. 저장된 원자료만 다시 집계할 때는
+`pipeline/scripts/aggregate_pilot.py`를 사용한다.
 
 - (a) Q1a 탐지기별 대응 Cohen's *d*
 - (b) Q1b의 16-bit AUC와 정밀도 간 상관 *r*
@@ -81,6 +82,9 @@ Llama-3.1 gated access는 별도 모델 가용성 문제로 남아 있으며 dty
 - `power_recompute.json`
 - 명시적 pass@1 필드
 - 모델·토크나이저 revision과 데이터 snapshot
+
+Olmo3 오류율 *e*는 corpus ground truth 구축 전까지 `null`과
+`pending_corpus_ground_truth`로 기록한다. 임시 값을 넣지 않는다.
 
 ### 1.4 LiveCodeBench 실제 출력 경로 smoke test
 
@@ -205,7 +209,7 @@ Q1b는 이 단계가 완료되어야 확증적으로 해석할 수 있다. Q1a�
 
 1. 확률 탐지기를 고정 프롬프트 teacher-forcing으로 수정한다.
 2. bf16 기준선을 확정하고 영문·한국어 정본과 코드를 동기화한다. **완료.**
-3. 실제 파일럿 집계기와 power-recompute 산출물을 구현한다.
+3. 실제 파일럿 집계기와 power-recompute 산출물을 구현한다. **완료.**
 4. LCB stdin/functional 실응답 smoke test를 수행한다.
 5. LCB 표본 수와 Q2의 분석 지위를 영문·한국어 정본에 동시 반영한다.
 6. Olmo3의 실제 날짜 경계와 corpus ground truth를 구축한다.

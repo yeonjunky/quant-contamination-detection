@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import re
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -167,29 +168,48 @@ def run(config: RealRunConfig) -> None:
     for model_spec in config.models:
         for quant in config.quant_levels:
             model = load_model(model_spec, quant, mock=False)
+            model_config = getattr(getattr(model, "model", None), "config", None)
+            model_revision = getattr(model_config, "_commit_hash", None)
+            tokenizer_revision = getattr(
+                getattr(model, "tokenizer", None), "init_kwargs", {}
+            ).get("_commit_hash")
             for item in items:
+                started = time.perf_counter()
                 generations = sample_item(
                     model, cache, model_name=model_spec.name, quant=quant.value,
                     item_id=item.item_id, prompt=item.prompt, n_samples=config.n_cdd_samples,
                 )
+                generation_seconds = time.perf_counter() - started
                 candidate_code = _assemble_candidate_code(item, generations.greedy.text)
+                started = time.perf_counter()
                 pass_rate = partial_pass_rate(item, candidate_code)
+                sandbox_scoring_seconds = time.perf_counter() - started
+                started = time.perf_counter()
                 prompt_logprobs = score_prompt_logprobs(
                     model, item.item_id, item.prompt
                 )
+                prompt_scoring_seconds = time.perf_counter() - started
 
                 writer.add_generation(
                     model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=0, is_greedy=True,
                     text=generations.greedy.text, token_ids=generations.greedy.token_ids,
                     token_logprobs=generations.greedy.token_logprobs, partial_pass_rate=pass_rate,
+                    passed=bool(pass_rate == 1.0),
                     prompt_token_logprobs=prompt_logprobs,
                     decoding_temperature=0.0,
+                    generation_seconds=generation_seconds,
+                    prompt_scoring_seconds=prompt_scoring_seconds,
+                    sandbox_scoring_seconds=sandbox_scoring_seconds,
+                    model_revision=model_revision,
+                    tokenizer_revision=tokenizer_revision,
                 )
                 for sample_id, sample in enumerate(generations.samples, start=1):
                     writer.add_generation(
                         model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=sample_id,
                         is_greedy=False, text=sample.text, token_ids=sample.token_ids,
                         token_logprobs=sample.token_logprobs, decoding_temperature=CDD_SAMPLE_TEMPERATURE,
+                        model_revision=model_revision,
+                        tokenizer_revision=tokenizer_revision,
                     )
 
                 cdd_score = peakedness(generations.greedy.token_ids, [s.token_ids for s in generations.samples])

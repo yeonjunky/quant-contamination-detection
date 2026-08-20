@@ -562,3 +562,15 @@ Olmo3-7B 공개 config가 모두 `torch.bfloat16`임을 확인하고,
 dtype이 모두 `torch.bfloat16`임을 재확인했다. manifest의 hashed config에는
 `baseline_dtype="bfloat16"`이 포함된다. 영문·한국어 정본과 관련 문서를 함께
 동기화했으며, BF16 회귀 테스트 추가 후 전체 테스트는 **134 passed**다.
+
+# Parquet 파일럿 집계기 (2026-08-20)
+
+`pilot/aggregate.py`가 `items.parquet`, `generations.parquet`,
+`detector_scores.parquet`을 읽어 `pilot_summary.json`과
+`power_recompute.json`을 생성한다. Q1a/Q1b, Q2 혼합효과와 문항 수준 상관,
+모델·조건별 pass@1, CDD 관문, 단계별 처리 시간과 관측 효과 기반 표본 수를 저장한다.
+`run_pilot.py`가 실행 후 자동 집계하며 `aggregate_pilot.py`로 원자료만 재집계할 수 있다.
+
+원자료에 명시적 `passed`와 생성·프롬프트 확률 채점·샌드박스 시간을 추가했다.
+Olmo3 proxy 오류율은 ground truth 전까지 pending으로 남긴다. 검증 결과는
+**137 passed**다.

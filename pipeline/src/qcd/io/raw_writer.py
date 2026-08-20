@@ -67,7 +67,11 @@ class RawDataWriter:
         token_logprobs: list[float],
         prompt_token_logprobs: list[float] | None = None,
         partial_pass_rate: float | None = None,
+        passed: bool | None = None,
         decoding_temperature: float | None = None,
+        generation_seconds: float | None = None,
+        prompt_scoring_seconds: float | None = None,
+        sandbox_scoring_seconds: float | None = None,
         model_revision: str | None = None,
         tokenizer_revision: str | None = None,
     ) -> None:
@@ -86,7 +90,11 @@ class RawDataWriter:
                     if prompt_token_logprobs is not None else None
                 ),
                 "partial_pass_rate": partial_pass_rate,
+                "passed": passed,
                 "decoding_temperature": decoding_temperature,
+                "generation_seconds": generation_seconds,
+                "prompt_scoring_seconds": prompt_scoring_seconds,
+                "sandbox_scoring_seconds": sandbox_scoring_seconds,
                 "model_revision": model_revision,
                 "tokenizer_revision": tokenizer_revision,
             }
