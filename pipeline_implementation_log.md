@@ -532,8 +532,33 @@ zero-point 압축 해제 관련 알려진 한계)로 특정하고, `PLAUSIBLE_PE
 
 ## 8. 남은 것
 
-- Llama-3.1-8B-Instruct, Qwen2.5-32B, Olmo3-32B — GPTQ/AWQ 미양자화(의도적으로 이번 범위 밖)
+- Llama-3.1-8B-Instruct, Qwen2.5-32B, Olmo3.1-32B — GPTQ/AWQ 미양자화(의도적으로 이번 범위 밖)
 - §5의 LCB 마크다운 추출 경로 — 실측 LCB 응답으로 아직 검증 안 됨(HumanEval만 실측)
 - 캘리브레이션 도메인(코드 vs 채팅) 비교 — n=5라 결론 낼 수 없음, 실제 파일럿 스케일에서
   재확인 필요
 - 실제 파일럿 스케일 실행(§7 6단계) — 이번 세션은 5문항 스모크 테스트까지만
+
+# Pre-pilot 고정 프롬프트 채점 수정 (2026-08-20)
+
+정본 §4.4와 달리 `real_run.py`가 greedy 생성문의 로그확률로 perplexity와
+Min-k% Prob를 계산하던 문제를 수정했다.
+
+- 생성 이력과 독립된 `score_prompt_logprobs(item_id, prompt)` API 추가.
+- instruct chat template은 모델 문맥에 유지하되 offset mask로 실제 벤치마크
+  문제 토큰만 점수 배열에 포함.
+- 주 탐지기 `perplexity`/`mink_prob`은 고정 프롬프트 배열로 계산.
+- 생성 답변의 `token_logprobs`는 confidence 원자료로 계속 저장하고,
+  `completion_perplexity`/`completion_mink_prob`을 탐색적 점수로 분리.
+- 고정 프롬프트 원배열은 greedy generation 행의 `prompt_token_logprobs`에 저장.
+- chat wrapper 제외와 실제 `real_run.run()` 호출을 회귀 테스트로 고정.
+
+검증 결과: 전체 테스트 **133 passed**, Qwen2.5-7B-Instruct BNB-nf4 실제
+H100 5문항 smoke test의 체크리스트 전항 통과, peak GPU memory **6.69GB**.
+
+같은 날 16-bit 기준선을 **bf16**으로 확정했다. Qwen2.5-7B/32B와
+Olmo3-7B 공개 config가 모두 `torch.bfloat16`임을 확인하고,
+`Quant.BF16="bf16"` 및 `_load_bf16(..., dtype=torch.bfloat16)`으로
+명시적으로 강제했다. Qwen2.5-7B 실제 H100 로드에서 model dtype과 첫 parameter
+dtype이 모두 `torch.bfloat16`임을 재확인했다. manifest의 hashed config에는
+`baseline_dtype="bfloat16"`이 포함된다. 영문·한국어 정본과 관련 문서를 함께
+동기화했으며, BF16 회귀 테스트 추가 후 전체 테스트는 **134 passed**다.

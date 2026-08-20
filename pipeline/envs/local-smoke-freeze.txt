@@ -111,7 +111,7 @@ pyparsing==3.3.2
 pytest==9.1.1
 python-dateutil==2.9.0.post0
 PyYAML==6.0.3
--e git+ssh://git@github.com/yeonjunky/quant-contamination-detection.git@0407d886183b6e032e439f539b72e2a64a7524a8#egg=qcd&subdirectory=pipeline
+-e git+ssh://git@github.com/yeonjunky/quant-contamination-detection.git@1d07145ab2acf79d4b165cf1e95b86df9ff51fba#egg=qcd&subdirectory=pipeline
 regex==2026.7.19
 requests==2.34.2
 rich==15.0.0

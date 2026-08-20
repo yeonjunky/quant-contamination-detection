@@ -14,7 +14,7 @@
 #    2.13.0+cu130, transformers 5.14.1, numpy 2.4.6. Re-verified after the
 #    fact: the bnb-nf4 smoke test still passes under these versions (peak
 #    6.57GB) — no regression, but the versions below are what actually ran
-#    for both the fp16/bnb work and the GPTQ/AWQ work by the end of this
+#    for both the bf16/bnb work and the GPTQ/AWQ work by the end of this
 #    session, not what was installed first. Exact `pip freeze` snapshot:
 #    pipeline/envs/local-smoke-freeze.txt.
 #

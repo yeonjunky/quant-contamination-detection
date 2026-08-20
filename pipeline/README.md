@@ -6,7 +6,7 @@ rationale; this file is just setup + run instructions.
 
 ## What's built vs. what's deferred
 
-Everything reachable without a CUDA GPU is built and tested: dataset
+The following GPU-free components are built and tested: dataset
 loaders (LiveCodeBench/HumanEval+/MBPP+), generation sampling + cache,
 sandboxed scoring (real subprocess execution, not mocked), all three
 detectors (CDD/perplexity/Min-k% Prob), the full statistical analysis layer
@@ -15,13 +15,13 @@ detectors (CDD/perplexity/Min-k% Prob), the full statistical analysis layer
 (`scripts/run_dry_run.py`) exercising all of it end-to-end.
 
 **Built and validated on real H100 hardware (2026-08-15):**
-`models/loader.py`'s real `generate()`/`score_logprobs()` for the fp16 and
+`models/loader.py`'s real `generate()`/`score_logprobs()` for the bf16 and
 bitsandbytes (int8/nf4) backends, exercised end-to-end by
 `scripts/run_smoke_test.py` against Qwen2.5-7B-Instruct/BNB-nf4 — real
 quantized load (peak 6.69GB), real sampling, real sandboxed code execution,
 real detector scoring, real raw-data writer, all checklist items passing.
 `scripts/run_pilot.py`/`run_main.py` now work all the way through for the
-fp16/bnb quant levels (`Quant.FP16`/`BNB_INT8`/`BNB_NF4`).
+bf16/bnb quant levels (`Quant.BF16`/`BNB_INT8`/`BNB_NF4`).
 
 **Real finding from that run, fixed same session (2026-08-15):**
 `real_run.py`'s `_assemble_candidate_code()` used to assume HumanEval+/MBPP+
@@ -53,18 +53,12 @@ lives in `pipeline_build_plan.md`'s "Open assumptions" #1, not in code. See
 `scripts/quantize_model.py` for the offline quantization step (quantize
 once and save, unlike bnb's load-time quantization).
 
-Also ran a live comparison this design deliberately didn't shortcut: is
-code-domain calibration data actually better than the library's own general-
-chat reference default, as the paper's literature review (§2.7/§4.3)
-implies? Quantized Qwen2.5-7B-Instruct twice (code-domain:
+Code-domain and general-chat calibration data were compared by quantizing
+Qwen2.5-7B-Instruct twice (code-domain:
 `flytech/python-codes-25k`; chat: `HuggingFaceH4/ultrachat_200k`) and
-compared on the same 5-item smoke-test checklist — **no detectable
-difference at this sample size** (both: 4/5 items pass_rate 1.00, the same
-5th item near-zero from a genuine model error, near-identical detector
-scores). n=5 is far too small to resolve a real effect either way; this
-just confirms the mechanism works and gives no evidence to prefer one
-calibration domain yet. Canonicalized the code-domain variant (consistent
-with the original hypothesis, not contradicted by this result) to
+compared on the same 5-item smoke test. Both passed 4/5 items; the fifth had
+a model error, and detector scores were similar. This sample is insufficient
+to compare calibration domains. The code-domain variant is stored at
 `data/quantized/<model>-awq/`; the chat-domain comparison checkpoint stays
 on disk as `-awq-chat` for a future re-comparison at real pilot scale.
 
@@ -77,10 +71,10 @@ transformers rough edge with asymmetric zero-points
 (vllm-project/llm-compressor#1550). Still fits comfortably on the 80GB H100
 for the 7B/8B arms; worth watching for the 32B arms later, where it would
 erode the memory headroom the paper's own compute table assumed AWQ/GPTQ
-would provide over fp16.
+would provide over bf16.
 
 **Still not empirically exercised:** Llama-3.1-8B-Instruct and the two 32B
-models (Qwen2.5-32B, Olmo3-32B) — deliberately deferred to the real
+models (Qwen2.5-32B, Olmo3.1-32B) — deliberately deferred to the real
 pilot/main run, not attempted in this validation pass.
 
 ## Environments
@@ -91,7 +85,7 @@ Machines and install profiles this design targets:
   dry run, optionally layered with the real-smoke profile for the nf4 smoke
   test.
 - **H100 box (validated 2026-08-15)** — `requirements-h100.txt` is now a
-  pinned lockfile covering fp16/bnb *and* GPTQ/AWQ (llm-compressor):
+  pinned lockfile covering bf16/bnb *and* GPTQ/AWQ (llm-compressor):
   torch 2.13.0+cu130, transformers 5.14.1, bitsandbytes 0.50.1,
   accelerate 1.14.0, llmcompressor 0.13.0, compressed-tensors 0.18.0, ...
   Note torch/transformers/numpy are newer here than what was first installed
@@ -120,7 +114,7 @@ pip install -r requirements-smoke.txt        # local laptop-scale smoke test
 
 ## Local smoke-test checklist
 
-**Run and passing (2026-08-15, real H100), against fp16/bnb *and* AWQ.**
+**Run and passing (2026-08-15, real H100), against bf16/bnb *and* AWQ.**
 `scripts/run_smoke_test.py` runs this as an automated checklist against 5
 real HumanEval items and exits non-zero if any item fails —
 `--model`/`--quant`/`--checkpoint-path` select which backend/checkpoint (see
@@ -139,14 +133,12 @@ peak memory in the ~15-16GB band documented above instead:
 - [x] per-item wall-clock is sane — model load 10.7s (weights cached), ~10-19s/item
 - [x] `pip freeze` saved to `envs/local-smoke-freeze.txt`
 
-Each invocation uses a fresh, ephemeral generation cache, not a persistent
-one — comparing checkpoints back to back across separate script runs found
-that reusing `GenerationCache` across processes lets a cache hit skip
-`generate()` on the new run's model instance, which then breaks
-`score_logprobs()`'s "prompt tracked via generate()'s call history"
-assumption (models/loader.py). Not a problem for the real pipeline today —
-`real_run.py`/`dry_run.py` don't call `score_logprobs()` — but real if that
-ever changes.
+Each smoke-test invocation uses a fresh, ephemeral generation cache. Its
+completion-confidence cross-check still calls history-dependent
+`score_logprobs()`, so a cross-process cache hit would skip the `generate()`
+call that records its prompt. The real Q1 probability-detector path instead
+uses independent `score_prompt_logprobs(item_id, prompt)` and is safe on
+persistent generation-cache hits.
 
 ## Running the dry run
 

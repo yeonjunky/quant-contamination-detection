@@ -5,18 +5,12 @@
 > 목적: 실제 H100 파일럿 전에 해결해야 할 프로토콜·데이터·분석 작업을 우선순위대로 고정한다.
 > 주의: 이 문서의 수치는 별도 표기가 없으면 계획값 또는 데이터 가용성 점검값이다. 실험 결과가 아니다.
 
-## 결론
+## 상태
 
-지금 바로 파일럿을 실행하지 않는다. 먼저 확률 기반 탐지기의 채점 대상, 기준 정밀도,
-실제 파일럿 집계 경로를 바로잡는 **pre-pilot audit**를 수행한다.
+고정 프롬프트 채점과 BF16 기준선 전환은 완료됐다. 실제 실험 원자료는 아직 없다. 다음 작업은
+파일럿 집계기 구현과 LiveCodeBench 출력 경로 검증이다.
 
-현재 논문 설계와 GPU 실행 기반은 상당 부분 준비되었다. H100에서 fp16/bnb/AWQ 경로가
-검증되었고, 2026-08-19 로컬 테스트 결과는 **124 passed, 1 skipped**다. 그러나 실제 실험
-원자료는 아직 없으며, 현재 코드 그대로 실행하면 perplexity와 Min-k% Prob가 논문에 정의된
-고정 텍스트가 아니라 greedy 생성문을 채점한다. 이 상태의 확률 기반 탐지기 결과는 Q1의
-측정값으로 사용할 수 없다.
-
-## 1. 파일럿 전에 반드시 고칠 것
+## 1. 파일럿 전 작업
 
 ### 1.1 확률 기반 탐지기의 채점 대상을 고정 프롬프트로 변경
 
@@ -24,7 +18,7 @@ arXiv:2603.03203은 perplexity와 Min-k% Prob를 각 **test prompt**에 대해 �
 두 탐지기를 고정 텍스트에 대한 teacher-forced 로그확률로 정의한다
 ([paper/paper_draft.md](paper/paper_draft.md), §4.4).
 
-현재 [pipeline/src/qcd/real_run.py](pipeline/src/qcd/real_run.py)는 다음과 같이 동작한다.
+2026-08-20 수정 전 [pipeline/src/qcd/real_run.py](pipeline/src/qcd/real_run.py)는 다음과 같이 동작했다.
 
 - greedy 생성문의 `token_logprobs`로 perplexity와 Min-k% Prob를 계산한다.
 - 구현된 `score_logprobs()`는 실제 파일럿 루프에서 호출되지 않는다.
@@ -40,13 +34,20 @@ arXiv:2603.03203은 perplexity와 Min-k% Prob를 각 **test prompt**에 대해 �
 5. 생성 캐시와 독립적인 `score_prompt_logprobs(prompt)` 계열 API를 둔다.
 6. 실제 실행 루프가 이 API를 호출하는 회귀 테스트를 추가한다.
 
-### 1.2 16-bit 기준선을 fp16 또는 bf16 중 하나로 확정
+**상태: 2026-08-20 완료.** `score_prompt_logprobs(item_id, prompt)`를 생성
+이력과 독립된 API로 구현했고, instruct chat wrapper는 문맥으로 유지하되 offset
+mask로 실제 문제 토큰만 반환한다. `perplexity`와 `mink_prob`은 이 고정 프롬프트
+배열을 사용한다. 생성 답변 로그확률은 `generations.parquet`의 `token_logprobs`와
+탐색적 `completion_perplexity`/`completion_mink_prob`으로 별도 보존하며, 고정
+프롬프트 원배열은 greedy 행의 `prompt_token_logprobs`에 저장한다. 전체 테스트
+133개와 Qwen2.5-7B BNB-nf4 실제 H100 5문항 smoke test가 통과했다.
 
-현재 설정 이름은 `Quant.FP16`이지만 로더는 `torch_dtype="auto"`를 사용한다. 실제 배포
-체크포인트에서는 bf16으로 로드될 가능성이 높으므로 이름과 실측 dtype이 다를 수 있다.
+### 1.2 16-bit 기준선을 bf16으로 확정
 
-권장 결정은 모델의 배포 dtype과 H100의 자연스러운 실행 경로에 맞춰 **bf16을 기준선으로
-확정**하는 것이다. 결정 후 다음을 한 번에 맞춘다.
+2026-08-20 점검에서 Qwen2.5-7B/32B와 Olmo3-7B의 배포 dtype이 bf16임을
+확인했고, H100의 자연스러운 실행 경로와도 일치하므로 **bf16을 기준선으로 확정**했다.
+`Quant.BF16="bf16"`으로 이름을 바꾸고 `dtype=torch.bfloat16`을 강제하여
+manifest의 표기와 실제 로드 dtype이 일치하게 했다. 다음 항목을 함께 맞췄다.
 
 - `paper/paper_draft.md`
 - `paper/paper_draft_ko.md`
@@ -54,8 +55,10 @@ arXiv:2603.03203은 perplexity와 Min-k% Prob를 각 **test prompt**에 대해 �
 - 모델 로더와 manifest의 precision 표기
 - 관련 테스트와 표·그림 캡션
 
-fp16을 유지하려면 `auto`에 의존하지 말고 실제 float16 로드를 강제해야 한다. 어느 쪽이든
-정밀도 numerics를 다루는 논문에서 이름과 실행 dtype이 다른 상태는 허용하지 않는다.
+영문·한국어 정본과 관련 표·테스트도 bf16으로 동기화했다. Olmo3.1-32B repo ID는
+`allenai/Olmo-3.1-32B-Instruct`로 확인해 registry에 반영했다. 7B(Olmo 3/1025)와
+함께 기존 설계의 7B–32B 크기 축을 구성한다.
+Llama-3.1 gated access는 별도 모델 가용성 문제로 남아 있으며 dtype 결정을 바꾸지는 않는다.
 
 ### 1.3 실제 파일럿 집계기 완성
 
@@ -201,7 +204,7 @@ Q1b는 이 단계가 완료되어야 확증적으로 해석할 수 있다. Q1a�
 ## 4. 권장 실행 순서
 
 1. 확률 탐지기를 고정 프롬프트 teacher-forcing으로 수정한다.
-2. bf16/fp16 기준선을 확정하고 영문·한국어 정본과 코드를 동기화한다.
+2. bf16 기준선을 확정하고 영문·한국어 정본과 코드를 동기화한다. **완료.**
 3. 실제 파일럿 집계기와 power-recompute 산출물을 구현한다.
 4. LCB stdin/functional 실응답 smoke test를 수행한다.
 5. LCB 표본 수와 Q2의 분석 지위를 영문·한국어 정본에 동시 반영한다.
@@ -236,15 +239,3 @@ Q1b는 이 단계가 완료되어야 확증적으로 해석할 수 있다. Q1a�
 - CDD와 확률 채점의 처리량이 분리 기록된다.
 - `pilot_summary.json`과 `power_recompute.json`이 생성된다.
 - 본 실험의 문항 수, CDD 샘플 수, 예상 wall-clock이 동결된다.
-
-## 6. 프로젝트의 안전한 핵심 주장
-
-LCB 표본 수 부족이나 대리 라벨 잡음이 커도 프로젝트 전체가 실패하는 것은 아니다.
-
-- Q1a는 라벨 없이 양자화 전후의 탐지기 점수 이동을 보고한다.
-- CDD 관문 실패는 숨길 실패가 아니라 32B 이하에서 CDD의 적용 경계를 보여주는 결과다.
-- Q1b는 *e*와 표본 수에 조건부로 보고한다.
-- Q2는 검정력이 부족하면 신뢰구간 중심 보조 결과로 남긴다.
-
-따라서 다음 작업의 목적은 무리하게 모든 질문을 유의하게 만드는 것이 아니라, Q1a를 확실히
-보존하면서 Q1b와 Q2가 어느 정도까지 해석 가능한지를 실행 전에 정직하게 고정하는 것이다.

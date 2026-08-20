@@ -3,7 +3,7 @@
 > **DESIGN CHANGE 2026-08-05 — this plan predates a model-roster change.** Llama-3.3-70B and
 > Gemma-4-31B-it were removed from the design entirely; Llama-3.1-8B-Instruct was added
 > (see `paper/revision_provenance.md`, 2026-08-05 entry). Consequences for this document:
-> every 70B fp16 / multi-GPU-rental reference below is obsolete (no arm exceeds 32.5B; the
+> every 70B bf16 / multi-GPU-rental reference below is obsolete (no arm exceeds 32.5B; the
 > whole ladder fits a single H100/H200), the HF cache sizing note shrinks accordingly, and
 > `pilot_report.py` must compute **five** pilot quantities (a)–(e) per paper §4.7 (the
 > "(a)-(d)" below is stale). The registry in `pipeline/src/qcd/models/registry.py` is the
@@ -20,7 +20,7 @@
 > status; this document's file tree below is otherwise still the accurate target design.
 >
 > **BUILD STATUS 2026-08-15 — real GPU path validated on H100.** `models/loader.py`'s real
-> `generate()`/`score_logprobs()` implemented for fp16/bnb-int8/bnb-nf4 and validated end-to-end
+> `generate()`/`score_logprobs()` implemented for bf16/bnb-int8/bnb-nf4 and validated end-to-end
 > by the now-written `scripts/run_smoke_test.py` (Qwen2.5-7B-Instruct, BNB-nf4, 5 real HumanEval
 > items, real H100: peak GPU memory 6.69GB, all checklist items passing). `requirements-h100.txt`
 > is now a pinned lockfile (previously an unpinned placeholder), captured from this run
@@ -121,7 +121,7 @@ pipeline/
     config.py                # ModelSpec / QuantSpec / DatasetSpec / RunConfig dataclasses
     models/
       registry.py            # mirrors paper's model table 1:1 (kept in sync manually)
-      loader.py               # load_model(spec, quant) — branches fp16/bnb-int8/bnb-nf4/
+      loader.py               # load_model(spec, quant) — branches bf16/bnb-int8/bnb-nf4/
                               #   gptq-awq-int4 (llm-compressor AWQ only, see "Open
                               #   assumptions" #1)/mock
       mock.py                # same interface as loader.py, deterministic synthetic outputs
@@ -203,8 +203,8 @@ installed):**
   crash for numbers that need to be trustworthy. (GPTQModel was evaluated but not used —
   see "Open assumptions" #1.)
 - `HF_HOME`/`HF_HUB_CACHE` pointed at large disk **outside** the git repo (weights run up
-  to ~141GB for Llama-3.3-70B fp16).
-- The one-time multi-GPU rental for the 70B fp16 pass reuses the same lockfile to avoid a
+  to ~141GB for Llama-3.3-70B bf16).
+- The one-time multi-GPU rental for the 70B bf16 pass reuses the same lockfile to avoid a
   third compatibility surface; its window must cover the complete pass (CDD multi-sample
   generation + logprob scoring), not generation alone.
 - Save `pip freeze` output as a committed reproducibility artifact per environment.
@@ -242,14 +242,14 @@ Mapped onto the paper's own step numbering (CLAUDE.md §7):
 
 | Step | What | Notes |
 |---|---|---|
-| (pre-step) | Env setup + pinned lockfile + known-answer check | e.g. Qwen2.5-7B fp16 pass@1 roughly matches its public HumanEval score — real-hardware sanity gate before trusting anything downstream |
+| (pre-step) | Env setup + pinned lockfile + known-answer check | e.g. Qwen2.5-7B bf16 pass@1 roughly matches its public HumanEval score — real-hardware sanity gate before trusting anything downstream |
 | 1-2 | Continuous scoring + detector scoring pipelines, at scale | Built/tested locally first (dry-run + smoke); CDD's multi-sample cost shares generations with step 1 via the cache |
 | 3 | Count LCB pre/post items (≥1,000 target each) | Qwen2.5's bound is frozen at its official 2024-09-19 release date; with day-level labels, use 2024-09-20 as the first post-cutoff day. Current release_v6 count at that boundary: pre 690 / post 365 (availability check, not an experiment result). Re-confirm after the Olmo3 corpus end date is fixed. |
 | 4 | Cutoff verification | Llama-3.1 is externally verified. The Qwen2.5 maintainer request returned no result by 2026-08-19, so the pre-specified release-date fallback now governs the primary labels; any later estimate is sensitivity-only. Olmo3 still requires direct corpus-metadata verification. |
 | 5 | TRACER residual contamination (+ Olmo3 corpus ground-truth search) | Confirm H100 disk can hold the Olmo3 pretraining corpus before assuming it fits — not yet verified. Parallelizable with step 4 |
 | 6 | Pilot: Qwen2.5-7B + Olmo3-7B, BNB-nf4 | **Check the CDD gate (≥0.7936) before trusting any Q1b pilot number** — if it fails, fall back to probability-based detectors only for the rest of the pilot |
 | 7 | Recompute power from pilot values | Pure computation, local or H100; decide final main-experiment n |
-| 8 | Full run, store all item-level raw data | H100 for 7B/32B; 70B fp16 needs the separate one-time multi-GPU rental (or the pre-specified int8-anchored fallback, reported as a limitation exactly as the paper already does) |
+| 8 | Full run, store all item-level raw data | H100 for 7B/32B; 70B bf16 needs the separate one-time multi-GPU rental (or the pre-specified int8-anchored fallback, reported as a limitation exactly as the paper already does) |
 | 9 | Analysis (Q1a/Q1b/Q2) | No GPU needed once `data/raw/` is synced back |
 
 ## Raw data schema + sync
@@ -343,7 +343,7 @@ runner) — the explicit go/no-go gate before spending H100 time.
    pilot-quantities report from purely synthetic data, with expected-signed results.
 3. `python pipeline/scripts/run_smoke_test.py` on this machine loads real Qwen2.5-7B nf4,
    completes without OOM/NaN, and produces output matching the mock's schema.
-4. On the H100: the known-answer check (real fp16 pass@1 vs. public score) passes before
+4. On the H100: the known-answer check (real bf16 pass@1 vs. public score) passes before
    any pilot data is trusted.
 5. `scripts/sync_from_h100.sh --dry-run` then a real sync round-trips a small test file
    correctly before the first real pilot sync.

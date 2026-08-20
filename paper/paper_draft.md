@@ -75,25 +75,13 @@ Put together, these two threads motivate a question that neither literature has 
 measurably disturbs memorized traces, and contamination detectors differ in how much they depend on those
 traces, does quantization differentially reshape what different contamination detectors see?**
 
-**Why the detector question matters on its own.** Contamination detectors are not only research
-instruments: perplexity, Min-k% Prob, and CDD are used in practice to certify that a given benchmark is
-uncontaminated for a given model. Those certifications are issued against full-precision checkpoints,
-while the models actually deployed and evaluated are typically quantized. If per-item detector scores
-shift measurably with precision, a clean bill of health issued at fp16 does not necessarily transfer to
-the int4 model that inherits it — a practical conclusion that holds regardless of how the accuracy
-question below turns out. Quantization is also not an arbitrary perturbation chosen to probe detector
-stability: it is the one transformation essentially every deployed model undergoes, and the unlearning
-results above indicate that it disturbs memorized traces through a specific mechanism — the bin structure
-of the quantization grid — rather than as generic noise. This makes it a mechanistically motivated test
-of detector validity rather than one selected for convenience.
+Contamination assessments made on full-precision checkpoints may not transfer to quantized deployments
+if detector scores shift with precision. Quantization is a common deployment transformation, and its grid
+structure can disturb memorized traces.
 
-This is the paper's primary contribution. A related but harder-to-power question — whether the
+A related but harder-to-power question — whether the
 *quantization-induced accuracy drop itself* differs between contaminated and clean benchmark conditions —
-is a natural motivating question but, as we show in §3.0 and §4.5, is statistically under-powered at
-benchmark-imposed sample sizes and is therefore treated as **secondary**. We are explicit about this
-distinction throughout: the paper's contribution claim rests on the primary question (Q1), and the
-secondary question (Q2) is reported with appropriately wide uncertainty rather than forced into
-statistical significance.
+is under-powered at benchmark-imposed sample sizes and is therefore **secondary** (§3.0, §4.5).
 
 **Contributions (stated as design commitments, to be confirmed or refuted by execution):**
 
@@ -105,9 +93,7 @@ statistical significance.
 3. A reusable item-level dataset — pass@1, partial credit, token log-probability, and three detector
    scores, crossed with quantization technique, precision, and model — intended to support future
    contamination-detection benchmarking work independent of this paper's own conclusions.
-4. A negative/boundary result, regardless of Q1's outcome: either evidence that CDD is inoperative at
-   32B scale (extending arXiv:2603.03203's threshold finding beyond its tested range) or evidence that
-   it is operative, both of which are currently unknown.
+4. Evidence on whether CDD is operative at 32B scale, which arXiv:2603.03203 did not test.
 
 ---
 
@@ -271,8 +257,7 @@ effect is **15.5 percentage points** even with infinite clean-condition data (§
 than any effect size the quantization-in-code literature (§2.7) would lead us to expect. Q1, in contrast,
 is answerable at the same 164-item ceiling: Q1b can detect a 0.051 AUC difference at n=164 with paired
 detector scores (detecting exactly 0.05 requires 170 items; §4.5.2), and Q1a — which does not depend on contamination labels at all — needs as few
-as 87–196 items depending on effect size (§4.5.1). **Q1a is therefore the result this design is guaranteed
-to be able to report; Q2 is best-effort.**
+as 87–196 items depending on effect size (§4.5.1). **Q1a is primary; Q2 is secondary.**
 
 ### 3.1 Q2 design: a 2×2 comparison
 
@@ -300,22 +285,20 @@ both conditions declining). Testing arXiv:2410.16454's "resurfacing" claim speci
 the quantized-contaminated cell against its own full-precision baseline (B vs. A) directly, not the
 interaction term, and we report both.
 
-### 3.1.1 The three outcomes of Q2 are not symmetric
+### 3.1.1 Interpretation of Q2
 
 The base-rate confound quantified in §4.5.3 produces a spurious interaction that is **always negative**
 (−1 to −3pp across plausible model assumptions) even when the true effect is exactly zero. This means:
 
 | Observed interaction | Relationship to the artifact | Evidentiary status |
 |---|---|---|
-| **Positive** | Opposite sign from the artifact | Conservative — hardest to explain away, most publishable as-is |
+| **Positive** | Opposite sign from the artifact | Less affected by this artifact |
 | **Negative** | Same sign as the artifact | Requires the mitigations in §4.5.3–§4.5.4 (log-odds scale, primary contrast restricted to LCB pre/post, difficulty-stratification check) before it can be trusted |
 | **Null** | — | Only interpretable with a pre-specified equivalence margin (§4.5.3); an unmargined null is "we couldn't tell," not "there is no effect" |
 
-Q2 is therefore not "any of three outcomes makes a paper" — only the positive branch is unconditionally
-safe. This is the second reason Q1 carries the paper's primary claim: **Q1's outcome does not depend on
-Q2's sign**, and is informative whether or not Q2 clears its bar.
+Q1 does not depend on Q2's sign or significance.
 
-### 3.2 Framing discipline
+### 3.2 Scope of claims
 
 The introduction's motivating claim ("some of the reported quantization accuracy drop is actually lost
 memorization") is the paper's *motivation*, tested indirectly and partially through Q2's sign and through
@@ -331,11 +314,11 @@ design cannot actually power.
 
 | Model | Size | Baseline precision | Role | Notes |
 |---|---|---|---|---|
-| Qwen2.5-32B-Instruct | 32.5B | fp16 | Primary | Dense, GQA+RoPE; no official QAT checkpoint exists, so naive-PTQ comparisons are uncontaminated by a QAT confound |
-| Qwen2.5-7B-Instruct | 7B | fp16 | Pilot workhorse + size axis | Cheap to run; used to secure item counts for the pilot and as a secondary "does the effect scale with model size" probe |
-| Llama-3.1-8B-Instruct | 8B | fp16 | Size axis + externally verified cutoff | The only main-analysis model whose training cutoff is already independently verified by LLMLagBench (arXiv:2511.12116): declared 2023-12, detected knowledge-drop changepoint 2023-03. We use the declared (later) date as the conservative contamination boundary; the detected/declared gap and its consequence for this arm's LCB pre-cutoff pool are discussed in §4.2. Family tie to arXiv:2505.20276's BNB-nf4 fragility prior, which was measured on Llama-3.1-**70B** — same family and data recipe, roughly 9× smaller, so a weak prior rather than a confirmed expectation (§6) |
-| Olmo3-7B-Instruct | 7B | fp16 | Ground-truth label validation + size axis | Fully open training data across all stages (pretraining and post-training), enabling direct measurement (rather than assumption) of the proxy-label error rate *e* in §4.5.2. Dense transformer, so no architecture confound is introduced. Joins the pilot (§4.7) |
-| Olmo3-32B-Instruct | 32B | fp16 | Ground-truth label validation + size axis | As above at the 32B scale, matching Qwen2.5-32B-Instruct's footprint |
+| Qwen2.5-32B-Instruct | 32.5B | bf16 | Primary | Dense, GQA+RoPE; no official QAT checkpoint exists, so naive-PTQ comparisons are uncontaminated by a QAT confound |
+| Qwen2.5-7B-Instruct | 7B | bf16 | Pilot workhorse + size axis | Cheap to run; used to secure item counts for the pilot and as a secondary "does the effect scale with model size" probe |
+| Llama-3.1-8B-Instruct | 8B | bf16 | Size axis + externally verified cutoff | The only main-analysis model whose training cutoff is already independently verified by LLMLagBench (arXiv:2511.12116): declared 2023-12, detected knowledge-drop changepoint 2023-03. We use the declared (later) date as the conservative contamination boundary; the detected/declared gap and its consequence for this arm's LCB pre-cutoff pool are discussed in §4.2. Family tie to arXiv:2505.20276's BNB-nf4 fragility prior, which was measured on Llama-3.1-**70B** — same family and data recipe, roughly 9× smaller, so a weak prior rather than a confirmed expectation (§6) |
+| Olmo3-7B-Instruct | 7B | bf16 | Ground-truth label validation + size axis | Fully open training data across all stages (pretraining and post-training), enabling direct measurement (rather than assumption) of the proxy-label error rate *e* in §4.5.2. Dense transformer, so no architecture confound is introduced. Joins the pilot (§4.7) |
+| Olmo3.1-32B-Instruct | 32B | bf16 | Ground-truth label validation + size axis | Official 32B final Instruct release (`allenai/Olmo-3.1-32B-Instruct`), replacing the unavailable Olmo3-32B-Instruct name in the original design and matching Qwen2.5-32B-Instruct's footprint |
 
 All five arms use the instruction-tuned (\*-Instruct) releases: code-generation pass@1 under
 instruction prompts is the measured quantity, the illustrative base rates in §4.5.3 are
@@ -356,22 +339,22 @@ transformers, so this column would carry no information. Two axes do vary delibe
 **size**, and **training-corpus transparency**. The latter is introduced specifically to serve §4.5.2 —
 Olmo3 releases its pretraining corpus, so contamination labels for its arm can be measured against the
 training data directly instead of inferred from a release-date proxy. All within-model comparisons use the
-model's own full-precision baseline, and all five models share the same baseline precision (fp16), so no
+model's own full-precision baseline, and all five models share the same baseline precision (bf16), so no
 cross-model baseline-precision issue arises.
 
 **Compute footprint.** The available hardware is a single H100 (80 GB), with a single H200 (141 GB)
 obtainable on request. Weight footprints, before KV cache and activations:
 
-| Model | fp16 | int8 | int4 (nf4) | Fits a single device at fp16? |
+| Model | bf16 | int8 | int4 (nf4) | Fits a single device at bf16? |
 |---|---|---|---|---|
 | Qwen2.5-7B / Olmo3-7B / Llama-3.1-8B | ~14–16 GB | ~7–8 GB | ~4–5 GB | Yes (H100) |
-| Qwen2.5-32B / Olmo3-32B | ~64–65 GB | ~32 GB | ~18 GB | Yes, tightly (H100, ~15 GB left for KV cache); comfortably on the H200 |
+| Qwen2.5-32B / Olmo3.1-32B | ~64–65 GB | ~32 GB | ~18 GB | Yes, tightly (H100, ~15 GB left for KV cache); comfortably on the H200 |
 
-Every arm therefore runs its complete quantization ladder — fp16 baseline included — on a single
+Every arm therefore runs its complete quantization ladder — bf16 baseline included — on a single
 available device. No arm requires a baseline at a different precision from any other, which keeps
-Q1a's fp16-anchored within-model contrast directly comparable across all five models. Models above
+Q1a's bf16-anchored within-model contrast directly comparable across all five models. Models above
 32.5B are excluded from the design as a hard compute constraint (a single device cannot hold a 70B-class
-fp16 baseline), and this scale ceiling is recorded as a scope limitation in §8.
+bf16 baseline), and this scale ceiling is recorded as a scope limitation in §8.
 
 ### 4.2 Data: contamination axis
 
@@ -397,7 +380,7 @@ remain valid under the weakest evidence rather than under the most optimistic re
 
 | Arm | Cutoff evidence | Evidence tier | Conservative exposure bound |
 |---|---|---|---|
-| Olmo3-7B / Olmo3-32B | Open pretraining corpus's own document-date metadata | Corpus metadata (strongest) | Corpus end date (verified in §5, steps 3–4) |
+| Olmo3-7B / Olmo3.1-32B | Open pretraining corpus's own document-date metadata | Corpus metadata (strongest) | Corpus end date (verified in §5, steps 3–4) |
 | Llama-3.1-8B | Declared 2023-12; externally verified by LLMLagBench (detected drop 2023-03) | Verified declaration | 2023-12 (declared) |
 | Qwen2.5-7B / Qwen2.5-32B | No unambiguous official declaration; maintainer evaluation requested, with no result available by 2026-08-19 | Release-date bound (weakest) | 2024-09-19 ([official release announcement](https://qwenlm.github.io/blog/qwen2.5/)); at day-level resolution, LCB-post eligibility begins 2024-09-20 |
 
@@ -448,7 +431,7 @@ effect size (§4.5.3) regardless of how much clean-condition data is collected.
 
 ### 4.3 Quantization axis
 
-fp16 / bf16 (baseline) → **BNB int8** → **BNB int4-nf4** → **GPTQ-int4 or AWQ-int4**
+**bf16 baseline** → **BNB int8** → **BNB int4-nf4** → **GPTQ-int4 or AWQ-int4**
 
 We do not include a double-quantization condition: double quantization affects memory footprint but not
 accuracy at a level distinguishable from measurement noise, so it carries no information as an
@@ -537,9 +520,7 @@ roughly as ΔAUC_observed ≈ (1 − 2e) × ΔAUC_true:
 
 At e=20%, Q1b's item requirement rises to Q2's level (≈542); Q1b's power advantage over Q2 is therefore
 conditional on label quality, which is why TRACER's residual-contamination measurement (§5, step 5) is a
-prerequisite for Q1b specifically, not merely a nice-to-have for Q2. **Q1a is immune to this problem**,
-since it never uses a contamination label — only within-item, cross-precision score comparisons. This is
-the second reason Q1a, not Q1b, is the result this design is guaranteed to be able to report.
+prerequisite for Q1b. Q1a does not use a contamination label and remains interpretable under label noise.
 
 **The Olmo3 arm makes *e* measurable rather than assumed.** For every other model, *e* is unobservable:
 the training corpora are closed, so the table above can only be read as a sensitivity analysis. Olmo3
@@ -593,7 +574,7 @@ prompt and decoding strategy is used for both precisions, so more is shared betw
 difficulty alone — and could plausibly reach 0.6–0.9, which would bring the requirement down to ≈79–314.
 This is unverified and must be measured in the pilot (§4.7), not assumed in the plan.
 
-**The base-rate confound.** HumanEval (fp16 pass@1 ≈ 0.85) and LiveCodeBench-post (≈0.35) have very
+**The base-rate confound.** HumanEval (bf16 pass@1 ≈ 0.85) and LiveCodeBench-post (≈0.35) have very
 different baseline accuracies. These two figures are illustrative values for a Qwen-class instruction-tuned
 model; the actual base rates differ by model — Olmo3's in particular should not be assumed to match
 Qwen2.5's — and are measured per model in the pilot (§4.7, item d). The argument below does not depend on
@@ -658,11 +639,11 @@ models — and declaring all of them at α=0.05 would make some spuriously signi
 near-certain. We therefore pre-specify a small **confirmatory family** and demote everything else to
 exploratory status:
 
-- **C1–C3 (Q1a):** the paired fp16 → BNB-nf4 detector-score shift on the LCB conditions, one test per
+- **C1–C3 (Q1a):** the paired bf16 → BNB-nf4 detector-score shift on the LCB conditions, one test per
   detector (perplexity, Min-k% Prob, CDD) — the largest-expected-effect arm (§4.3) on the primary
   condition axis (§4.2).
 - **C4 (Q1b):** whether the detector-family AUC ranking (probability-based vs. peakedness-based)
-  differs between fp16 and BNB-nf4.
+  differs between bf16 and BNB-nf4.
 
 Holm correction is applied within this four-test family. Everything else — other quantization levels,
 other models' arms, the HumanEval/MBPP+ secondary conditions, Q2 in its entirety, and the boundary
@@ -890,28 +871,7 @@ high label noise in the proxy contamination labels (§4.5.2).
 
 ---
 
-## 7. Expected Contributions
-
-Restated from §1 with their evidentiary basis:
-
-1. **Primary (Q1):** the first measurement of quantization's effect on contamination-detection signal
-   families at 7B–32B scale — either confirming that probability-based detectors remain reliable while
-   peakedness-based detection is disrupted, or the reverse, or no differential effect. All three outcomes
-   are informative and reportable (§3.1.1's asymmetry argument applies to Q2, not Q1).
-2. **Secondary (Q2):** a bounded, log-odds-scale, base-rate-corrected estimate (or confidence interval, if
-   underpowered) of the quantization × contamination interaction in code-generation pass@1, explicitly
-   framed as associational.
-3. **Byproduct:** a released item-level dataset (pass@1, partial credit, log-probability, three detector
-   scores × 4 quantization levels × 5 models × 4+ benchmark conditions) intended to outlive this paper's
-   specific conclusions and support future contamination-detection benchmarking.
-4. **Boundary result:** direct evidence on whether CDD (or contamination detection generally) is operative
-   at 32B scale — a gap explicitly left open by arXiv:2603.03203 — regardless of which way Q1 comes
-   out.
-
 ## 8. Limitations
-
-Stated here upfront, in the spirit of a registered report, rather than deferred to a post-hoc discussion
-section:
 
 - No causal claims are possible without random assignment of contamination, which cannot be done on
   off-the-shelf pretrained models (§6).
