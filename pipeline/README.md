@@ -4,6 +4,10 @@ Data-collection pipeline for the quantization contamination-detection paper.
 See `../pipeline_build_plan.md` at the repo root for the full design and
 rationale; this file is just setup + run instructions.
 
+Olmo training-data string-match ground-truth work is documented separately in
+[`OLMO_GROUND_TRUTH.md`](OLMO_GROUND_TRUTH.md). It is CPU-only and does not turn
+partial streaming scans into clean labels.
+
 ## What's built vs. what's deferred
 
 The following GPU-free components are built and tested: dataset
