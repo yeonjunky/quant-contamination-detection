@@ -167,7 +167,10 @@ def main() -> None:
     # Tagged by quant_label, not a shared "raw" dir — otherwise a later run
     # (e.g. comparing two --checkpoint-path variants back to back) silently
     # overwrites the previous run's output on disk before it can be compared.
-    writer = RawDataWriter(_DATA_DIR / "raw" / quant_label)
+    writer = RawDataWriter(
+        _DATA_DIR / "raw" / quant_label,
+        file_prefix=model_spec.name,
+    )
     writer.write_items(items)
 
     all_finite = True
@@ -261,7 +264,9 @@ def main() -> None:
         "detector_scores_plausible": detector_scores_ok,
         "peak_memory_in_band": PLAUSIBLE_PEAK_GB[quant][0] <= peak_gb <= PLAUSIBLE_PEAK_GB[quant][1],
         "writer_output_matches_mock_schema": (
-            (_DATA_DIR / "raw" / quant_label / "items.parquet").exists() and "generations" in written and "detector_scores" in written
+            (_DATA_DIR / "raw" / quant_label / f"{model_spec.name}_items.parquet").exists()
+            and "generations" in written
+            and "detector_scores" in written
         ),
         "pip_freeze_saved": freeze_path.exists(),
     }

@@ -43,14 +43,15 @@ def _item_to_row(item: Item) -> dict:
 
 
 class RawDataWriter:
-    def __init__(self, output_dir: str | Path) -> None:
+    def __init__(self, output_dir: str | Path, *, file_prefix: str = "") -> None:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.file_prefix = f"{file_prefix}_" if file_prefix else ""
         self._generation_rows: list[dict] = []
         self._detector_score_rows: list[dict] = []
 
     def write_items(self, items: list[Item]) -> Path:
-        path = self.output_dir / "items.parquet"
+        path = self.output_dir / f"{self.file_prefix}items.parquet"
         pd.DataFrame([_item_to_row(item) for item in items]).to_parquet(path, index=False)
         return path
 
@@ -130,11 +131,11 @@ class RawDataWriter:
         runs, a known scaling concern flagged here for the full main run)."""
         written = {}
         if self._generation_rows:
-            path = self.output_dir / "generations.parquet"
+            path = self.output_dir / f"{self.file_prefix}generations.parquet"
             pd.DataFrame(self._generation_rows).to_parquet(path, index=False)
             written["generations"] = path
         if self._detector_score_rows:
-            path = self.output_dir / "detector_scores.parquet"
+            path = self.output_dir / f"{self.file_prefix}detector_scores.parquet"
             pd.DataFrame(self._detector_score_rows).to_parquet(path, index=False)
             written["detector_scores"] = path
         return written

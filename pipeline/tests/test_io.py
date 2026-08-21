@@ -74,6 +74,25 @@ def test_flush_with_nothing_buffered_writes_nothing(tmp_path):
     assert writer.flush() == {}
 
 
+def test_file_prefix_is_applied_to_all_parquet_names(tmp_path):
+    writer = RawDataWriter(tmp_path, file_prefix="Qwen2.5-7B-Instruct")
+    items_path = writer.write_items(_items())
+    writer.add_generation(
+        model="Qwen2.5-7B-Instruct", quant="bnb_nf4", item_id="x",
+        sample_id=0, is_greedy=True, text="x", token_ids=[1],
+        token_logprobs=[-0.1],
+    )
+    writer.add_detector_score(
+        model="Qwen2.5-7B-Instruct", quant="bnb_nf4", item_id="x",
+        detector="cdd", score=0.0,
+    )
+    written = writer.flush()
+
+    assert items_path.name == "Qwen2.5-7B-Instruct_items.parquet"
+    assert written["generations"].name == "Qwen2.5-7B-Instruct_generations.parquet"
+    assert written["detector_scores"].name == "Qwen2.5-7B-Instruct_detector_scores.parquet"
+
+
 # --- manifest ------------------------------------------------------------
 
 
