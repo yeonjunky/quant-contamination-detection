@@ -84,10 +84,11 @@ This design synthesizes and supersedes `contamination_literature_review.md` and
   - **Olmo3-7B and Olmo3-32B added to the main analysis** (author decision). Rationale: they are the only
     arms whose contamination labels can be *measured* against a released pretraining corpus rather than
     inferred from a release-date proxy, which directly addresses the label-noise dependency that §4.5.2
-    identifies as a precondition for Q1b. This updates the design rule previously stated as "size is the
-    only remaining axis across models": architecture is still not an axis (all arms are dense
-    transformers), but **training-corpus transparency** now joins size as a deliberate second axis, adopted
-    to serve §4.5.2. Consequential edits: §2.4 (arXiv:2602.12413's Olmo3-corpus finding becomes a direct
+    identifies as a precondition for Q1b. Architecture is still not an axis (all arms are dense
+    transformers), and size remains the only model-comparison axis. **Training-corpus transparency** is
+    an operational selection property that enables model-local label validation for §4.5.2, not an
+    effect-modifying axis or basis for cross-model contrasts. Consequential edits: §2.4
+    (arXiv:2602.12413's Olmo3-corpus finding becomes a direct
     prior on one of our own arms rather than borrowed evidence), §4.2 (the post-cutoff boundary is set by
     the latest of five cutoffs, flagged as a risk to the ≥1,000-item target), §4.5.2, §4.5.3 (the 0.85/0.35
     base rates are marked as Qwen-class illustrations requiring per-model measurement), §4.7 (Olmo3-7B
@@ -336,3 +337,9 @@ Qwen2.5에 명확한 공식 cutoff 선언이 없어 공식 출시일을 보수�
 - Instruct 체크포인트의 가능한 노출 단계를 빠뜨리지 않도록 §5 5번의 TRACER 적용 범위를
   Olmo3 사전학습뿐 아니라 공개 post-training 코퍼스까지 포함하도록 명확히 했다.
 - 영문 정본과 한국어 미러를 동시에 반영하고 모델·설계 참조 CSV의 로스터와 셀 수를 동기화했다.
+
+### (l) 코퍼스 투명성의 분석상 지위 명확화 (2026-08-22)
+
+- 모델 간 비교 축은 크기뿐이라는 설계 규칙을 복원했다.
+- Olmo의 코퍼스 투명성은 Q1b 대리 라벨을 모델 로컬 ground truth에 대조할 수 있게 하는 운영상
+  선택 속성으로 한정했다. 이를 효과 조절 축이나 모델 간 대비로 해석하지 않는다.

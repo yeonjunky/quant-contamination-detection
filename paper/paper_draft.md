@@ -335,12 +335,12 @@ is deferred to future work; the format of the shipped checkpoints (llama.cpp q4_
 second inference stack, whose numerics differences would confound the very contrast of interest.
 
 Architecture is still not treated as a controlled axis: Qwen2.5, Llama-3.1, and Olmo3 are all dense
-transformers, so this column would carry no information. Two axes do vary deliberately across models:
-**size**, and **training-corpus transparency**. The latter is introduced specifically to serve §4.5.2 —
-Olmo3 releases its pretraining corpus, so contamination labels for its arm can be measured against the
-training data directly instead of inferred from a release-date proxy. All within-model comparisons use the
-model's own full-precision baseline, and all five models share the same baseline precision (bf16), so no
-cross-model baseline-precision issue arises.
+transformers, so this column would carry no information. **Size is the only model-comparison axis.**
+Training-corpus transparency is instead an operational model-selection property: Olmo3 releases its
+training corpora, allowing §4.5.2 to measure contamination labels for its arm directly rather than infer
+them from a release-date proxy. It is not treated as an effect-modifying axis or a basis for cross-model
+contrasts. All within-model comparisons use the model's own full-precision baseline, and all five models
+share the same baseline precision (bf16), so no cross-model baseline-precision issue arises.
 
 **Compute footprint.** The available hardware is a single H100 (80 GB), with a single H200 (141 GB)
 obtainable on request. Weight footprints, before KV cache and activations:

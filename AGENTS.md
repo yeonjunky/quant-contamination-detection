@@ -192,7 +192,8 @@
    멀티모달 3종 교란에 더해, q4_0 포맷이 제2 추론 스택을 요구해 그 numerics 차이가 QAT-vs-PTQ
    대비 자체를 교란한다. QAT 비교는 future work. `paper/revision_provenance.md` 참조.)
 8. **아키텍처는 통제 축이 아니다.** Qwen2.5와 Llama-3.1은 둘 다 dense GQA+RoPE라 그 열은 아무
-   정보도 담지 않는다. 모델 간 남는 설계 축은 **크기와 학습 코퍼스 투명성**이다. (2026-08-05: 70B 컴퓨트 제약으로
+   정보도 담지 않는다. 모델 간 남는 축은 **크기뿐**이다. 코퍼스 투명성은 Olmo arm의 오염
+   ground truth 구축을 가능하게 하는 운영상 선택 속성이지 모델 간 비교 축이 아니다. (2026-08-05: 70B 컴퓨트 제약으로
    Llama-3.3-70B가 제거되고 Llama-3.1-8B-Instruct로 대체됨 — LLMLagBench 리더보드에서 cutoff가
    기검증된 유일한 주 분석 모델. 최종 로스터: Qwen2.5-7B/32B, Olmo3-7B/32B, Llama-3.1-8B —
    전부 **-Instruct 변형** 확정 (2026-08-05, provenance (f)). 이에 따라 Olmo3 ground-truth
