@@ -11,7 +11,7 @@ import dataclasses
 import re
 import unicodedata
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from qcd.data.schema import Item
@@ -77,6 +77,8 @@ def scan_corpus(
     corpus_name: str,
     stage: str,
     config: MatchConfig = MatchConfig(),
+    progress_every: int | None = None,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Scan an iterable once and return one best-evidence row per item.
 
@@ -86,27 +88,38 @@ def scan_corpus(
     a full multi-terabyte pretraining pass remains an operationally expensive
     fallback rather than a substitute for a public/persistent corpus index.
     """
-    item_list = list(items)
-    queries: dict[str, dict[str, Any]] = {}
-    inverted: dict[tuple[str, ...], set[str]] = defaultdict(set)
-    for item in item_list:
+    output_items: list[tuple[tuple[str, str], str, str]] = []
+    queries: dict[tuple[str, str], dict[str, Any]] = {}
+    inverted: dict[tuple[str, ...], set[tuple[str, str]]] = defaultdict(set)
+    for item in items:
+        query_key = (item.dataset.value, item.item_id)
         normalized = normalize_text(item.prompt)
         grams = _ngrams(tokenize(item.prompt), config.ngram_size)
-        queries[item.item_id] = {"item": item, "normalized": normalized, "grams": grams}
+        output_items.append((query_key, item.item_id, item.dataset.value))
+        queries[query_key] = {"normalized": normalized, "grams": grams}
         for gram in grams:
-            inverted[gram].add(item.item_id)
+            inverted[gram].add(query_key)
+    # LiveCodeBench items carry very large private-test metadata.  Retain only
+    # the lightweight query/output fields above during a multi-million-row
+    # corpus scan.
+    del items
+    short_queries = tuple(
+        (query_key, query["normalized"])
+        for query_key, query in queries.items()
+        if not query["grams"]
+    )
 
-    best: dict[str, dict[str, Any]] = {}
+    best: dict[tuple[str, str], dict[str, Any]] = {}
     docs_scanned = 0
     for doc_index, document in enumerate(documents):
         docs_scanned += 1
         text = str(document.get("text", ""))
         normalized_doc = normalize_text(text)
         doc_grams = _ngrams(tokenize(text), config.ngram_size)
-        counts: dict[str, int] = defaultdict(int)
+        counts: dict[tuple[str, str], int] = defaultdict(int)
         for gram in doc_grams:
-            for item_id in inverted.get(gram, ()):
-                counts[item_id] += 1
+            for query_key in inverted.get(gram, ()):
+                counts[query_key] += 1
 
         candidates = set(counts)
         # Short prompts have no n-grams at the configured width but still get
@@ -116,34 +129,36 @@ def scan_corpus(
         # direct fallback; checking every benchmark prompt in every corpus
         # document would make a billion-document scan infeasible.
         candidates.update(
-            item_id
-            for item_id, query in queries.items()
-            if not query["grams"] and query["normalized"] in normalized_doc
+            query_key
+            for query_key, normalized_query in short_queries
+            if normalized_query in normalized_doc
         )
-        for item_id in candidates:
-            query = queries[item_id]
+        for query_key in candidates:
+            query = queries[query_key]
             total = len(query["grams"])
-            coverage = counts[item_id] / total if total else 0.0
+            coverage = counts[query_key] / total if total else 0.0
             exact = bool(query["normalized"] and query["normalized"] in normalized_doc)
-            previous = best.get(item_id)
+            previous = best.get(query_key)
             if previous is None or (exact, coverage) > (previous["normalized_verbatim"], previous["ngram_coverage"]):
-                best[item_id] = {
+                best[query_key] = {
                     "document_id": str(document.get("id", doc_index)),
                     "normalized_verbatim": exact,
                     "ngram_coverage": coverage,
-                    "matched_ngrams": counts[item_id],
+                    "matched_ngrams": counts[query_key],
                     "query_ngrams": total,
                 }
+        if progress_every and docs_scanned % progress_every == 0 and progress_callback:
+            progress_callback(docs_scanned)
 
     rows: list[dict[str, Any]] = []
-    for item in item_list:
-        evidence = best.get(item.item_id, {})
+    for query_key, item_id, dataset in output_items:
+        evidence = best.get(query_key, {})
         coverage = float(evidence.get("ngram_coverage", 0.0))
         exact = bool(evidence.get("normalized_verbatim", False))
         rows.append(
             {
-                "item_id": item.item_id,
-                "dataset": item.dataset.value,
+                "item_id": item_id,
+                "dataset": dataset,
                 "corpus": corpus_name,
                 "stage": stage,
                 "method_family": "instance_string",
@@ -154,7 +169,7 @@ def scan_corpus(
                 "string_match_label": exact or coverage >= config.ngram_coverage_threshold,
                 "document_id": evidence.get("document_id"),
                 "matched_ngrams": int(evidence.get("matched_ngrams", 0)),
-                "query_ngrams": int(evidence.get("query_ngrams", len(queries[item.item_id]["grams"]))),
+                "query_ngrams": int(evidence.get("query_ngrams", len(queries[query_key]["grams"]))),
                 "documents_scanned": docs_scanned,
             }
         )

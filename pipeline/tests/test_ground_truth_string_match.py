@@ -47,3 +47,36 @@ def test_extract_text_flattens_sft_dpo_and_rl_nested_values():
         "number": 3,
     }
     assert extract_text(row).splitlines() == ["prompt", "answer", "truth"]
+
+
+def test_same_item_id_in_different_datasets_does_not_collide():
+    items = [
+        Item(item_id="shared", dataset=Dataset.HUMANEVAL, prompt="alpha beta gamma delta"),
+        Item(item_id="shared", dataset=Dataset.MBPPPLUS, prompt="one two three four"),
+    ]
+    rows = scan_corpus(
+        items,
+        [{"id": "doc", "text": "alpha beta gamma delta"}],
+        corpus_name="synthetic",
+        stage="sft",
+        config=MatchConfig(2, 0.8),
+    )
+
+    assert [(row["dataset"], row["string_match_label"]) for row in rows] == [
+        ("humaneval", True),
+        ("mbppplus", False),
+    ]
+
+
+def test_progress_callback_reports_completed_intervals():
+    progress = []
+    scan_corpus(
+        [_item("x", "alpha beta gamma")],
+        ({"text": "unrelated"} for _ in range(5)),
+        corpus_name="synthetic",
+        stage="sft",
+        config=MatchConfig(2, 0.8),
+        progress_every=2,
+        progress_callback=progress.append,
+    )
+    assert progress == [2, 4]

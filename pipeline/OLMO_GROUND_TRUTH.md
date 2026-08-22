@@ -42,12 +42,16 @@ only a wiring check and must never be interpreted as a negative corpus label.
 
 ```bash
 python scripts/search_olmo_corpus.py \
-  --benchmark humaneval \
+  --benchmark all \
   --hf-repo allenai/Dolci-Instruct-SFT \
   --stage sft \
   --max-documents 1000 \
   --output ../data/olmo_ground_truth/sft_humaneval_smoke.jsonl
 ```
+
+`--benchmark all` combines HumanEval, MBPP+, LCB-pre, and LCB-post before
+building the benchmark-side index, so each training corpus is transferred and
+scanned once rather than four times.
 
 For deterministic local validation, `--jsonl PATH` accepts JSONL rows and
 recursively extracts string fields from plain-text or nested chat schemas. The

@@ -17,6 +17,7 @@ transformers
 # MBPP+ subset sizes, so this is not a "just take latest" pin.
 evalplus==0.3.1
 datasets
+zstandard
 huggingface_hub
 # CPU-only, no GPU implication. Used only by analysis/mixed_effects.py's
 # crossed-random-effects logistic GLMM (paper §4.5.5) — see that module's
