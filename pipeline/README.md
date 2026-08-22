@@ -131,7 +131,7 @@ peak memory in the ~15-16GB band documented above instead:
 - [x] quantized load fits in a plausible memory band (quant-dependent — see `PLAUSIBLE_PEAK_GB` and the AWQ memory finding above) — bnb-nf4 peak 6.69GB, no OOM on the 80GB card
 - [x] teacher-forced logprob scoring returns finite values (no NaN/-inf)
 - [x] repeated T=0.8 samples for the same item actually differ
-- [x] the real sandboxed code-execution path runs generated code correctly (runs — see the README's "What's built" note on `partial_pass_rate` currently coming back 0.0 for HumanEval+/MBPP+ for an unrelated, separate reason: markdown-fenced chat output, not a sandbox execution failure)
+- [x] the real sandboxed code-execution path runs generated code correctly; after fenced-code extraction was fixed, 4/5 HumanEval smoke items scored 1.0 and the remaining item retained a genuine near-zero model-error score
 - [x] CDD / perplexity / Min-k% detectors run end-to-end without dtype/shape errors and produce plausible values
 - [x] the real raw-data writer's output matches the mock's schema exactly
 - [x] per-item wall-clock is sane — model load 10.7s (weights cached), ~10-19s/item

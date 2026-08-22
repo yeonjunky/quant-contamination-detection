@@ -2,12 +2,10 @@
 
 > **DESIGN CHANGE 2026-08-05 — this plan predates a model-roster change.** Llama-3.3-70B and
 > Gemma-4-31B-it were removed from the design entirely; Llama-3.1-8B-Instruct was added
-> (see `paper/revision_provenance.md`, 2026-08-05 entry). Consequences for this document:
-> every 70B bf16 / multi-GPU-rental reference below is obsolete (no arm exceeds 32.5B; the
-> whole ladder fits a single H100/H200), the HF cache sizing note shrinks accordingly, and
-> `pilot_report.py` must compute **five** pilot quantities (a)–(e) per paper §4.7 (the
-> "(a)-(d)" below is stale). The registry in `pipeline/src/qcd/models/registry.py` is the
-> authoritative roster.
+> (see `paper/revision_provenance.md`, 2026-08-05 entry). This document has been updated to
+> remove the resulting 70B/multi-GPU execution path. No arm exceeds 32.5B, the whole ladder
+> fits a single H100/H200, and `pilot_report.py` computes the five pilot quantities (a)–(e)
+> from paper §4.7. The registry in `pipeline/src/qcd/models/registry.py` is the authoritative roster.
 
 > **BUILD STATUS 2026-08-14 — the mock-verifiable scope of this plan is built.** Every module
 > below reachable without a CUDA GPU exists and is tested (data loaders, generation, scoring
@@ -59,18 +57,18 @@
 > silently upgraded torch/transformers/numpy mid-session (re-verified the bnb path still passes
 > under the new versions). Full detail: `pipeline_implementation_log.md`'s 2026-08-15 entry, §7.
 
-## Context
+## Historical context at initial planning
 
-The repo currently holds only the paper draft, review history, and reference CSVs —
-no code, no scripts, no environment file, nothing executable exists yet (confirmed:
+At the time this plan was first written, the repo held only the paper draft, review history, and reference CSVs —
+no code, scripts, or environment file existed then (confirmed at that time:
 `git status` clean, no `.py`/`.ipynb`/`requirements.txt` anywhere, no venv/conda on
-this machine). The paper's own committed execution order (CLAUDE.md §7 / paper draft
+that machine). The paper's own committed execution order (AGENTS.md §7 / paper draft
 §5) has 9 steps, but nothing has been built to run any of them. The user wants a plan
 to actually start collecting data, split across two machines: **spike tests here**
 (RTX 4060 laptop GPU, 8GB VRAM) and **the actual pilot/main experiment on an
 already-provisioned H100 SSH box**. This plan is the engineering scaffolding needed to
 execute the paper's existing 9-step plan — it does not change the experimental design,
-which is fixed by CLAUDE.md §5's invariants (log-odds scale for Q2, no HumanEval/MBPP+
+which is fixed by AGENTS.md §5's invariants (log-odds scale for Q2, no HumanEval/MBPP+
 pooling, Gemma excluded from main analysis, observational not causal, etc.).
 
 Decisions already confirmed with the user:
@@ -81,17 +79,15 @@ Decisions already confirmed with the user:
   zero GPU/downloads), then a real small-scale smoke test if it fits (Qwen2.5-7B in
   BNB-nf4, ~4-5GB, should fit in 8GB) to catch real quantization/loading issues the mock
   can't.
-- Framework: Hugging Face `transformers` + `bitsandbytes` (int8/nf4) + GPTQ/AWQ tooling
+- Framework: Hugging Face `transformers` + `bitsandbytes` (int8/nf4) + llm-compressor AWQ
   — chosen because it maps 1:1 onto the paper's own quantization-ladder terminology.
 
-**Important correction found during planning:** the exact libraries the user named for
-the GPTQ/AWQ arms — `AutoGPTQ` and `AutoAWQ` — are both archived/unmaintained
+**Important correction found during planning:** the libraries initially considered for
+the calibration-based arm — `AutoGPTQ` and `AutoAWQ` — are both archived/unmaintained
 (AutoGPTQ archived April 2025; AutoAWQ archived ~May 2025; HF `transformers` dropped
 AutoGPTQ backend support). The maintained replacements that produce the same output
-*formats* (still called GPTQ-int4 / AWQ-int4, matching the paper's terminology exactly)
-are **GPTQModel** (GPTQ) and **llm-compressor** (AWQ). This plan uses those instead of
-the archived libraries — flagging it explicitly since it's a deviation from what was
-literally requested, even though it doesn't touch the paper's argument structure at all.
+formats are **GPTQModel** (GPTQ) and **llm-compressor** (AWQ). The implemented and frozen
+experimental condition uses llm-compressor AWQ uniformly; GPTQ is follow-up work only.
 
 ## Repo layout
 
@@ -117,13 +113,13 @@ pipeline/
   requirements-h100.txt      # full pinned GPU stack
   src/qcd/
     constants.py             # single source for CDD_GATE_AUC=0.7936, α, power target —
-                              #   imported everywhere, never re-typed (CLAUDE.md §3.3 discipline)
+                              #   imported everywhere, never re-typed (AGENTS.md §3.3 discipline)
     config.py                # ModelSpec / QuantSpec / DatasetSpec / RunConfig dataclasses
     models/
       registry.py            # mirrors paper's model table 1:1 (kept in sync manually)
       loader.py               # load_model(spec, quant) — branches bf16/bnb-int8/bnb-nf4/
-                              #   gptq-awq-int4 (llm-compressor AWQ only, see "Open
-                              #   assumptions" #1)/mock
+                              #   gptq-awq-int4 compatibility enum (AWQ only, see
+                              #   engineering decision #1)/mock
       mock.py                # same interface as loader.py, deterministic synthetic outputs
     data/
       schema.py               # canonical Item dataclass
@@ -144,9 +140,9 @@ pipeline/
       mink_prob.py                # needs full per-token logprob array, not a summary scalar
       threshold.py                 # ξ handling; guard against re-selecting ξ on eval set
     analysis/
-      logodds.py                   # the named invariant (CLAUDE.md §5 point 3)
+      logodds.py                   # the named invariant (AGENTS.md §5 point 3)
       auc.py                        # paired AUC + Hanley-McNeil SE, numpy-only (matches the
-                                     #   "scipy 없음" convention already used for CLAUDE.md's numbers)
+                                     #   "scipy 없음" convention already used for AGENTS.md's numbers)
       aggregation.py                 # HARD-FAILS if HumanEval+MBPP+ combined into one cell
       power.py                        # power recompute from pilot values
       mixed_effects.py                 # correct ~ precision*contaminated + (1|item) + (1|model)
@@ -202,11 +198,8 @@ installed):**
   llm-compressor are CUDA-runtime sensitive, and a silent version mismatch is worse than a
   crash for numbers that need to be trustworthy. (GPTQModel was evaluated but not used —
   see "Open assumptions" #1.)
-- `HF_HOME`/`HF_HUB_CACHE` pointed at large disk **outside** the git repo (weights run up
-  to ~141GB for Llama-3.3-70B bf16).
-- The one-time multi-GPU rental for the 70B bf16 pass reuses the same lockfile to avoid a
-  third compatibility surface; its window must cover the complete pass (CDD multi-sample
-  generation + logprob scoring), not generation alone.
+- `HF_HOME`/`HF_HUB_CACHE` pointed at large disk **outside** the git repo. The largest
+  retained arm is 32.5B and its bf16 baseline fits one H100, tightly.
 - Save `pip freeze` output as a committed reproducibility artifact per environment.
 
 ## Local spike tests (this machine)
@@ -238,7 +231,7 @@ cross-check against the H100 lockfile later.
 
 ## H100 execution order
 
-Mapped onto the paper's own step numbering (CLAUDE.md §7):
+Mapped onto the paper's own step numbering (AGENTS.md §7):
 
 | Step | What | Notes |
 |---|---|---|
@@ -246,10 +239,10 @@ Mapped onto the paper's own step numbering (CLAUDE.md §7):
 | 1-2 | Continuous scoring + detector scoring pipelines, at scale | Built/tested locally first (dry-run + smoke); CDD's multi-sample cost shares generations with step 1 via the cache |
 | 3 | Count LCB pre/post items (≥1,000 target each) | The common boundary is 2025-01-01: Olmo 3's official model cards state a Dec. 2024 cutoff, later than Qwen2.5's 2024-09-19 release bound. Current release_v6 count: pre 873 / post 182 (availability check, not an experiment result). |
 | 4 | Cutoff verification | Llama-3.1 is externally verified; Qwen2.5 uses its official release date; both Olmo Instruct model cards state Dec. 2024. Month-level conservatism makes 2025-01-01 the first eligible common post-cutoff day. Direct Olmo corpus search remains the ground-truth-labeling step. |
-| 5 | TRACER residual contamination (+ Olmo3 corpus ground-truth search) | Confirm H100 disk can hold the Olmo3 pretraining corpus before assuming it fits — not yet verified. Parallelizable with step 4 |
+| 5 | TRACER residual contamination (+ Olmo3 corpus ground-truth search) | Storage was verified before the exhaustive scan: the pinned 7B pretraining manifest is 3.23 TB compressed and the project filesystem had about 290 TB free. Search pretraining and post-training stages separately. |
 | 6 | Pilot: Qwen2.5-7B + Olmo3-7B, BNB-nf4 | **Check the CDD gate (≥0.7936) before trusting any Q1b pilot number** — if it fails, fall back to probability-based detectors only for the rest of the pilot |
 | 7 | Recompute power from pilot values | Pure computation, local or H100; decide final main-experiment n |
-| 8 | Full run, store all item-level raw data | H100 for 7B/32B; 70B bf16 needs the separate one-time multi-GPU rental (or the pre-specified int8-anchored fallback, reported as a limitation exactly as the paper already does) |
+| 8 | Full run, store all item-level raw data | All retained 7B/8B/32B bf16 baselines and quantized arms run on one H100; record actual 32B memory headroom before the main run. |
 | 9 | Analysis (Q1a/Q1b/Q2) | No GPU needed once `data/raw/` is synced back |
 
 ## Raw data schema + sync
@@ -289,7 +282,7 @@ from memory):
 The real GPU smoke test stays a manual checklist in `pipeline/README.md` (no GPU CI
 runner) — the explicit go/no-go gate before spending H100 time.
 
-## Open assumptions to confirm before/during implementation
+## Engineering decisions and remaining assumptions
 
 1. **GPTQModel / llm-compressor substitution** for the archived AutoGPTQ/AutoAWQ —
    confirm before locking `requirements-h100.txt`.
@@ -304,13 +297,11 @@ runner) — the explicit go/no-go gate before spending H100 time.
    llm-compressor has no per-architecture registry at all — its `AWQModifier`/
    `QuantizationModifier` recipe targets any HF-loadable causal LM's `nn.Linear` layers by
    name pattern, and was confirmed empirically to work on Olmo3-7B-Instruct with no
-   workaround (`pipeline_implementation_log.md`'s 2026-08-15 entry, §7). Paper §4.3 treats
-   "GPTQ-int4 or AWQ-int4" as interchangeable representatives of one calibration-based
-   4-bit condition, not a per-model design axis, so using AWQ uniformly is more consistent
-   with that framing than a per-model GPTQ/AWQ split would have been, not less.
+   workaround (`pipeline_implementation_log.md`'s 2026-08-15 entry, §7). Paper §4.3 now
+   freezes AWQ-int4 as the uniform calibration-based 4-bit condition, not a per-model design axis.
 
-   `models/loader.py`'s `Quant.GPTQ_AWQ_INT4` — the paper's own combined name for this
-   quantization rung — is therefore backed by AWQ only. GPTQ itself was never attempted, not
+   `models/loader.py` retains the compatibility enum name `Quant.GPTQ_AWQ_INT4`, but the
+   paper and run manifest identify this condition as AWQ-int4. GPTQ itself was never attempted, not
    ruled out on technical merit for the non-Olmo3 arms.
 
    **Worth trying later:** GPTQModel on the non-Olmo3 arms (Qwen2.5, Llama-3.1) specifically,
@@ -325,14 +316,15 @@ runner) — the explicit go/no-go gate before spending H100 time.
    against arXiv:2603.03203's replication when `detectors/cdd.py` is written — not guessed.
 3. **evalplus version** yielding exactly 164/378 items must be pinned and confirmed — different
    releases have shipped different MBPP+ subset sizes historically.
-4. **LiveCodeBench snapshot pinning** — assumed the HF dataset supports a `release_version`
-   pin; not yet directly inspected.
+4. **LiveCodeBench snapshot pinning** — resolved: the loader pins `release_v6`; the common
+   2025-01-01 boundary was counted as pre 873 / post 182 / total 1,055.
 5. **Torch/bitsandbytes CUDA tier** (12.x vs 13.0) — re-check at actual install time.
-6. **Olmo3 corpus storage** for TRACER's ground-truth search — not yet verified to fit on
-   the H100 box's disk.
-7. **No confirmed public code release found** for TRACER (arXiv:2605.24079) or LLMLagBench
-   (arXiv:2511.12116) in a quick check — may need reimplementation from the papers'
-   methodology sections; worth a dedicated check before steps 4/5 begin.
+6. **Olmo3 corpus storage** — resolved for the current environment: the pinned 7B mix is
+   3.23 TB compressed versus about 290 TB free on the project filesystem. Streaming remains
+   resumable so the corpus need not be materialized twice.
+7. **TRACER implementation availability** — no public executable release was found; the
+   paper-specified routing, prompts, embedding adapter, schema, and orchestration have been
+   reimplemented locally. Fidelity validation against Olmo evidence remains required.
 
 ## Verification (end-to-end)
 

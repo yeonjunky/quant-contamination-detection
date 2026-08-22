@@ -1,4 +1,4 @@
-# CLAUDE.md — 프로젝트 지침
+# AGENTS.md — 프로젝트 지침
 
 ## 1. 이 프로젝트가 무엇인가
 
@@ -24,18 +24,18 @@
 
 ## 2. 파일 지도 — 무엇이 정본인가
 
-디렉토리는 지위(정본/사료/폐기/참고)별로 나뉘어 있다. `CLAUDE.md`는 항상 루트에 둔다.
+디렉토리는 지위(정본/사료/폐기/참고)별로 나뉘어 있다. `AGENTS.md`는 항상 루트에 둔다.
 
 | 파일 | 지위 | 취급 |
 |---|---|---|
 | `paper/paper_draft.md` | **영어 정본 (canonical)** | 모든 수정은 여기서 시작 |
 | `paper/paper_draft_ko.md` | 한국어 미러 | 영어 수정 시 **반드시 동시 반영**. 충돌 시 영어 우선 |
 | `paper/revision_provenance.md` | 감사 추적 | 논문 본문에서 분리한 개정 이력. 투고 원고에 포함 안 함 |
-| `review/review_findings*.md`, `review/review_response.md` | 검토 기록 (1~5차) | 읽기 전용 사료. 수정하지 말 것 |
+| `review/review_findings*.md`, `review/review_response.md` | 검토 기록 (1~5·7·8차) | 읽기 전용 사료. 수정하지 말 것 |
 | `superseded/topic3_experiment_plan.md`, `superseded/contamination_literature_review.md` | **SUPERSEDED** | 정본에 통합·대체됨. **인용 금지** (배너 참조) |
 | `reference/word_dict.md` | 비전문가용 용어 해설 | 8차 검토까지 반영 (2026-08-09 갱신). 정본 수정 시 여기 용어도 함께 볼 것 |
 | `reference/contamination_literature.csv`, `reference/experiment_design.csv`, `reference/experiment_models.csv` | 문헌·실험 설계 목록 | `contamination_literature.csv`는 일부 제목이 축약/부정확 — 투고 전 arXiv 대조 필요 |
-| `pdfs/2*.pdf` | 원문 PDF 5편 | **`.gitignore`에 `*.pdf`가 있어 git에 없다** (§6 참조) |
+| `pdfs/2*.pdf` | 원문 PDF 6편 | **`.gitignore`에 `*.pdf`가 있어 git에 없다** (§6 참조) |
 | `figures/fig_*.png` | 검정력·관문 그림 | 표 수치를 고칠 때 그림과 어긋나지 않는지 확인 |
 
 ---
@@ -192,7 +192,7 @@
    멀티모달 3종 교란에 더해, q4_0 포맷이 제2 추론 스택을 요구해 그 numerics 차이가 QAT-vs-PTQ
    대비 자체를 교란한다. QAT 비교는 future work. `paper/revision_provenance.md` 참조.)
 8. **아키텍처는 통제 축이 아니다.** Qwen2.5와 Llama-3.1은 둘 다 dense GQA+RoPE라 그 열은 아무
-   정보도 담지 않는다. 모델 간 남는 축은 **크기뿐**. (2026-08-05: 70B 컴퓨트 제약으로
+   정보도 담지 않는다. 모델 간 남는 설계 축은 **크기와 학습 코퍼스 투명성**이다. (2026-08-05: 70B 컴퓨트 제약으로
    Llama-3.3-70B가 제거되고 Llama-3.1-8B-Instruct로 대체됨 — LLMLagBench 리더보드에서 cutoff가
    기검증된 유일한 주 분석 모델. 최종 로스터: Qwen2.5-7B/32B, Olmo3-7B/32B, Llama-3.1-8B —
    전부 **-Instruct 변형** 확정 (2026-08-05, provenance (f)). 이에 따라 Olmo3 ground-truth
@@ -200,7 +200,7 @@
 9. **CDD 파일럿 관문(기저 AUC ≥ 0.79)을 우회하지 말 것.** 실패 모드는 천장이 아니라 **바닥**이다.
    32B가 우연 수준 부근이면 효과 크기 자체가 0으로 붕괴하므로 **데이터를 늘려도 회복되지
    않는다.** 관문 결과는 그대로 보고한다.
-10. **확증 검정군은 §4.5.6의 4개뿐** (C1–C3: fp16→nf4 Q1a 탐지기별 이동 @LCB, C4: Q1b 계열 순위
+10. **확증 검정군은 §4.5.6의 4개뿐** (C1–C3: bf16→nf4 Q1a 탐지기별 이동 @LCB, C4: Q1b 계열 순위
    역전), 군내 Holm 보정. **그 외 전부 탐색적** — 결과를 본 뒤 확증군에 검정을 추가하거나 역할을
    바꾸는 것은 금지. 확증 검정 사이징은 α/4 승수 3.339 기준 (d=0.3 → ≈124문항).
 

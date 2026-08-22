@@ -423,11 +423,12 @@ effect size (§4.5.3) regardless of how much clean-condition data is collected.
 
 ### 4.3 Quantization axis
 
-**bf16 baseline** → **BNB int8** → **BNB int4-nf4** → **GPTQ-int4 or AWQ-int4**
+**bf16 baseline** → **BNB int8** → **BNB int4-nf4** → **AWQ-int4**
 
 We do not include a double-quantization condition: double quantization affects memory footprint but not
 accuracy at a level distinguishable from measurement noise, so it carries no information as an
-experimental condition. The fourth level is GPTQ/AWQ instead, which serves two purposes:
+experimental condition. The fourth level is AWQ, implemented uniformly with llm-compressor across all
+five models; GPTQ is not part of the experimental roster. This calibration-based level serves two purposes:
 it is required to make any "quantization in general" claim (arXiv:2505.20276 itself concludes effects
 depend heavily on technique, model, and task), and — because the code-domain consensus in §2.7 (little to
 no degradation) applies specifically to *calibration-based* methods on *code-specialized* models, while
@@ -707,8 +708,9 @@ high label noise in the proxy contamination labels (§4.5.2).
    2025-01-01 the first eligible post-cutoff day. Direct searches of the public pretraining and
    post-training corpora remain necessary for item-level contamination ground truth, not for setting
    this operational time boundary.
-5. **Measure residual contamination via TRACER (arXiv:2605.24079), against the Olmo3 pretraining
-   corpus** — the only corpus in the design open enough to run it on: TRACER is defined as a function of
+5. **Measure residual contamination via TRACER (arXiv:2605.24079), against the released Olmo3
+   pretraining and post-training corpora** — the only complete model-training pipeline in the design open
+   enough to run it on: TRACER is defined as a function of
    a training corpus and a test set, and Qwen2.5's and Llama-3.1's corpora are closed (§4.5.2). This is
    a prerequisite for Q1b specifically (§4.5.2) and can proceed in parallel with step 6, since Q1a does
    not require it. TRACER has no confirmed public code release; we reimplement it from the paper's own

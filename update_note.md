@@ -1,5 +1,8 @@
 # 업데이트 내역 (2026-08-20)
 
+> 이 문서는 2026-08-20 작업 종료 시점의 스냅샷이다. 이후 완료 상태는
+> `pre_pilot_next_steps.md`와 `pipeline/README.md`를 따른다.
+
 ## 요약
 
 1. 오염 탐지용 **고정 문제 프롬프트 확률**과 생성 답변의 **confidence**를 분리했다.
@@ -278,14 +281,14 @@ prompt_token_logprobs가 저장된 greedy 행: 5개
 - 파일럿 표본 수
 - 공식 정답과 생성 답변의 verbatim 유사도라는 새로운 연구 질문
 
-## 12. 현재 완료 상태
+## 12. 2026-08-20 당시 완료 상태
 
 완료된 plan 단계:
 
 1. 고정 문제 프롬프트 채점 및 completion confidence 분리
 2. BF16 기준선 확정과 코드·manifest·논문 동기화
 
-아직 남은 단계:
+당시 남아 있던 단계:
 
 1. 실제 parquet 파일럿 집계기 구현
 2. `pilot_summary.json`과 `power_recompute.json` 생성
