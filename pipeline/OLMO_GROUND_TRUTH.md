@@ -53,6 +53,44 @@ python scripts/search_olmo_corpus.py \
 building the benchmark-side index, so each training corpus is transferred and
 scanned once rather than four times.
 
+### Resumable pretraining scan
+
+Do not use one repository-wide `load_dataset` stream for the multi-terabyte
+pretraining mixes. Initialize a revision-pinned SQLite manifest once, then run
+the resumable worker:
+
+```bash
+python scripts/manage_olmo_pretraining_scan.py \
+  --manifest ../data/olmo_ground_truth/pretraining/olmo3_7b_manifest.sqlite \
+  init \
+  --repo allenai/dolma3_mix-6T-1025-7B \
+  --revision 2ca900fbe14e86c5c83d064d9f0882f1c0b8c05b
+
+python scripts/manage_olmo_pretraining_scan.py \
+  --manifest ../data/olmo_ground_truth/pretraining/olmo3_7b_manifest.sqlite \
+  run \
+  --repo allenai/dolma3_mix-6T-1025-7B \
+  --revision 2ca900fbe14e86c5c83d064d9f0882f1c0b8c05b \
+  --output-dir ../data/olmo_ground_truth/pretraining/olmo3_7b_shards
+```
+
+`status` prints completed shard, byte, and document counts. `run` returns work
+left in `running` by an interrupted process to `pending`; completed shards are
+not rescanned. A file lock prevents two workers from accidentally reclaiming
+each other's active shard. `--retry-failed` schedules each currently failed
+shard for one additional attempt, and `--keep-going` lets the worker continue
+after a failure.
+Software-related source directories have queue priority, but all manifest
+shards remain required for an exhaustive result. Each completed shard writes
+only nonzero string evidence, atomically, while the manifest records negative
+scan coverage and the document count. This avoids storing 1,597 negative rows
+for every one of tens of thousands of shards.
+
+After `status` reports that every shard is complete, `finalize --output PATH`
+reduces the shard evidence to one best row per benchmark item. It refuses to
+produce an apparently complete result while any shard is pending, running, or
+failed.
+
 For deterministic local validation, `--jsonl PATH` accepts JSONL rows and
 recursively extracts string fields from plain-text or nested chat schemas. The
 output keeps corpus, stage, document ID, scan count, exact flag, n-gram coverage,
@@ -65,7 +103,7 @@ without looking at Q1 results before a full scientific run.
 - edit-distance and AST-based surface/program matching;
 - embedding retrieval and semantic/paraphrase adjudication;
 - TRACER's three LLM stages and validation against open-data evidence;
-- a persistent, resumable multi-terabyte pretraining index;
+- an indexed search service that avoids transferring every pretraining shard;
 - synthesis of separate method families into the final item-level label and
   measured proxy-label error rate *e*.
 

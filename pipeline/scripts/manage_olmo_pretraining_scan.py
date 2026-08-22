@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Initialize, run, inspect, and finalize a resumable Olmo pretraining scan."""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+from qcd.data.humaneval import load_humaneval
+from qcd.data.livecodebench import DEFAULT_RELEASE, load_livecodebench_split
+from qcd.data.mbppplus import load_mbppplus
+from qcd.ground_truth.shard_manifest import (
+    claim_next,
+    connect,
+    initialize,
+    mark_complete,
+    mark_failed,
+    reset_running,
+    retry_failed,
+    summary,
+)
+from qcd.ground_truth.string_match import MatchConfig, extract_text, scan_corpus, tokenize
+
+
+def benchmark_items():
+    pre, post = load_livecodebench_split(
+        dt.datetime(2025, 1, 1), release_version=DEFAULT_RELEASE,
+    )
+    items = [*load_humaneval(), *load_mbppplus(), *pre, *post]
+    return [dataclasses.replace(item, metadata={}) for item in items]
+
+
+def list_shards(repo: str, revision: str):
+    """Read the exact revision manifest, excluding files removed from that commit."""
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    info = api.dataset_info(repo, revision=revision, files_metadata=True)
+    if info.sha != revision:
+        raise ValueError(f"Hub resolved {revision!r} to unexpected commit {info.sha!r}")
+    for entry in info.siblings:
+        if entry.rfilename.endswith(".jsonl.zst"):
+            priority = 0 if "software" in entry.rfilename.casefold() else 1
+            yield entry.rfilename, int(entry.size or 0), priority
+
+
+def documents(repo: str, revision: str, shard: str):
+    from datasets import load_dataset
+    from huggingface_hub import hf_hub_url
+
+    url = hf_hub_url(repo, shard, repo_type="dataset", revision=revision)
+    stream = load_dataset("json", data_files=url, split="train", streaming=True)
+    for index, row in enumerate(stream):
+        yield {"id": row.get("id", index), "text": extract_text(row)}
+
+
+def output_name(shard: str) -> str:
+    digest = hashlib.sha256(shard.encode()).hexdigest()[:12]
+    return f"{Path(shard).stem.removesuffix('.jsonl')}-{digest}.jsonl"
+
+
+def write_atomic(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + f".tmp-{os.getpid()}")
+    with temporary.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def run(args, connection) -> None:
+    lock_path = args.manifest.with_suffix(args.manifest.suffix + ".runner.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = lock_path.open("a+")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        lock.close()
+        raise RuntimeError(f"another worker is already using {args.manifest}") from error
+    reset = reset_running(connection)
+    if reset:
+        print(f"returned {reset} interrupted shard(s) to pending", file=sys.stderr)
+    if args.retry_failed:
+        retried = retry_failed(connection)
+        print(f"returned {retried} failed shard(s) to pending", file=sys.stderr)
+    items = benchmark_items()
+    processed = 0
+    try:
+        while args.max_shards is None or processed < args.max_shards:
+            shard = claim_next(connection)
+            if shard is None:
+                break
+            path = shard["path"]
+            destination = args.output_dir / output_name(path)
+            started = time.monotonic()
+
+            def progress(count: int) -> None:
+                elapsed = time.monotonic() - started
+                print(
+                    f"shard={path} documents={count:,} rate={count / elapsed:.1f}/s",
+                    file=sys.stderr, flush=True,
+                )
+
+            try:
+                rows = scan_corpus(
+                    items, documents(args.repo, args.revision, path),
+                    corpus_name=f"{args.repo}@{args.revision}:{path}", stage="pretraining",
+                    config=MatchConfig(args.ngram_size, args.ngram_coverage_threshold),
+                    progress_every=args.progress_every, progress_callback=progress,
+                )
+                document_count = rows[0]["documents_scanned"] if rows else 0
+                evidence = [
+                    row for row in rows
+                    if row["normalized_verbatim"] or row["matched_ngrams"] > 0
+                ]
+                write_atomic(destination, evidence)
+                mark_complete(
+                    connection, path, documents_scanned=document_count,
+                    evidence_rows=len(evidence), output_path=str(destination),
+                )
+                processed += 1
+                print(
+                    f"complete shard={path} documents={document_count:,} evidence={len(evidence):,}",
+                    file=sys.stderr, flush=True,
+                )
+            except BaseException as error:
+                mark_failed(connection, path, f"{type(error).__name__}: {error}")
+                print(f"failed shard={path}: {error}", file=sys.stderr, flush=True)
+                if not args.keep_going:
+                    raise
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
+def print_status(connection) -> None:
+    stats = summary(connection)
+    total = stats["total"]
+    completed = stats.get("complete", 0)
+    payload = {
+        **stats,
+        "completion_fraction": completed / total if total else 0.0,
+        "byte_fraction": (
+            stats["completed_bytes"] / stats["compressed_bytes"]
+            if stats["compressed_bytes"] else 0.0
+        ),
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def finalize(args, connection) -> None:
+    stats = summary(connection)
+    if stats.get("complete", 0) != stats["total"]:
+        raise RuntimeError(
+            f"cannot finalize an incomplete scan: {stats.get('complete', 0):,}/"
+            f"{stats['total']:,} shards complete"
+        )
+    metadata = dict(connection.execute("SELECT key, value FROM metadata"))
+    best: dict[tuple[str, str], dict] = {}
+    for record in connection.execute(
+        "SELECT path, output_path FROM shards WHERE status='complete' ORDER BY path"
+    ):
+        with Path(record["output_path"]).open(encoding="utf-8") as handle:
+            for line in handle:
+                row = json.loads(line)
+                key = (row["dataset"], row["item_id"])
+                previous = best.get(key)
+                rank = (row["normalized_verbatim"], row["ngram_coverage"])
+                if previous is None or rank > (
+                    previous["normalized_verbatim"], previous["ngram_coverage"]
+                ):
+                    row["source_shard"] = record["path"]
+                    best[key] = row
+
+    corpus = f"{metadata['repo']}@{metadata['revision']}"
+    rows = []
+    for item in benchmark_items():
+        key = (item.dataset.value, item.item_id)
+        row = best.get(key)
+        if row is None:
+            row = {
+                "item_id": item.item_id,
+                "dataset": item.dataset.value,
+                "stage": "pretraining",
+                "method_family": "instance_string",
+                "normalized_verbatim": False,
+                "ngram_size": args.ngram_size,
+                "ngram_coverage": 0.0,
+                "ngram_threshold": args.ngram_coverage_threshold,
+                "string_match_label": False,
+                "document_id": None,
+                "matched_ngrams": 0,
+                "query_ngrams": max(0, len(tokenize(item.prompt)) - args.ngram_size + 1),
+                "source_shard": None,
+            }
+        row["corpus"] = corpus
+        row["documents_scanned"] = stats["documents_scanned"]
+        rows.append(row)
+    write_atomic(args.output, rows)
+    print(f"wrote {len(rows):,} item rows to {args.output}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", type=Path, required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    init_parser = subparsers.add_parser("init")
+    init_parser.add_argument("--repo", required=True)
+    init_parser.add_argument("--revision")
+
+    run_parser = subparsers.add_parser("run")
+    run_parser.add_argument("--repo", required=True)
+    run_parser.add_argument("--revision", required=True)
+    run_parser.add_argument("--output-dir", type=Path, required=True)
+    run_parser.add_argument("--max-shards", type=int)
+    run_parser.add_argument("--retry-failed", action="store_true")
+    run_parser.add_argument("--keep-going", action="store_true")
+    run_parser.add_argument("--progress-every", type=int, default=10_000)
+    run_parser.add_argument("--ngram-size", type=int, default=13)
+    run_parser.add_argument("--ngram-coverage-threshold", type=float, default=0.8)
+
+    subparsers.add_parser("status")
+    finalize_parser = subparsers.add_parser("finalize")
+    finalize_parser.add_argument("--output", type=Path, required=True)
+    finalize_parser.add_argument("--ngram-size", type=int, default=13)
+    finalize_parser.add_argument("--ngram-coverage-threshold", type=float, default=0.8)
+    args = parser.parse_args()
+    connection = connect(args.manifest)
+
+    if args.command == "init":
+        from huggingface_hub import HfApi
+
+        revision = args.revision or HfApi().dataset_info(args.repo).sha
+        count = initialize(
+            connection,
+            metadata={"repo": args.repo, "revision": revision},
+            shards=list_shards(args.repo, revision),
+        )
+        print(f"added {count:,} shard(s); revision={revision}")
+        print_status(connection)
+    elif args.command == "run":
+        metadata = dict(connection.execute("SELECT key, value FROM metadata"))
+        if metadata.get("repo") != args.repo or metadata.get("revision") != args.revision:
+            parser.error("--repo/--revision do not match the manifest identity")
+        run(args, connection)
+        print_status(connection)
+    elif args.command == "finalize":
+        finalize(args, connection)
+    else:
+        print_status(connection)
+
+
+if __name__ == "__main__":
+    main()
