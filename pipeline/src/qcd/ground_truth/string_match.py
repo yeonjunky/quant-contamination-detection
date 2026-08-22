@@ -8,6 +8,7 @@ that can seed the later AST/semantic/paraphrase and TRACER stages.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import re
 import unicodedata
 from collections import defaultdict
@@ -79,8 +80,12 @@ def scan_corpus(
     config: MatchConfig = MatchConfig(),
     progress_every: int | None = None,
     progress_callback: Callable[[int], None] | None = None,
+    completion_callback: Callable[[int], None] | None = None,
+    top_k: int = 1,
+    evidence_only: bool = False,
+    include_document_text: bool = False,
 ) -> list[dict[str, Any]]:
-    """Scan an iterable once and return one best-evidence row per item.
+    """Scan an iterable once and return bounded evidence rows per item.
 
     Documents require ``text`` and may provide ``id``.  The algorithm indexes
     benchmark n-grams, not corpus documents, so memory is bounded by the small
@@ -88,6 +93,8 @@ def scan_corpus(
     a full multi-terabyte pretraining pass remains an operationally expensive
     fallback rather than a substitute for a public/persistent corpus index.
     """
+    if top_k < 1:
+        raise ValueError("top_k must be positive")
     output_items: list[tuple[tuple[str, str], str, str]] = []
     queries: dict[tuple[str, str], dict[str, Any]] = {}
     inverted: dict[tuple[str, ...], set[tuple[str, str]]] = defaultdict(set)
@@ -109,17 +116,20 @@ def scan_corpus(
         if not query["grams"]
     )
 
-    best: dict[tuple[str, str], dict[str, Any]] = {}
+    best: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     docs_scanned = 0
     for doc_index, document in enumerate(documents):
         docs_scanned += 1
         text = str(document.get("text", ""))
         normalized_doc = normalize_text(text)
-        doc_grams = _ngrams(tokenize(text), config.ngram_size)
+        doc_tokens = tokenize(text)
+        doc_grams = _ngrams(doc_tokens, config.ngram_size)
         counts: dict[tuple[str, str], int] = defaultdict(int)
+        example_gram: dict[tuple[str, str], tuple[str, ...]] = {}
         for gram in doc_grams:
             for query_key in inverted.get(gram, ()):
                 counts[query_key] += 1
+                example_gram.setdefault(query_key, gram)
 
         candidates = set(counts)
         # Short prompts have no n-grams at the configured width but still get
@@ -138,25 +148,55 @@ def scan_corpus(
             total = len(query["grams"])
             coverage = counts[query_key] / total if total else 0.0
             exact = bool(query["normalized"] and query["normalized"] in normalized_doc)
-            previous = best.get(query_key)
-            if previous is None or (exact, coverage) > (previous["normalized_verbatim"], previous["ngram_coverage"]):
-                best[query_key] = {
+            gram = example_gram.get(query_key)
+            token_start = _find_subsequence(doc_tokens, gram) if gram else None
+            context = None
+            if token_start is not None:
+                left = max(0, token_start - 30)
+                right = min(len(doc_tokens), token_start + config.ngram_size + 30)
+                context = " ".join(doc_tokens[left:right])
+            evidence = {
                     "document_id": str(document.get("id", doc_index)),
                     "normalized_verbatim": exact,
                     "ngram_coverage": coverage,
                     "matched_ngrams": counts[query_key],
                     "query_ngrams": total,
+                    "exact_char_start": normalized_doc.find(query["normalized"]) if exact else None,
+                    "matched_token_start": token_start,
+                    "matched_ngram_example": " ".join(gram) if gram else None,
+                    "match_context": context,
                 }
+            if include_document_text:
+                evidence.update(
+                    {
+                        "document_text": text,
+                        "normalized_document_text": normalized_doc,
+                        "document_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                        "document_text_truncated": False,
+                        "document_source": document.get("source"),
+                        "document_version": document.get("version"),
+                        "document_created": document.get("created"),
+                        "document_added": document.get("added"),
+                    }
+                )
+            candidates_for_query = best[query_key]
+            candidates_for_query.append(evidence)
+            candidates_for_query.sort(key=_evidence_rank, reverse=True)
+            del candidates_for_query[top_k:]
         if progress_every and docs_scanned % progress_every == 0 and progress_callback:
             progress_callback(docs_scanned)
 
+    if completion_callback:
+        completion_callback(docs_scanned)
     rows: list[dict[str, Any]] = []
     for query_key, item_id, dataset in output_items:
-        evidence = best.get(query_key, {})
-        coverage = float(evidence.get("ngram_coverage", 0.0))
-        exact = bool(evidence.get("normalized_verbatim", False))
-        rows.append(
-            {
+        evidence_rows = best.get(query_key, [])
+        if not evidence_rows and evidence_only:
+            continue
+        for candidate_rank, evidence in enumerate(evidence_rows or [{}], start=1):
+            coverage = float(evidence.get("ngram_coverage", 0.0))
+            exact = bool(evidence.get("normalized_verbatim", False))
+            row = {
                 "item_id": item_id,
                 "dataset": dataset,
                 "corpus": corpus_name,
@@ -171,6 +211,27 @@ def scan_corpus(
                 "matched_ngrams": int(evidence.get("matched_ngrams", 0)),
                 "query_ngrams": int(evidence.get("query_ngrams", len(queries[query_key]["grams"]))),
                 "documents_scanned": docs_scanned,
+                "candidate_rank": candidate_rank,
             }
-        )
+            row.update({key: value for key, value in evidence.items() if key not in row})
+            rows.append(row)
     return rows
+
+
+def _evidence_rank(evidence: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        bool(evidence["normalized_verbatim"]),
+        float(evidence["ngram_coverage"]),
+        int(evidence["matched_ngrams"]),
+        str(evidence["document_id"]),
+    )
+
+
+def _find_subsequence(tokens: tuple[str, ...], needle: tuple[str, ...] | None) -> int | None:
+    if not needle:
+        return None
+    width = len(needle)
+    for index in range(len(tokens) - width + 1):
+        if tokens[index : index + width] == needle:
+            return index
+    return None

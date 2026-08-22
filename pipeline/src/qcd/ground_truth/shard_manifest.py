@@ -68,6 +68,22 @@ def initialize(
         return connection.total_changes - before
 
 
+def require_metadata(connection: sqlite3.Connection, expected: dict[str, str]) -> None:
+    """Reject workers whose retrieval configuration differs from the manifest."""
+    actual = dict(connection.execute("SELECT key, value FROM metadata"))
+    mismatches = {
+        key: (actual.get(key), value)
+        for key, value in expected.items()
+        if actual.get(key) != value
+    }
+    if mismatches:
+        details = ", ".join(
+            f"{key}={observed!r} (expected {wanted!r})"
+            for key, (observed, wanted) in sorted(mismatches.items())
+        )
+        raise ValueError(f"manifest metadata mismatch: {details}")
+
+
 def recover_stale(connection: sqlite3.Connection, *, stale_after_seconds: int) -> int:
     """Requeue only leases whose owner stopped sending heartbeats."""
     if stale_after_seconds < 1:
@@ -88,6 +104,20 @@ def retry_failed(connection: sqlite3.Connection) -> int:
     with connection:
         cursor = connection.execute(
             "UPDATE shards SET status='pending', error=NULL WHERE status='failed'"
+        )
+        return cursor.rowcount
+
+
+def invalidate_completed(connection: sqlite3.Connection, *, reason: str) -> int:
+    """Requeue completed shards after an evidence-schema change."""
+    if not reason.strip():
+        raise ValueError("reason must be non-empty")
+    with connection:
+        cursor = connection.execute(
+            "UPDATE shards SET status='pending', documents_scanned=NULL, evidence_rows=NULL, "
+            "output_path=NULL, error=?, started_at=NULL, heartbeat_at=NULL, worker_id=NULL, "
+            "finished_at=NULL WHERE status='complete'",
+            (f"invalidated: {reason}",),
         )
         return cursor.rowcount
 

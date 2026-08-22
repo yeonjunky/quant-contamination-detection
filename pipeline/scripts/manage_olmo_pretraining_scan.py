@@ -25,10 +25,23 @@ from qcd.ground_truth.shard_manifest import (
     mark_complete,
     mark_failed,
     recover_stale,
+    require_metadata,
     retry_failed,
     summary,
 )
 from qcd.ground_truth.string_match import MatchConfig, extract_text, scan_corpus, tokenize
+
+
+EVIDENCE_SCHEMA_VERSION = "2"
+
+
+def retrieval_metadata(args) -> dict[str, str]:
+    return {
+        "ngram_size": str(args.ngram_size),
+        "ngram_coverage_threshold": str(args.ngram_coverage_threshold),
+        "candidates_per_item": str(args.candidates_per_item),
+        "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
+    }
 
 
 def benchmark_items():
@@ -60,7 +73,14 @@ def documents(repo: str, revision: str, shard: str):
     url = hf_hub_url(repo, shard, repo_type="dataset", revision=revision)
     stream = load_dataset("json", data_files=url, split="train", streaming=True)
     for index, row in enumerate(stream):
-        yield {"id": row.get("id", index), "text": extract_text(row)}
+        yield {
+            "id": row.get("id", index),
+            "text": extract_text(row),
+            "source": row.get("source"),
+            "version": row.get("version"),
+            "created": row.get("created"),
+            "added": row.get("added"),
+        }
 
 
 def output_name(shard: str) -> str:
@@ -109,17 +129,18 @@ def run(args, connection) -> None:
             )
 
         try:
+            completion_count = []
             rows = scan_corpus(
                 items, documents(args.repo, args.revision, path),
                 corpus_name=f"{args.repo}@{args.revision}:{path}", stage="pretraining",
                 config=MatchConfig(args.ngram_size, args.ngram_coverage_threshold),
                 progress_every=args.progress_every, progress_callback=progress,
+                completion_callback=completion_count.append,
+                top_k=args.candidates_per_item, evidence_only=True,
+                include_document_text=True,
             )
-            document_count = rows[0]["documents_scanned"] if rows else 0
-            evidence = [
-                row for row in rows
-                if row["normalized_verbatim"] or row["matched_ngrams"] > 0
-            ]
+            document_count = completion_count[0]
+            evidence = rows
             if not heartbeat(connection, path, worker_id=args.worker_id):
                 raise RuntimeError(f"worker lease lost before writing {path}")
             write_atomic(destination, evidence)
@@ -170,7 +191,10 @@ def finalize(args, connection) -> None:
             f"{stats['total']:,} shards complete"
         )
     metadata = dict(connection.execute("SELECT key, value FROM metadata"))
-    best: dict[tuple[str, str], dict] = {}
+    candidates_per_item = int(metadata["candidates_per_item"])
+    ngram_size = int(metadata["ngram_size"])
+    ngram_coverage_threshold = float(metadata["ngram_coverage_threshold"])
+    best: dict[tuple[str, str], list[dict]] = {}
     for record in connection.execute(
         "SELECT path, output_path FROM shards WHERE status='complete' ORDER BY path"
     ):
@@ -178,40 +202,51 @@ def finalize(args, connection) -> None:
             for line in handle:
                 row = json.loads(line)
                 key = (row["dataset"], row["item_id"])
-                previous = best.get(key)
-                rank = (row["normalized_verbatim"], row["ngram_coverage"])
-                if previous is None or rank > (
-                    previous["normalized_verbatim"], previous["ngram_coverage"]
-                ):
-                    row["source_shard"] = record["path"]
-                    best[key] = row
+                row["source_shard"] = record["path"]
+                candidates = best.setdefault(key, [])
+                candidates.append(row)
+                candidates.sort(key=_final_evidence_rank, reverse=True)
+                del candidates[candidates_per_item:]
 
     corpus = f"{metadata['repo']}@{metadata['revision']}"
     rows = []
     for item in benchmark_items():
         key = (item.dataset.value, item.item_id)
-        row = best.get(key)
-        if row is None:
-            row = {
+        item_candidates = best.get(key, [])
+        if not item_candidates:
+            item_candidates = [{
                 "item_id": item.item_id,
                 "dataset": item.dataset.value,
                 "stage": "pretraining",
                 "method_family": "instance_string",
                 "normalized_verbatim": False,
-                "ngram_size": args.ngram_size,
+                "ngram_size": ngram_size,
                 "ngram_coverage": 0.0,
-                "ngram_threshold": args.ngram_coverage_threshold,
+                "ngram_threshold": ngram_coverage_threshold,
                 "string_match_label": False,
                 "document_id": None,
                 "matched_ngrams": 0,
-                "query_ngrams": max(0, len(tokenize(item.prompt)) - args.ngram_size + 1),
+                "query_ngrams": max(0, len(tokenize(item.prompt)) - ngram_size + 1),
                 "source_shard": None,
-            }
-        row["corpus"] = corpus
-        row["documents_scanned"] = stats["documents_scanned"]
-        rows.append(row)
+            }]
+        for candidate_rank, row in enumerate(item_candidates, start=1):
+            row["candidate_rank"] = candidate_rank
+            row["corpus"] = corpus
+            row["documents_scanned"] = stats["documents_scanned"]
+            rows.append(row)
     write_atomic(args.output, rows)
     print(f"wrote {len(rows):,} item rows to {args.output}")
+
+
+def _final_evidence_rank(row: dict) -> tuple:
+    """Stable global ordering for candidates collected from different shards."""
+    return (
+        bool(row["normalized_verbatim"]),
+        float(row["ngram_coverage"]),
+        int(row["matched_ngrams"]),
+        str(row["source_shard"]),
+        str(row["document_id"]),
+    )
 
 
 def main() -> None:
@@ -222,6 +257,9 @@ def main() -> None:
     init_parser = subparsers.add_parser("init")
     init_parser.add_argument("--repo", required=True)
     init_parser.add_argument("--revision")
+    init_parser.add_argument("--ngram-size", type=int, default=13)
+    init_parser.add_argument("--ngram-coverage-threshold", type=float, default=0.8)
+    init_parser.add_argument("--candidates-per-item", type=int, default=5)
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--repo", required=True)
@@ -235,12 +273,11 @@ def main() -> None:
     run_parser.add_argument("--progress-every", type=int, default=10_000)
     run_parser.add_argument("--ngram-size", type=int, default=13)
     run_parser.add_argument("--ngram-coverage-threshold", type=float, default=0.8)
+    run_parser.add_argument("--candidates-per-item", type=int, default=5)
 
     subparsers.add_parser("status")
     finalize_parser = subparsers.add_parser("finalize")
     finalize_parser.add_argument("--output", type=Path, required=True)
-    finalize_parser.add_argument("--ngram-size", type=int, default=13)
-    finalize_parser.add_argument("--ngram-coverage-threshold", type=float, default=0.8)
     args = parser.parse_args()
     connection = connect(args.manifest)
 
@@ -250,15 +287,21 @@ def main() -> None:
         revision = args.revision or HfApi().dataset_info(args.repo).sha
         count = initialize(
             connection,
-            metadata={"repo": args.repo, "revision": revision},
+            metadata={
+                "repo": args.repo, "revision": revision, **retrieval_metadata(args),
+            },
             shards=list_shards(args.repo, revision),
         )
         print(f"added {count:,} shard(s); revision={revision}")
         print_status(connection)
     elif args.command == "run":
-        metadata = dict(connection.execute("SELECT key, value FROM metadata"))
-        if metadata.get("repo") != args.repo or metadata.get("revision") != args.revision:
-            parser.error("--repo/--revision do not match the manifest identity")
+        try:
+            require_metadata(
+                connection,
+                {"repo": args.repo, "revision": args.revision, **retrieval_metadata(args)},
+            )
+        except ValueError as error:
+            parser.error(str(error))
         run(args, connection)
         print_status(connection)
     elif args.command == "finalize":

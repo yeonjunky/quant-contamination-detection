@@ -1,3 +1,5 @@
+import pytest
+
 from qcd.data.schema import Dataset, Item
 from qcd.ground_truth.string_match import MatchConfig, extract_text, normalize_text, scan_corpus
 
@@ -80,3 +82,50 @@ def test_progress_callback_reports_completed_intervals():
         progress_callback=progress.append,
     )
     assert progress == [2, 4]
+
+
+def test_candidate_mode_keeps_ranked_top_k_with_retrieval_text_and_metadata():
+    item = _item("ranked", "alpha beta gamma delta epsilon")
+    rows = scan_corpus(
+        [item],
+        [
+            {"id": "weak", "text": "alpha beta unrelated", "source": "web", "version": "v1"},
+            {
+                "id": "strong", "text": "prefix alpha beta gamma delta changed suffix",
+                "source": "code", "version": "v2", "created": "2024-01-01",
+            },
+            {"id": "middle", "text": "alpha beta gamma changed"},
+        ],
+        corpus_name="synthetic", stage="pretraining", config=MatchConfig(2, 0.8),
+        top_k=2, evidence_only=True, include_document_text=True,
+    )
+
+    assert [row["document_id"] for row in rows] == ["strong", "middle"]
+    assert [row["candidate_rank"] for row in rows] == [1, 2]
+    assert rows[0]["document_text"] == "prefix alpha beta gamma delta changed suffix"
+    assert rows[0]["normalized_document_text"] == rows[0]["document_text"]
+    assert len(rows[0]["document_sha256"]) == 64
+    assert rows[0]["document_source"] == "code"
+    assert rows[0]["document_version"] == "v2"
+    assert rows[0]["matched_token_start"] is not None
+    assert rows[0]["match_context"]
+    assert rows[0]["document_text_truncated"] is False
+
+
+def test_candidate_mode_omits_negatives_but_reports_completion_count():
+    completed = []
+    rows = scan_corpus(
+        [_item("none", "alpha beta gamma")],
+        [{"text": "unrelated"}, {"text": "also unrelated"}],
+        corpus_name="synthetic", stage="pretraining", config=MatchConfig(2, 0.8),
+        evidence_only=True, completion_callback=completed.append,
+    )
+    assert rows == []
+    assert completed == [2]
+
+
+def test_top_k_must_be_positive():
+    with pytest.raises(ValueError, match="top_k"):
+        scan_corpus(
+            [], [], corpus_name="synthetic", stage="pretraining", top_k=0,
+        )

@@ -3,9 +3,11 @@ from qcd.ground_truth.shard_manifest import (
     connect,
     heartbeat,
     initialize,
+    invalidate_completed,
     mark_complete,
     mark_failed,
     recover_stale,
+    require_metadata,
     retry_failed,
     summary,
 )
@@ -84,3 +86,37 @@ def test_manifest_rejects_a_different_revision(tmp_path):
         assert "revision" in str(error)
     else:
         raise AssertionError("revision mismatch was accepted")
+
+
+def test_worker_configuration_must_match_manifest_metadata(tmp_path):
+    connection = connect(tmp_path / "manifest.sqlite")
+    initialize(
+        connection,
+        metadata={"revision": "abc", "ngram_size": "13", "candidates_per_item": "5"},
+        shards=[],
+    )
+    require_metadata(connection, {"revision": "abc", "ngram_size": "13"})
+
+    try:
+        require_metadata(connection, {"revision": "abc", "candidates_per_item": "1"})
+    except ValueError as error:
+        assert "candidates_per_item" in str(error)
+    else:
+        raise AssertionError("mismatched worker configuration was accepted")
+
+
+def test_completed_shards_can_be_invalidated_after_schema_change(tmp_path):
+    connection = connect(tmp_path / "manifest.sqlite")
+    initialize(connection, metadata={"revision": "abc"}, shards=[("one", 10, 0)])
+    claim_next(connection, worker_id="worker")
+    mark_complete(
+        connection, "one", documents_scanned=5, evidence_rows=2,
+        output_path="old.jsonl", worker_id="worker",
+    )
+    assert invalidate_completed(connection, reason="candidate schema v2") == 1
+    row = connection.execute(
+        "SELECT status, documents_scanned, output_path, error, worker_id FROM shards"
+    ).fetchone()
+    assert tuple(row) == (
+        "pending", None, None, "invalidated: candidate schema v2", None,
+    )

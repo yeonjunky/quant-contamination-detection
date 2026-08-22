@@ -87,10 +87,17 @@ Software-related source directories have queue priority, but all manifest
 shards remain required for an exhaustive result. Each completed shard writes
 only nonzero string evidence, atomically, while the manifest records negative
 scan coverage and the document count. This avoids storing 1,597 negative rows
-for every one of tens of thousands of shards.
+for every one of tens of thousands of shards. The pretraining worker retains
+the top five candidates per benchmark item and shard by default. Each candidate
+includes the full and normalized source text, SHA-256, selected source metadata,
+matched token position, an n-gram example, and local context so downstream
+TRACER stages do not require a second multi-terabyte corpus pass. Change the
+bound explicitly with `--candidates-per-item`; it is part of the retrieval
+configuration and must be frozen before the scientific run.
 
 After `status` reports that every shard is complete, `finalize --output PATH`
-reduces the shard evidence to one best row per benchmark item. It refuses to
+reduces the shard evidence to the globally ranked candidate bound (five rows
+per benchmark item by default). It refuses to
 produce an apparently complete result while any shard is pending, running, or
 failed.
 
