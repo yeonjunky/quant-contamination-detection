@@ -115,11 +115,14 @@ def run(args, connection) -> None:
         if shard is None:
             break
         path = shard["path"]
+        lease_token = shard["lease_token"]
         destination = args.output_dir / args.worker_id / output_name(path)
         started = time.monotonic()
 
         def progress(count: int) -> None:
-            if not heartbeat(connection, path, worker_id=args.worker_id):
+            if not heartbeat(
+                connection, path, worker_id=args.worker_id, lease_token=lease_token,
+            ):
                 raise RuntimeError(f"worker lease lost for {path}")
             elapsed = time.monotonic() - started
             print(
@@ -141,13 +144,15 @@ def run(args, connection) -> None:
             )
             document_count = completion_count[0]
             evidence = rows
-            if not heartbeat(connection, path, worker_id=args.worker_id):
+            if not heartbeat(
+                connection, path, worker_id=args.worker_id, lease_token=lease_token,
+            ):
                 raise RuntimeError(f"worker lease lost before writing {path}")
             write_atomic(destination, evidence)
             if not mark_complete(
                 connection, path, documents_scanned=document_count,
                 evidence_rows=len(evidence), output_path=str(destination),
-                worker_id=args.worker_id,
+                worker_id=args.worker_id, lease_token=lease_token,
             ):
                 raise RuntimeError(f"worker lease lost before completing {path}")
             processed += 1
@@ -158,7 +163,7 @@ def run(args, connection) -> None:
         except BaseException as error:
             mark_failed(
                 connection, path, f"{type(error).__name__}: {error}",
-                worker_id=args.worker_id,
+                worker_id=args.worker_id, lease_token=lease_token,
             )
             print(
                 f"worker={args.worker_id} failed shard={path}: {error}",

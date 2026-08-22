@@ -16,7 +16,7 @@ def test_bf16_loader_forces_torch_bfloat16(monkeypatch):
     monkeypatch.setattr(
         transformers.AutoTokenizer,
         "from_pretrained",
-        lambda repo_id: fake_tokenizer,
+        lambda repo_id, **kwargs: fake_tokenizer,
     )
 
     def fake_model_from_pretrained(repo_id, **kwargs):
@@ -32,4 +32,9 @@ def test_bf16_loader_forces_torch_bfloat16(monkeypatch):
     adapter = _load_bf16(QWEN2_5_7B, Quant.BF16)
     assert adapter.model is fake_model
     assert adapter.tokenizer is fake_tokenizer
-    assert captured == {"dtype": torch.bfloat16, "device_map": "auto"}
+    assert captured == {
+        "revision": QWEN2_5_7B.revision,
+        "dtype": torch.bfloat16,
+        "device_map": "auto",
+    }
+    assert adapter.revision == QWEN2_5_7B.revision

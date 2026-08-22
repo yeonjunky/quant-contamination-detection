@@ -15,7 +15,9 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import pickle
+import os
 from pathlib import Path
+import tempfile
 
 
 @dataclasses.dataclass(frozen=True)
@@ -26,6 +28,9 @@ class CacheKey:
     is_greedy: bool
     sample_id: int
     prompt: str
+    temperature: float = 0.0
+    model_revision: str = ""
+    generation_config: str = ""
 
     @property
     def digest(self) -> str:
@@ -40,6 +45,9 @@ class CacheKey:
             str(self.is_greedy),
             str(self.sample_id),
             self.prompt,
+            repr(self.temperature),
+            self.model_revision,
+            self.generation_config,
         )
         return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
 
@@ -65,8 +73,21 @@ class GenerationCache:
     def put(self, key: CacheKey, value) -> None:
         path = self._path_for(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("wb") as f:
-            pickle.dump(value, f)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as f:
+                pickle.dump(value, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary_name, path)
+        except BaseException:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+            raise
 
     def __contains__(self, key: CacheKey) -> bool:
         return self._path_for(key).exists()

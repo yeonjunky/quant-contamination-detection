@@ -5,12 +5,16 @@ foreclose the paired and mixed-effects analyses this design depends on."
 
 - `items.parquet` — one row per item (id, dataset, condition, difficulty,
   contamination proxy label, TRACER label, release/version pin).
-- `generations.parquet` — one row per (model, quant, item, sample):
+- `generations.<part>.parquet` — one row per (model, quant, item, sample):
   generated text, full completion per-token logprob array, fixed prompt
   per-token logprob array on the greedy row, partial pass rate, decoding
   params, model/tokenizer revision hashes.
-- `detector_scores.parquet` — one row per (model, quant, item, detector):
-  score, threshold used, source sample ids.
+- `detector_scores.<part>.parquet` — one row per (model, quant, item, detector):
+score, threshold used, source sample ids.
+
+Rows are flushed in bounded, atomically replaced part files so an interrupted
+run retains every completed batch without accumulating the entire experiment
+in memory.
 
 `Item.metadata` (a heterogeneous dict — LCB items and HumanEval+/MBPP+ items
 carry different keys) is stored as a JSON string column rather than a
@@ -22,7 +26,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
+import tempfile
 
 import pandas as pd
 
@@ -42,6 +48,20 @@ def _item_to_row(item: Item) -> dict:
     }
 
 
+def _write_parquet_atomic(frame: pd.DataFrame, path: Path) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        frame.to_parquet(temporary, index=False)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 class RawDataWriter:
     def __init__(self, output_dir: str | Path, *, file_prefix: str = "") -> None:
         self.output_dir = Path(output_dir)
@@ -52,7 +72,7 @@ class RawDataWriter:
 
     def write_items(self, items: list[Item]) -> Path:
         path = self.output_dir / f"{self.file_prefix}items.parquet"
-        pd.DataFrame([_item_to_row(item) for item in items]).to_parquet(path, index=False)
+        _write_parquet_atomic(pd.DataFrame([_item_to_row(item) for item in items]), path)
         return path
 
     def add_generation(
@@ -124,20 +144,20 @@ class RawDataWriter:
             }
         )
 
-    def flush(self) -> dict[str, Path]:
-        """Writes buffered generation/detector-score rows to their parquet
-        files (full overwrite of each file's current buffer contents — this
-        is a batch writer, not an incremental appender; fine for pilot-scale
-        runs, a known scaling concern flagged here for the full main run)."""
+    def flush(self, *, part: str | None = None) -> dict[str, Path]:
+        """Atomically write and clear one bounded batch of buffered rows."""
         written = {}
+        suffix = f".{part}" if part else ""
         if self._generation_rows:
-            path = self.output_dir / f"{self.file_prefix}generations.parquet"
-            pd.DataFrame(self._generation_rows).to_parquet(path, index=False)
+            path = self.output_dir / f"{self.file_prefix}generations{suffix}.parquet"
+            _write_parquet_atomic(pd.DataFrame(self._generation_rows), path)
             written["generations"] = path
+            self._generation_rows.clear()
         if self._detector_score_rows:
-            path = self.output_dir / f"{self.file_prefix}detector_scores.parquet"
-            pd.DataFrame(self._detector_score_rows).to_parquet(path, index=False)
+            path = self.output_dir / f"{self.file_prefix}detector_scores{suffix}.parquet"
+            _write_parquet_atomic(pd.DataFrame(self._detector_score_rows), path)
             written["detector_scores"] = path
+            self._detector_score_rows.clear()
         return written
 
     @property

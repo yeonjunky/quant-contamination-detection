@@ -55,6 +55,7 @@ def test_finalize_keeps_global_top_k_and_reassigns_ranks(tmp_path, monkeypatch):
             evidence_rows=2,
             output_path=str(output),
             worker_id=worker_id,
+            lease_token=shard["lease_token"],
         )
 
     item = SimpleNamespace(

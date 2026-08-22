@@ -75,7 +75,8 @@ python scripts/manage_olmo_pretraining_scan.py \
 ```
 
 `status` prints completed shard, byte, and document counts. Multiple `run`
-processes may share one manifest: each claim records a worker ID and heartbeat,
+processes may share one manifest: each claim records a worker ID, a unique
+lease token, and a heartbeat,
 and completion is accepted only from the current owner. The default stale lease
 timeout is 600 seconds. A surviving worker returns an expired lease to `pending`
 before claiming its next shard, so a terminated worker's shard is retried

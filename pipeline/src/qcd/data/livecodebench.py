@@ -28,6 +28,7 @@ import json
 from qcd.data.schema import Dataset, Item
 
 _REPO_ID = "livecodebench/code_generation_lite"
+REPO_REVISION = "0fe84c3912ea0c4d4a78037083943e8f0c4dd505"
 
 # Mirrors ALLOWED_FILES from the dataset's (now dataset-scripts-unsupported)
 # loading script, cross-checked during pipeline construction: each file's
@@ -56,7 +57,9 @@ def _download_release_rows(release_version: str) -> list[dict]:
 
     rows: list[dict] = []
     for filename in filenames:
-        path = hf_hub_download(_REPO_ID, filename, repo_type="dataset")
+        path = hf_hub_download(
+            _REPO_ID, filename, repo_type="dataset", revision=REPO_REVISION,
+        )
         with open(path, encoding="utf-8") as f:
             rows.extend(json.loads(line) for line in f if line.strip())
     return rows

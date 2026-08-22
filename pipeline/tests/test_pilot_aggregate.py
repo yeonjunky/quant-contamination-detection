@@ -1,6 +1,7 @@
 import json
 
 import pandas as pd
+import pytest
 
 from qcd.pilot.aggregate import aggregate_pilot
 
@@ -13,6 +14,7 @@ def test_aggregate_pilot_writes_registered_outputs(tmp_path):
     datasets = ["lcb_post"] * 4 + ["lcb_pre"] * 4
     pd.DataFrame({
         "item_id": item_ids, "dataset": datasets, "contamination_proxy": labels,
+        "difficulty": ["easy", "medium", "hard", "easy"] * 2,
     }).to_parquet(raw / "items.parquet", index=False)
 
     generation_rows = []
@@ -50,9 +52,38 @@ def test_aggregate_pilot_writes_registered_outputs(tmp_path):
     assert summary["n_items"] == 8
     assert summary["pass_at_1_source"] == "generations.parquet:passed"
     assert set(summary["q1a"]["Qwen2.5-7B-Instruct"]) == {"cdd", "perplexity", "mink_prob"}
-    assert summary["q1a"]["Qwen2.5-7B-Instruct"]["cdd"]["n_pairs"] == 8
+    assert summary["q1a"]["Qwen2.5-7B-Instruct"]["cdd"]["lcb_pre"]["n_pairs"] == 4
+    assert summary["q1b"]["Qwen2.5-7B-Instruct"]["cdd"]["n_pairs"] == 8
+    assert set(summary["q2"]) == {"lcb_pre_vs_lcb_post"}
+    assert summary["q2"]["lcb_pre_vs_lcb_post"]["difficulty_check_status"] == "computed"
     assert summary["olmo3_proxy_label_error_rate"] is None
     assert summary["timing"]["generation_seconds"]["total"] == 80.0
-    assert "required_items" in power["q1a"]["Qwen2.5-7B-Instruct"]["cdd"]
+    assert "required_items" in power["q1a"]["Qwen2.5-7B-Instruct"]["cdd"]["lcb_pre"]
     assert json.loads((tmp_path / "pilot_summary.json").read_text()) == summary
     assert json.loads((tmp_path / "power_recompute.json").read_text()) == power
+
+
+def test_aggregate_rejects_incomplete_manifest_run(tmp_path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    pd.DataFrame([
+        {"item_id": "i1", "dataset": "lcb_pre", "contamination_proxy": True,
+         "difficulty": "easy"},
+    ]).to_parquet(raw / "items.parquet", index=False)
+    pd.DataFrame([
+        {"model": "model", "quant": "bf16", "item_id": "i1", "sample_id": 0,
+         "is_greedy": True, "partial_pass_rate": 1.0, "passed": True},
+    ]).to_parquet(raw / "generations.part.parquet", index=False)
+    pd.DataFrame([
+        {"model": "model", "quant": "bf16", "item_id": "i1",
+         "detector": "cdd", "score": 0.5},
+    ]).to_parquet(raw / "detector_scores.part.parquet", index=False)
+    (tmp_path / "manifest.json").write_text(json.dumps({
+        "config": {
+            "models": ["model"], "quant_levels": ["bf16"], "n_items": 1,
+            "n_cdd_samples": 1,
+        },
+    }))
+
+    with pytest.raises(ValueError, match="incomplete or contain stale parts"):
+        aggregate_pilot(tmp_path)

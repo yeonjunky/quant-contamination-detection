@@ -52,6 +52,18 @@ def test_add_generation_and_flush_roundtrip(tmp_path):
     assert df.iloc[0]["partial_pass_rate"] == pytest.approx(1.0)
     assert bool(df.iloc[0]["passed"]) is True
     assert df.iloc[0]["generation_seconds"] == pytest.approx(2.0)
+    assert writer.n_buffered_generations == 0
+
+
+def test_flush_can_write_atomic_bounded_parts(tmp_path):
+    writer = RawDataWriter(tmp_path)
+    writer.add_generation(
+        model="m", quant="bf16", item_id="x", sample_id=0, is_greedy=True,
+        text="x", token_ids=[1], token_logprobs=[-0.1],
+    )
+    first = writer.flush(part="m-bf16-00000")["generations"]
+    assert first.name == "generations.m-bf16-00000.parquet"
+    assert writer.n_buffered_generations == 0
 
 
 def test_add_detector_score_and_flush_roundtrip(tmp_path):
@@ -115,6 +127,7 @@ def test_build_manifest_has_expected_fields():
     manifest = build_manifest({"model": "Qwen2.5-7B"}, seed=42)
     assert manifest.seed == 42
     assert manifest.config_hash == config_hash({"model": "Qwen2.5-7B"})
+    assert manifest.config == {"model": "Qwen2.5-7B"}
     assert "numpy" in manifest.package_versions
     assert manifest.package_versions["numpy"] is not None  # numpy is a hard dependency, always installed
     # A GPU-only package not installed on this profile resolves to None, not a crash.
@@ -128,3 +141,4 @@ def test_write_and_read_manifest_roundtrip(tmp_path):
     loaded = read_manifest(path)
     assert loaded["seed"] == 7
     assert loaded["config_hash"] == manifest.config_hash
+    assert loaded["config"] == {"x": 1}

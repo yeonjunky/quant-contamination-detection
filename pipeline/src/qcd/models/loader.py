@@ -6,12 +6,9 @@ succeed on the mock-only local profile (no torch/transformers-with-torch/
 bitsandbytes installed) — only actually calling a real backend requires the
 H100 GPU stack (requirements-h100.txt).
 
-**GPTQ_AWQ_INT4 (the paper's combined name for the fourth quant rung) is
-implemented via AWQ only, through llm-compressor, uniformly for every
-model — GPTQ itself is not implemented.** Rationale, the GPTQModel-vs-
-llm-compressor evidence, and the "try GPTQModel later" follow-up are
-recorded in `pipeline_build_plan.md`'s "Open assumptions" #1, not here —
-see that doc rather than re-deriving it. See `scripts/quantize_model.py`
+**GPTQ_AWQ_INT4 is a historical enum value. The fourth rung is implemented
+via AWQ only, through llm-compressor, uniformly for every model; GPTQ is not
+implemented.** See `scripts/quantize_model.py`
 for the offline quantization step this backend loads from (quantize once
 and save, unlike bnb's load-time quantization).
 """
@@ -27,7 +24,7 @@ from qcd.config import ModelSpec, Quant
 from qcd.models.mock import MockModel, MockTokenizer
 
 # Engineering default, not a paper-derived constant (constants.py is scoped to
-# CLAUDE.md/paper_draft.md-derived statistical/design values) — deliberately
+# AGENTS.md/paper_draft.md-derived statistical/design values) — deliberately
 # separate from that module.
 _DEFAULT_MAX_NEW_TOKENS = 512
 
@@ -101,11 +98,11 @@ def _load_bf16(spec: ModelSpec, quant: Quant) -> LoadedModel:
     import torch  # noqa: PLC0415
     from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: PLC0415
 
-    tokenizer = AutoTokenizer.from_pretrained(spec.hf_repo_id)
+    tokenizer = AutoTokenizer.from_pretrained(spec.hf_repo_id, revision=spec.revision)
     model = AutoModelForCausalLM.from_pretrained(
-        spec.hf_repo_id, dtype=torch.bfloat16, device_map="auto"
+        spec.hf_repo_id, revision=spec.revision, dtype=torch.bfloat16, device_map="auto"
     )
-    return _RealModelAdapter(model, tokenizer)
+    return _RealModelAdapter(model, tokenizer, revision=spec.revision)
 
 
 def _load_bnb(spec: ModelSpec, quant: Quant) -> LoadedModel:
@@ -124,9 +121,12 @@ def _load_bnb(spec: ModelSpec, quant: Quant) -> LoadedModel:
     else:
         raise ValueError(f"not a bitsandbytes quant level: {quant}")
 
-    tokenizer = AutoTokenizer.from_pretrained(spec.hf_repo_id)
-    model = AutoModelForCausalLM.from_pretrained(spec.hf_repo_id, quantization_config=bnb_config, device_map="auto")
-    return _RealModelAdapter(model, tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(spec.hf_repo_id, revision=spec.revision)
+    model = AutoModelForCausalLM.from_pretrained(
+        spec.hf_repo_id, revision=spec.revision,
+        quantization_config=bnb_config, device_map="auto",
+    )
+    return _RealModelAdapter(model, tokenizer, revision=spec.revision)
 
 
 def _quantized_checkpoint_dir(spec: ModelSpec) -> Path:
@@ -153,7 +153,11 @@ def _load_gptq_or_awq(spec: ModelSpec, quant: Quant) -> LoadedModel:
 
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
     model = AutoModelForCausalLM.from_pretrained(checkpoint_dir, device_map="auto")
-    return _RealModelAdapter(model, tokenizer)
+    manifest = checkpoint_dir / "quantization_manifest.json"
+    revision = hashlib.sha256(manifest.read_bytes()).hexdigest() if manifest.exists() else None
+    if revision is None:
+        raise FileNotFoundError(f"AWQ checkpoint is missing {manifest}")
+    return _RealModelAdapter(model, tokenizer, revision=revision)
 
 
 class _RealModelAdapter:
@@ -162,10 +166,14 @@ class _RealModelAdapter:
     on mock-vs-real. Covered by scripts/run_smoke_test.py (real GPU) and
     tests/test_real_model_adapter.py (tiny CPU model, no chat template)."""
 
-    def __init__(self, model, tokenizer, *, max_new_tokens: int = _DEFAULT_MAX_NEW_TOKENS) -> None:
+    def __init__(
+        self, model, tokenizer, *, max_new_tokens: int = _DEFAULT_MAX_NEW_TOKENS,
+        revision: str | None = None,
+    ) -> None:
         self.model = model
         self.tokenizer = tokenizer
         self.max_new_tokens = max_new_tokens
+        self.revision = revision
         # score_logprobs() only receives token_ids (matches the shared
         # LoadedModel Protocol, which has no prompt argument) but a real
         # teacher-forced pass needs the prompt as context. generate() is

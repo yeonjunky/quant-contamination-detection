@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -34,12 +35,13 @@ def connect(path: Path) -> sqlite3.Connection:
             started_at TEXT,
             heartbeat_at TEXT,
             worker_id TEXT,
+            lease_token TEXT,
             finished_at TEXT
         );
         """
     )
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(shards)")}
-    for name in ("heartbeat_at", "worker_id"):
+    for name in ("heartbeat_at", "worker_id", "lease_token"):
         if name not in columns:
             connection.execute(f"ALTER TABLE shards ADD COLUMN {name} TEXT")
     connection.commit()
@@ -91,7 +93,7 @@ def recover_stale(connection: sqlite3.Connection, *, stale_after_seconds: int) -
     with connection:
         cursor = connection.execute(
             "UPDATE shards SET status='pending', error='stale worker lease recovered', "
-            "started_at=NULL, heartbeat_at=NULL, worker_id=NULL "
+            "started_at=NULL, heartbeat_at=NULL, worker_id=NULL, lease_token=NULL "
             "WHERE status='running' AND (heartbeat_at IS NULL OR "
             "heartbeat_at < datetime('now', ?))",
             (f"-{stale_after_seconds} seconds",),
@@ -116,7 +118,7 @@ def invalidate_completed(connection: sqlite3.Connection, *, reason: str) -> int:
         cursor = connection.execute(
             "UPDATE shards SET status='pending', documents_scanned=NULL, evidence_rows=NULL, "
             "output_path=NULL, error=?, started_at=NULL, heartbeat_at=NULL, worker_id=NULL, "
-            "finished_at=NULL WHERE status='complete'",
+            "lease_token=NULL, finished_at=NULL WHERE status='complete'",
             (f"invalidated: {reason}",),
         )
         return cursor.rowcount
@@ -127,6 +129,7 @@ def claim_next(connection: sqlite3.Connection, *, worker_id: str) -> dict[str, A
         raise ValueError("worker_id must be non-empty")
     connection.execute("BEGIN IMMEDIATE")
     try:
+        lease_token = uuid.uuid4().hex
         row = connection.execute(
             "SELECT * FROM shards WHERE status='pending' "
             "ORDER BY priority, attempts, path LIMIT 1",
@@ -136,23 +139,28 @@ def claim_next(connection: sqlite3.Connection, *, worker_id: str) -> dict[str, A
             return None
         connection.execute(
             "UPDATE shards SET status='running', attempts=attempts+1, error=NULL, "
-            "started_at=CURRENT_TIMESTAMP, heartbeat_at=CURRENT_TIMESTAMP, worker_id=?, "
+            "started_at=CURRENT_TIMESTAMP, heartbeat_at=CURRENT_TIMESTAMP, worker_id=?, lease_token=?, "
             "finished_at=NULL WHERE path=? AND status='pending'",
-            (worker_id, row["path"]),
+            (worker_id, lease_token, row["path"]),
         )
         connection.commit()
-        return dict(row)
+        claimed = dict(row)
+        claimed["worker_id"] = worker_id
+        claimed["lease_token"] = lease_token
+        return claimed
     except BaseException:
         connection.rollback()
         raise
 
 
-def heartbeat(connection: sqlite3.Connection, path: str, *, worker_id: str) -> bool:
+def heartbeat(
+    connection: sqlite3.Connection, path: str, *, worker_id: str, lease_token: str,
+) -> bool:
     with connection:
         cursor = connection.execute(
             "UPDATE shards SET heartbeat_at=CURRENT_TIMESTAMP "
-            "WHERE path=? AND status='running' AND worker_id=?",
-            (path, worker_id),
+            "WHERE path=? AND status='running' AND worker_id=? AND lease_token=?",
+            (path, worker_id, lease_token),
         )
         return cursor.rowcount == 1
 
@@ -165,24 +173,28 @@ def mark_complete(
     evidence_rows: int,
     output_path: str,
     worker_id: str,
+    lease_token: str,
 ) -> bool:
     with connection:
         cursor = connection.execute(
             "UPDATE shards SET status='complete', documents_scanned=?, evidence_rows=?, "
             "output_path=?, heartbeat_at=CURRENT_TIMESTAMP, finished_at=CURRENT_TIMESTAMP "
-            "WHERE path=? AND status='running' AND worker_id=?",
-            (documents_scanned, evidence_rows, output_path, path, worker_id),
+            "WHERE path=? AND status='running' AND worker_id=? AND lease_token=?",
+            (documents_scanned, evidence_rows, output_path, path, worker_id, lease_token),
         )
         return cursor.rowcount == 1
 
 
-def mark_failed(connection: sqlite3.Connection, path: str, error: str, *, worker_id: str) -> bool:
+def mark_failed(
+    connection: sqlite3.Connection, path: str, error: str, *, worker_id: str,
+    lease_token: str,
+) -> bool:
     with connection:
         cursor = connection.execute(
             "UPDATE shards SET status='failed', error=?, heartbeat_at=CURRENT_TIMESTAMP, "
             "finished_at=CURRENT_TIMESTAMP "
-            "WHERE path=? AND status='running' AND worker_id=?",
-            (error[-4000:], path, worker_id),
+            "WHERE path=? AND status='running' AND worker_id=? AND lease_token=?",
+            (error[-4000:], path, worker_id, lease_token),
         )
         return cursor.rowcount == 1
 

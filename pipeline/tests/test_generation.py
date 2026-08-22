@@ -27,6 +27,25 @@ def test_cache_key_digest_changes_with_prompt():
     assert k1.digest != k2.digest
 
 
+def test_cache_key_digest_changes_with_revision_temperature_and_generation_config():
+    base = dict(
+        model_name="m", quant="bf16", item_id="x", is_greedy=False,
+        sample_id=0, prompt="p",
+    )
+    original = CacheKey(
+        **base, temperature=0.8, model_revision="rev-a", generation_config="max=512",
+    )
+    assert original.digest != CacheKey(
+        **base, temperature=0.7, model_revision="rev-a", generation_config="max=512",
+    ).digest
+    assert original.digest != CacheKey(
+        **base, temperature=0.8, model_revision="rev-b", generation_config="max=512",
+    ).digest
+    assert original.digest != CacheKey(
+        **base, temperature=0.8, model_revision="rev-a", generation_config="max=1024",
+    ).digest
+
+
 def test_sample_item_shape(tmp_path):
     model = MockModel()
     model.register_item("x", contaminated=False, quality=0.5)

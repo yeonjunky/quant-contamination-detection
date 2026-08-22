@@ -1,6 +1,12 @@
 from qcd.models.registry import ALL_MODELS, OLMO3_1_32B, get_model
 
 
+def test_every_model_is_pinned_to_an_immutable_commit() -> None:
+    assert len(ALL_MODELS) == 5
+    assert all(len(model.revision) == 40 for model in ALL_MODELS)
+    assert all(set(model.revision) <= set("0123456789abcdef") for model in ALL_MODELS)
+
+
 def test_olmo_3_1_32b_uses_verified_hugging_face_id() -> None:
     assert OLMO3_1_32B.name == "Olmo3.1-32B-Instruct"
     assert OLMO3_1_32B.hf_repo_id == "allenai/Olmo-3.1-32B-Instruct"

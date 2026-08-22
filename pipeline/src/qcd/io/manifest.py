@@ -12,7 +12,9 @@ import datetime as dt
 import hashlib
 import json
 import platform
+import os
 import subprocess
+import tempfile
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -57,6 +59,7 @@ def config_hash(config: dict) -> str:
 @dataclasses.dataclass
 class RunManifest:
     git_commit: str | None
+    config: dict
     config_hash: str
     package_versions: dict[str, str | None]
     seed: int | None
@@ -77,6 +80,7 @@ def build_manifest(
 ) -> RunManifest:
     return RunManifest(
         git_commit=get_git_commit_hash(repo_dir),
+        config=dict(config),
         config_hash=config_hash(config),
         package_versions=get_installed_package_versions(packages),
         seed=seed,
@@ -91,8 +95,21 @@ def build_manifest(
 def write_manifest(manifest: RunManifest, path: str | Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(dataclasses.asdict(manifest), f, indent=2)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as f:
+            json.dump(dataclasses.asdict(manifest), f, indent=2, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_name, path)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
     return path
 
 

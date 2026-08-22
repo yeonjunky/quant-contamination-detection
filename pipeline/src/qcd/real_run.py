@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import gc
 import re
 import time
 from collections import defaultdict
@@ -24,7 +25,7 @@ from pathlib import Path
 from qcd.config import ModelSpec, Quant
 from qcd.constants import CDD_N_SAMPLES, CDD_SAMPLE_TEMPERATURE
 from qcd.data.humaneval import load_humaneval
-from qcd.data.livecodebench import load_livecodebench_split
+from qcd.data.livecodebench import REPO_REVISION as LCB_REPO_REVISION, load_livecodebench_split
 from qcd.data.mbppplus import load_mbppplus
 from qcd.data.schema import Dataset, Item
 from qcd.detectors.cdd import peakedness
@@ -32,7 +33,7 @@ from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score
 from qcd.generation.cache import GenerationCache
 from qcd.generation.sampler import sample_item
-from qcd.io.manifest import build_manifest, write_manifest
+from qcd.io.manifest import build_manifest, read_manifest, write_manifest
 from qcd.io.raw_writer import RawDataWriter
 from qcd.models.loader import load_model
 from qcd.scoring.logprob import score_prompt_logprobs
@@ -43,6 +44,7 @@ _EVALPLUS_DATASETS = (Dataset.HUMANEVAL, Dataset.MBPPPLUS)
 # Matches a ```-fenced block, optional language tag (```python, ```py, bare
 # ```, ...). DOTALL so the fence content can span multiple lines.
 _CODE_FENCE_RE = re.compile(r"```(?:[a-zA-Z0-9_+-]*)\n?(.*?)```", re.DOTALL)
+_RAW_BATCH_ITEMS = 25
 
 
 def _strip_markdown_fence(text: str) -> str:
@@ -166,37 +168,57 @@ def _assemble_candidate_code(item: Item, completion_text: str) -> str:
 
 def run(config: RealRunConfig) -> None:
     items = load_all_items(config)
-
-    writer = RawDataWriter(config.output_dir / "raw")
-    writer.write_items(items)
-
-    manifest = build_manifest(
-        {
+    run_config = {
             "models": [m.name for m in config.models],
+            "model_revisions": {m.name: m.revision for m in config.models},
             "quant_levels": [q.value for q in config.quant_levels],
             "baseline_dtype": "bfloat16",
             "n_items": len(items),
             "lcb_cutoff_boundary": config.lcb_cutoff_boundary.isoformat(),
             "lcb_release_version": config.lcb_release_version,
+            "lcb_repository_revision": LCB_REPO_REVISION,
+            "n_cdd_samples": config.n_cdd_samples,
+            "cdd_sample_temperature": CDD_SAMPLE_TEMPERATURE,
+            "include_humaneval": config.include_humaneval,
+            "include_mbppplus": config.include_mbppplus,
+            "item_limit_per_condition": config.item_limit_per_condition,
+            "generation_max_new_tokens": 512,
+            "generation_seed_policy": "sha256(item_id,sample_id,temperature)-v1",
         }
-    )
-    write_manifest(manifest, config.output_dir / "manifest.json")
+    manifest = build_manifest(run_config)
+    manifest_path = config.output_dir / "manifest.json"
+    if manifest_path.exists():
+        existing = read_manifest(manifest_path)
+        if existing.get("config_hash") != manifest.config_hash:
+            raise RuntimeError(
+                f"output directory already contains a different run configuration: {manifest_path}"
+            )
+    else:
+        write_manifest(manifest, manifest_path)
+
+    writer = RawDataWriter(config.output_dir / "raw")
+    writer.write_items(items)
 
     cache = GenerationCache(config.output_dir / "cache")
 
     for model_spec in config.models:
         for quant in config.quant_levels:
             model = load_model(model_spec, quant, mock=False)
-            model_config = getattr(getattr(model, "model", None), "config", None)
-            model_revision = getattr(model_config, "_commit_hash", None)
+            model_revision = getattr(model, "revision", None) or model_spec.revision
             tokenizer_revision = getattr(
                 getattr(model, "tokenizer", None), "init_kwargs", {}
-            ).get("_commit_hash")
-            for item in items:
+            ).get("_commit_hash") or model_spec.revision
+            part_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "-", f"{model_spec.name}-{quant.value}")
+            for item_index, item in enumerate(items):
                 started = time.perf_counter()
                 generations = sample_item(
                     model, cache, model_name=model_spec.name, quant=quant.value,
                     item_id=item.item_id, prompt=_generation_prompt(item), n_samples=config.n_cdd_samples,
+                    model_revision=model_revision,
+                    generation_config=(
+                        f"max_new_tokens={getattr(model, 'max_new_tokens', 512)};"
+                        "seed_policy=sha256-v1"
+                    ),
                 )
                 generation_seconds = time.perf_counter() - started
                 candidate_code = _assemble_candidate_code(item, generations.greedy.text)
@@ -245,6 +267,24 @@ def run(config: RealRunConfig) -> None:
                     ("completion_perplexity", completion_ppl_score),
                     ("completion_mink_prob", completion_mink_score),
                 ):
-                    writer.add_detector_score(model=model_spec.name, quant=quant.value, item_id=item.item_id, detector=detector, score=score)
+                    writer.add_detector_score(
+                        model=model_spec.name, quant=quant.value, item_id=item.item_id,
+                        detector=detector, score=score,
+                        source_sample_ids=(
+                            list(range(config.n_cdd_samples + 1)) if detector == "cdd" else None
+                        ),
+                    )
+                if (item_index + 1) % _RAW_BATCH_ITEMS == 0 or item_index + 1 == len(items):
+                    writer.flush(part=f"{part_prefix}-{item_index // _RAW_BATCH_ITEMS:05d}")
 
-    writer.flush()
+            # The right-hand side of the next ``model = load_model(...)`` is
+            # evaluated before rebinding, so explicit release is required to
+            # avoid holding two large checkpoints on the H100 simultaneously.
+            del model
+            gc.collect()
+            try:
+                import torch  # noqa: PLC0415
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass

@@ -208,23 +208,26 @@ def test_run_scores_fixed_prompt_and_keeps_completion_confidence(tmp_path, monke
     assert fake_model.prompt_calls == [("q1", "fixed prompt")]
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["extra"] == {}
-    # The enforced dtype is part of the hashed run configuration itself.
-    expected_config = {
-        "models": [QWEN2_5_7B.name],
-        "quant_levels": [Quant.BF16.value],
-        "n_items": 1,
-        "lcb_cutoff_boundary": config.lcb_cutoff_boundary.isoformat(),
-        "lcb_release_version": config.lcb_release_version,
-        "baseline_dtype": "bfloat16",
-    }
     from qcd.io.manifest import config_hash
-    assert manifest["config_hash"] == config_hash(expected_config)
-    generations = pd.read_parquet(tmp_path / "raw" / "generations.parquet")
+    assert manifest["config_hash"] == config_hash(manifest["config"])
+    assert manifest["config"]["models"] == [QWEN2_5_7B.name]
+    assert manifest["config"]["model_revisions"] == {
+        QWEN2_5_7B.name: QWEN2_5_7B.revision,
+    }
+    assert manifest["config"]["baseline_dtype"] == "bfloat16"
+    assert manifest["config"]["n_cdd_samples"] == 2
+    generations = pd.concat(
+        [pd.read_parquet(path) for path in sorted((tmp_path / "raw").glob("generations*.parquet"))],
+        ignore_index=True,
+    )
     greedy = generations[generations["is_greedy"]].iloc[0]
     assert list(greedy["token_logprobs"]) == pytest.approx([-0.2, -0.3])
     assert list(greedy["prompt_token_logprobs"]) == pytest.approx([-1.0, -2.0, -3.0])
 
-    scores = pd.read_parquet(tmp_path / "raw" / "detector_scores.parquet")
+    scores = pd.concat(
+        [pd.read_parquet(path) for path in sorted((tmp_path / "raw").glob("detector_scores*.parquet"))],
+        ignore_index=True,
+    )
     assert set(scores["detector"]) == {
         "cdd", "perplexity", "mink_prob",
         "completion_perplexity", "completion_mink_prob",

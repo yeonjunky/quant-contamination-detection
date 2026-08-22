@@ -13,9 +13,8 @@ on the two Olmo3 arms. llm-compressor has no per-architecture registry — its
 `AWQModifier`/`QuantizationModifier` recipe targets any HF-loadable causal
 LM's `nn.Linear` layers by name pattern, so it's expected to work on Olmo3
 without needing upstream support. The paper (`paper/paper_draft.md` §4.3)
-treats "GPTQ-int4 or AWQ-int4" as interchangeable representatives of one
-calibration-based 4-bit condition, not a per-model design axis, so using one
-technique uniformly is more consistent than mixing, not less.
+specifies AWQ uniformly, so the implementation does not mix calibration-based
+quantizers across models.
 
 Recipe verbatim from vllm-project/llm-compressor's own reference example
 (examples/awq/llama_example.py) — the canonical llama-family recipe, which
@@ -67,6 +66,10 @@ MAX_SEQUENCE_LENGTH = 512
 
 _CODE_DATASET_ID = "flytech/python-codes-25k"
 _CHAT_DATASET_ID = "HuggingFaceH4/ultrachat_200k"
+_CALIBRATION_REVISIONS = {
+    _CODE_DATASET_ID: "0ed98ff2a76c5d133d8c157b814189a5a17ebd20",
+    _CHAT_DATASET_ID: "8049631c405ae6576f93f445c6b8166f76f5505a",
+}
 
 
 def _checkpoint_dir(model_name: str, calibration: str) -> Path:
@@ -88,15 +91,19 @@ def _load_code_calibration_dataset(tokenizer):
     # unlike raw unstructured source files, is arguably *more* representative
     # of this pipeline's actual inference-time distribution (an -Instruct
     # model answering a code-generation prompt), not less.
-    ds = load_dataset(_CODE_DATASET_ID, split="train")
+    ds = load_dataset(
+        _CODE_DATASET_ID, revision=_CALIBRATION_REVISIONS[_CODE_DATASET_ID], split="train",
+    )
     return ds.shuffle(seed=42).select(range(NUM_CALIBRATION_SAMPLES))
 
 
 def _load_chat_calibration_dataset(tokenizer):
     from datasets import load_dataset  # noqa: PLC0415
 
-    ds = load_dataset(_CHAT_DATASET_ID, split=f"train_sft[:{NUM_CALIBRATION_SAMPLES}]")
-    ds = ds.shuffle(seed=42)
+    ds = load_dataset(
+        _CHAT_DATASET_ID, revision=_CALIBRATION_REVISIONS[_CHAT_DATASET_ID], split="train_sft",
+    )
+    ds = ds.shuffle(seed=42).select(range(NUM_CALIBRATION_SAMPLES))
 
     def _to_text(example):
         return {"text": tokenizer.apply_chat_template(example["messages"], tokenize=False)}
@@ -122,8 +129,10 @@ def quantize(model_name: str, calibration: str) -> Path:
     save_dir = _checkpoint_dir(spec.name, calibration)
 
     print(f"Loading {spec.hf_repo_id} (bf16 source) for quantization...")
-    model = AutoModelForCausalLM.from_pretrained(spec.hf_repo_id, torch_dtype="auto")
-    tokenizer = AutoTokenizer.from_pretrained(spec.hf_repo_id)
+    model = AutoModelForCausalLM.from_pretrained(
+        spec.hf_repo_id, revision=spec.revision, torch_dtype="auto",
+    )
+    tokenizer = AutoTokenizer.from_pretrained(spec.hf_repo_id, revision=spec.revision)
 
     print(f"Loading {calibration} calibration dataset ({NUM_CALIBRATION_SAMPLES} samples)...")
     dataset = _load_calibration_dataset(calibration, tokenizer)
@@ -157,10 +166,14 @@ def quantize(model_name: str, calibration: str) -> Path:
         {
             "model_name": spec.name,
             "hf_repo_id": spec.hf_repo_id,
+            "source_model_revision": spec.revision,
             "quant": "gptq_awq_int4",
             "backend": "llmcompressor_awq",
             "calibration_domain": calibration,
             "calibration_dataset_id": _CODE_DATASET_ID if calibration == "code" else _CHAT_DATASET_ID,
+            "calibration_dataset_revision": _CALIBRATION_REVISIONS[
+                _CODE_DATASET_ID if calibration == "code" else _CHAT_DATASET_ID
+            ],
             "num_calibration_samples": NUM_CALIBRATION_SAMPLES,
             "max_sequence_length": MAX_SEQUENCE_LENGTH,
             "recipe": ["AWQModifier(duo_scaling=both)", "QuantizationModifier(scheme=W4A16_ASYM, targets=Linear, ignore=lm_head)"],

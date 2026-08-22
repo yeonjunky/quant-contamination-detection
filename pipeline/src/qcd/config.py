@@ -1,6 +1,6 @@
 """Run configuration dataclasses shared by the mock dry-run harness and the
-real H100 drivers (scripts/run_pilot.py, scripts/run_main.py, not yet
-written). Kept deliberately thin: this is wiring, not experimental design —
+real H100 drivers (scripts/run_pilot.py and scripts/run_main.py). Kept
+deliberately thin: this is wiring, not experimental design —
 the actual axes (which models, which quant levels, which datasets) are fixed
 by paper/paper_draft.md §4.1-§4.3 and mirrored in models/registry.py.
 """
@@ -14,10 +14,11 @@ from qcd.data.schema import Dataset
 
 
 class Quant(enum.Enum):
-    """The four-level quantization ladder (paper §4.3). bf16 is the baseline
-    every other level is compared against; GPTQ/AWQ is a placeholder label —
-    which of the two a given model arm actually uses is resolved in
-    models/registry.py, not here."""
+    """The four-level quantization ladder (paper §4.3).
+
+    ``GPTQ_AWQ_INT4`` is retained as a historical storage/API value; every
+    current arm implements that rung with AWQ.
+    """
 
     BF16 = "bf16"
     BNB_INT8 = "bnb_int8"
@@ -29,10 +30,9 @@ class Quant(enum.Enum):
 class ModelSpec:
     name: str  # paper's own model label, e.g. "Qwen2.5-7B"
     param_count_b: float
-    # HF hub repo id. Placeholder pending confirmation against the actual
-    # gated/ungated repo names before any real H100 run — not yet verified,
-    # do not treat as citation-grade.
+    # Verified Hugging Face repository ID; revision pins the exact snapshot.
     hf_repo_id: str
+    revision: str  # immutable Hugging Face commit SHA
     role: str  # paper §4.1's "Role" column, e.g. "Pilot workhorse + size axis"
     included_in_main_analysis: bool = True
 
@@ -40,8 +40,7 @@ class ModelSpec:
 @dataclasses.dataclass(frozen=True)
 class QuantSpec:
     quant: Quant
-    # Which loader backend implements this level for a given model; resolved
-    # per-model since GPTQ vs AWQ differs by arm (paper §4.3 footnote).
+    # Loader backend implementing this level.
     backend: str
 
 

@@ -38,15 +38,19 @@ def sample_item(
     n_samples: int = CDD_N_SAMPLES,
     sample_temperature: float = CDD_SAMPLE_TEMPERATURE,
     greedy_temperature: float = CDD_GREEDY_TEMPERATURE,
+    model_revision: str = "",
+    generation_config: str = "",
 ) -> ItemGenerations:
     greedy = _get_or_generate(
         model, cache, model_name=model_name, quant=quant, item_id=item_id, prompt=prompt,
         is_greedy=True, sample_id=0, temperature=greedy_temperature,
+        model_revision=model_revision, generation_config=generation_config,
     )
     samples = [
         _get_or_generate(
             model, cache, model_name=model_name, quant=quant, item_id=item_id, prompt=prompt,
             is_greedy=False, sample_id=sample_id, temperature=sample_temperature,
+            model_revision=model_revision, generation_config=generation_config,
         )
         for sample_id in range(n_samples)
     ]
@@ -64,10 +68,14 @@ def _get_or_generate(
     is_greedy: bool,
     sample_id: int,
     temperature: float,
+    model_revision: str,
+    generation_config: str,
 ):
     key = CacheKey(
         model_name=model_name, quant=quant, item_id=item_id,
         is_greedy=is_greedy, sample_id=sample_id, prompt=prompt,
+        temperature=temperature, model_revision=model_revision,
+        generation_config=generation_config,
     )
     cached = cache.get(key)
     if cached is not None:

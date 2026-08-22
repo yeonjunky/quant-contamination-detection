@@ -30,14 +30,20 @@ def test_manifest_resumes_and_prioritizes_shards(tmp_path):
     )
     connection.commit()
     assert recover_stale(connection, stale_after_seconds=600) == 1
-    assert claim_next(connection, worker_id="worker-b")["path"] == "software.jsonl.zst"
+    second = claim_next(connection, worker_id="worker-b")
+    assert second["path"] == "software.jsonl.zst"
     mark_complete(
         connection, "software.jsonl.zst", documents_scanned=7,
         evidence_rows=2, output_path="software.jsonl", worker_id="worker-b",
+        lease_token=second["lease_token"],
     )
 
-    assert claim_next(connection, worker_id="worker-a")["path"] == "general.jsonl.zst"
-    mark_failed(connection, "general.jsonl.zst", "network error", worker_id="worker-a")
+    general = claim_next(connection, worker_id="worker-a")
+    assert general["path"] == "general.jsonl.zst"
+    mark_failed(
+        connection, "general.jsonl.zst", "network error", worker_id="worker-a",
+        lease_token=general["lease_token"],
+    )
     assert claim_next(connection, worker_id="worker-a") is None
     assert retry_failed(connection) == 1
     assert claim_next(connection, worker_id="worker-a")["path"] == "general.jsonl.zst"
@@ -56,24 +62,48 @@ def test_worker_ownership_prevents_stale_completion(tmp_path):
     first = connect(path)
     second = connect(path)
     initialize(first, metadata={"revision": "abc"}, shards=[("one", 1, 0)])
-    claim_next(first, worker_id="old-worker")
+    old_claim = claim_next(first, worker_id="old-worker")
     first.execute("UPDATE shards SET heartbeat_at=datetime('now', '-601 seconds')")
     first.commit()
     assert recover_stale(second, stale_after_seconds=600) == 1
-    claim_next(second, worker_id="new-worker")
+    new_claim = claim_next(second, worker_id="new-worker")
 
-    assert heartbeat(first, "one", worker_id="old-worker") is False
+    assert heartbeat(
+        first, "one", worker_id="old-worker", lease_token=old_claim["lease_token"],
+    ) is False
     assert mark_complete(
         first, "one", documents_scanned=1, evidence_rows=0,
-        output_path="old.jsonl", worker_id="old-worker",
+        output_path="old.jsonl", worker_id="old-worker", lease_token=old_claim["lease_token"],
     ) is False
-    assert mark_failed(first, "one", "late", worker_id="old-worker") is False
+    assert mark_failed(
+        first, "one", "late", worker_id="old-worker", lease_token=old_claim["lease_token"],
+    ) is False
     assert mark_complete(
         second, "one", documents_scanned=2, evidence_rows=1,
-        output_path="new.jsonl", worker_id="new-worker",
+        output_path="new.jsonl", worker_id="new-worker", lease_token=new_claim["lease_token"],
     ) is True
     row = second.execute("SELECT status, output_path FROM shards WHERE path='one'").fetchone()
     assert tuple(row) == ("complete", "new.jsonl")
+
+
+def test_lease_token_prevents_old_process_with_reused_worker_id(tmp_path):
+    path = tmp_path / "manifest.sqlite"
+    old = connect(path)
+    new = connect(path)
+    initialize(old, metadata={"revision": "abc"}, shards=[("one", 1, 0)])
+    old_claim = claim_next(old, worker_id="stable-worker")
+    old.execute("UPDATE shards SET heartbeat_at=datetime('now', '-601 seconds')")
+    old.commit()
+    assert recover_stale(new, stale_after_seconds=600) == 1
+    new_claim = claim_next(new, worker_id="stable-worker")
+
+    assert old_claim["lease_token"] != new_claim["lease_token"]
+    assert heartbeat(
+        old, "one", worker_id="stable-worker", lease_token=old_claim["lease_token"],
+    ) is False
+    assert heartbeat(
+        new, "one", worker_id="stable-worker", lease_token=new_claim["lease_token"],
+    ) is True
 
 
 def test_manifest_rejects_a_different_revision(tmp_path):
@@ -108,10 +138,10 @@ def test_worker_configuration_must_match_manifest_metadata(tmp_path):
 def test_completed_shards_can_be_invalidated_after_schema_change(tmp_path):
     connection = connect(tmp_path / "manifest.sqlite")
     initialize(connection, metadata={"revision": "abc"}, shards=[("one", 10, 0)])
-    claim_next(connection, worker_id="worker")
+    claim = claim_next(connection, worker_id="worker")
     mark_complete(
         connection, "one", documents_scanned=5, evidence_rows=2,
-        output_path="old.jsonl", worker_id="worker",
+        output_path="old.jsonl", worker_id="worker", lease_token=claim["lease_token"],
     )
     assert invalidate_completed(connection, reason="candidate schema v2") == 1
     row = connection.execute(
