@@ -74,12 +74,15 @@ python scripts/manage_olmo_pretraining_scan.py \
   --output-dir ../data/olmo_ground_truth/pretraining/olmo3_7b_shards
 ```
 
-`status` prints completed shard, byte, and document counts. `run` returns work
-left in `running` by an interrupted process to `pending`; completed shards are
-not rescanned. A file lock prevents two workers from accidentally reclaiming
-each other's active shard. `--retry-failed` schedules each currently failed
-shard for one additional attempt, and `--keep-going` lets the worker continue
-after a failure.
+`status` prints completed shard, byte, and document counts. Multiple `run`
+processes may share one manifest: each claim records a worker ID and heartbeat,
+and completion is accepted only from the current owner. The default stale lease
+timeout is 600 seconds. A surviving worker returns an expired lease to `pending`
+before claiming its next shard, so a terminated worker's shard is retried
+without rescanning completed work. Per-worker output directories prevent a late
+stale process from overwriting the current owner's result. `--retry-failed`
+schedules each currently failed shard for one additional attempt, and
+`--keep-going` lets the worker continue after a failure.
 Software-related source directories have queue priority, but all manifest
 shards remain required for an exhaustive result. Each completed shard writes
 only nonzero string evidence, atomically, while the manifest records negative

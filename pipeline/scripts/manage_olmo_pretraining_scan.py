@@ -6,12 +6,12 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
-import fcntl
 import hashlib
 import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from qcd.data.humaneval import load_humaneval
@@ -20,10 +20,11 @@ from qcd.data.mbppplus import load_mbppplus
 from qcd.ground_truth.shard_manifest import (
     claim_next,
     connect,
+    heartbeat,
     initialize,
     mark_complete,
     mark_failed,
-    reset_running,
+    recover_stale,
     retry_failed,
     summary,
 )
@@ -79,68 +80,71 @@ def write_atomic(path: Path, rows: list[dict]) -> None:
 
 
 def run(args, connection) -> None:
-    lock_path = args.manifest.with_suffix(args.manifest.suffix + ".runner.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock = lock_path.open("a+")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as error:
-        lock.close()
-        raise RuntimeError(f"another worker is already using {args.manifest}") from error
-    reset = reset_running(connection)
-    if reset:
-        print(f"returned {reset} interrupted shard(s) to pending", file=sys.stderr)
     if args.retry_failed:
         retried = retry_failed(connection)
         print(f"returned {retried} failed shard(s) to pending", file=sys.stderr)
     items = benchmark_items()
     processed = 0
-    try:
-        while args.max_shards is None or processed < args.max_shards:
-            shard = claim_next(connection)
-            if shard is None:
-                break
-            path = shard["path"]
-            destination = args.output_dir / output_name(path)
-            started = time.monotonic()
+    while args.max_shards is None or processed < args.max_shards:
+        recovered = recover_stale(
+            connection, stale_after_seconds=args.stale_after_seconds,
+        )
+        if recovered:
+            print(f"worker={args.worker_id} recovered={recovered}", file=sys.stderr, flush=True)
+        shard = claim_next(connection, worker_id=args.worker_id)
+        if shard is None:
+            break
+        path = shard["path"]
+        destination = args.output_dir / args.worker_id / output_name(path)
+        started = time.monotonic()
 
-            def progress(count: int) -> None:
-                elapsed = time.monotonic() - started
-                print(
-                    f"shard={path} documents={count:,} rate={count / elapsed:.1f}/s",
-                    file=sys.stderr, flush=True,
-                )
+        def progress(count: int) -> None:
+            if not heartbeat(connection, path, worker_id=args.worker_id):
+                raise RuntimeError(f"worker lease lost for {path}")
+            elapsed = time.monotonic() - started
+            print(
+                f"worker={args.worker_id} shard={path} documents={count:,} "
+                f"rate={count / elapsed:.1f}/s",
+                file=sys.stderr, flush=True,
+            )
 
-            try:
-                rows = scan_corpus(
-                    items, documents(args.repo, args.revision, path),
-                    corpus_name=f"{args.repo}@{args.revision}:{path}", stage="pretraining",
-                    config=MatchConfig(args.ngram_size, args.ngram_coverage_threshold),
-                    progress_every=args.progress_every, progress_callback=progress,
-                )
-                document_count = rows[0]["documents_scanned"] if rows else 0
-                evidence = [
-                    row for row in rows
-                    if row["normalized_verbatim"] or row["matched_ngrams"] > 0
-                ]
-                write_atomic(destination, evidence)
-                mark_complete(
-                    connection, path, documents_scanned=document_count,
-                    evidence_rows=len(evidence), output_path=str(destination),
-                )
-                processed += 1
-                print(
-                    f"complete shard={path} documents={document_count:,} evidence={len(evidence):,}",
-                    file=sys.stderr, flush=True,
-                )
-            except BaseException as error:
-                mark_failed(connection, path, f"{type(error).__name__}: {error}")
-                print(f"failed shard={path}: {error}", file=sys.stderr, flush=True)
-                if not args.keep_going:
-                    raise
-    finally:
-        fcntl.flock(lock, fcntl.LOCK_UN)
-        lock.close()
+        try:
+            rows = scan_corpus(
+                items, documents(args.repo, args.revision, path),
+                corpus_name=f"{args.repo}@{args.revision}:{path}", stage="pretraining",
+                config=MatchConfig(args.ngram_size, args.ngram_coverage_threshold),
+                progress_every=args.progress_every, progress_callback=progress,
+            )
+            document_count = rows[0]["documents_scanned"] if rows else 0
+            evidence = [
+                row for row in rows
+                if row["normalized_verbatim"] or row["matched_ngrams"] > 0
+            ]
+            if not heartbeat(connection, path, worker_id=args.worker_id):
+                raise RuntimeError(f"worker lease lost before writing {path}")
+            write_atomic(destination, evidence)
+            if not mark_complete(
+                connection, path, documents_scanned=document_count,
+                evidence_rows=len(evidence), output_path=str(destination),
+                worker_id=args.worker_id,
+            ):
+                raise RuntimeError(f"worker lease lost before completing {path}")
+            processed += 1
+            print(
+                f"worker={args.worker_id} complete shard={path} documents={document_count:,} "
+                f"evidence={len(evidence):,}", file=sys.stderr, flush=True,
+            )
+        except BaseException as error:
+            mark_failed(
+                connection, path, f"{type(error).__name__}: {error}",
+                worker_id=args.worker_id,
+            )
+            print(
+                f"worker={args.worker_id} failed shard={path}: {error}",
+                file=sys.stderr, flush=True,
+            )
+            if not args.keep_going:
+                raise
 
 
 def print_status(connection) -> None:
@@ -223,6 +227,8 @@ def main() -> None:
     run_parser.add_argument("--repo", required=True)
     run_parser.add_argument("--revision", required=True)
     run_parser.add_argument("--output-dir", type=Path, required=True)
+    run_parser.add_argument("--worker-id", default=f"worker-{uuid.uuid4().hex[:12]}")
+    run_parser.add_argument("--stale-after-seconds", type=int, default=600)
     run_parser.add_argument("--max-shards", type=int)
     run_parser.add_argument("--retry-failed", action="store_true")
     run_parser.add_argument("--keep-going", action="store_true")

@@ -32,10 +32,17 @@ def connect(path: Path) -> sqlite3.Connection:
             output_path TEXT,
             error TEXT,
             started_at TEXT,
+            heartbeat_at TEXT,
+            worker_id TEXT,
             finished_at TEXT
         );
         """
     )
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(shards)")}
+    for name in ("heartbeat_at", "worker_id"):
+        if name not in columns:
+            connection.execute(f"ALTER TABLE shards ADD COLUMN {name} TEXT")
+    connection.commit()
     return connection
 
 
@@ -61,12 +68,17 @@ def initialize(
         return connection.total_changes - before
 
 
-def reset_running(connection: sqlite3.Connection) -> int:
-    """Return work abandoned by a terminated process to the pending queue."""
+def recover_stale(connection: sqlite3.Connection, *, stale_after_seconds: int) -> int:
+    """Requeue only leases whose owner stopped sending heartbeats."""
+    if stale_after_seconds < 1:
+        raise ValueError("stale_after_seconds must be positive")
     with connection:
         cursor = connection.execute(
-            "UPDATE shards SET status='pending', error='interrupted', started_at=NULL "
-            "WHERE status='running'"
+            "UPDATE shards SET status='pending', error='stale worker lease recovered', "
+            "started_at=NULL, heartbeat_at=NULL, worker_id=NULL "
+            "WHERE status='running' AND (heartbeat_at IS NULL OR "
+            "heartbeat_at < datetime('now', ?))",
+            (f"-{stale_after_seconds} seconds",),
         )
         return cursor.rowcount
 
@@ -80,7 +92,9 @@ def retry_failed(connection: sqlite3.Connection) -> int:
         return cursor.rowcount
 
 
-def claim_next(connection: sqlite3.Connection) -> dict[str, Any] | None:
+def claim_next(connection: sqlite3.Connection, *, worker_id: str) -> dict[str, Any] | None:
+    if not worker_id.strip():
+        raise ValueError("worker_id must be non-empty")
     connection.execute("BEGIN IMMEDIATE")
     try:
         row = connection.execute(
@@ -92,14 +106,25 @@ def claim_next(connection: sqlite3.Connection) -> dict[str, Any] | None:
             return None
         connection.execute(
             "UPDATE shards SET status='running', attempts=attempts+1, error=NULL, "
-            "started_at=CURRENT_TIMESTAMP, finished_at=NULL WHERE path=?",
-            (row["path"],),
+            "started_at=CURRENT_TIMESTAMP, heartbeat_at=CURRENT_TIMESTAMP, worker_id=?, "
+            "finished_at=NULL WHERE path=? AND status='pending'",
+            (worker_id, row["path"]),
         )
         connection.commit()
         return dict(row)
     except BaseException:
         connection.rollback()
         raise
+
+
+def heartbeat(connection: sqlite3.Connection, path: str, *, worker_id: str) -> bool:
+    with connection:
+        cursor = connection.execute(
+            "UPDATE shards SET heartbeat_at=CURRENT_TIMESTAMP "
+            "WHERE path=? AND status='running' AND worker_id=?",
+            (path, worker_id),
+        )
+        return cursor.rowcount == 1
 
 
 def mark_complete(
@@ -109,21 +134,27 @@ def mark_complete(
     documents_scanned: int,
     evidence_rows: int,
     output_path: str,
-) -> None:
+    worker_id: str,
+) -> bool:
     with connection:
-        connection.execute(
+        cursor = connection.execute(
             "UPDATE shards SET status='complete', documents_scanned=?, evidence_rows=?, "
-            "output_path=?, finished_at=CURRENT_TIMESTAMP WHERE path=?",
-            (documents_scanned, evidence_rows, output_path, path),
+            "output_path=?, heartbeat_at=CURRENT_TIMESTAMP, finished_at=CURRENT_TIMESTAMP "
+            "WHERE path=? AND status='running' AND worker_id=?",
+            (documents_scanned, evidence_rows, output_path, path, worker_id),
         )
+        return cursor.rowcount == 1
 
 
-def mark_failed(connection: sqlite3.Connection, path: str, error: str) -> None:
+def mark_failed(connection: sqlite3.Connection, path: str, error: str, *, worker_id: str) -> bool:
     with connection:
-        connection.execute(
-            "UPDATE shards SET status='failed', error=?, finished_at=CURRENT_TIMESTAMP WHERE path=?",
-            (error[-4000:], path),
+        cursor = connection.execute(
+            "UPDATE shards SET status='failed', error=?, heartbeat_at=CURRENT_TIMESTAMP, "
+            "finished_at=CURRENT_TIMESTAMP "
+            "WHERE path=? AND status='running' AND worker_id=?",
+            (error[-4000:], path, worker_id),
         )
+        return cursor.rowcount == 1
 
 
 def summary(connection: sqlite3.Connection) -> dict[str, int]:
