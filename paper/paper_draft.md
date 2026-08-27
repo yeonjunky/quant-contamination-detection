@@ -132,7 +132,7 @@ generation, with the latter noting that most prior work measures only sample-lev
 under-counts the more common partial-contamination case. arXiv:2403.04811 is additionally a
 *methodological* source for this design, not only an effect-size one: its surface-plus-AST matching
 pipeline, developed for HumanEval and MBPP against pretraining-scale corpora, is what we adopt for the
-Olmo3 ground-truth labelling in §5, step 5. arXiv:2507.19219 offers a one-time-pad-based
+Olmo3 corpus-reference labelling in §5, step 5. arXiv:2507.19219 offers a one-time-pad-based
 framework for quantifying benchmark-score overestimation generally.
 
 ### 2.4 Limits of contamination detection
@@ -144,7 +144,7 @@ including in CodeForces-derived data (78% semantic duplication reported) — thi
 objection to treating any time-filtered benchmark as "clean," and we address it directly in §6. Because
 Olmo3 is one of the models in our own design (§4.1), this result is not borrowed evidence about some other
 model's corpus but a direct prior on the contamination labels of one of our arms — and the same corpus
-openness that made the finding possible is what lets us measure, rather than assume, that arm's label
+openness that made the finding possible is what lets us estimate, rather than freely assume, that arm's label
 error rate (§4.5.2).
 arXiv:2402.02823 and arXiv:2409.09927 further document that intentional contamination is easy to hide
 from detectors, and that existing detectors disagree with each other on modern LLMs.
@@ -267,7 +267,7 @@ as 87–196 items depending on effect size (§4.5.1). **Q1a is primary; Q2 is se
 | **Clean** (LiveCodeBench post-cutoff) | C | D | C − D |
 
 The quantity of interest is the interaction **(A − B) − (C − D)**, estimated on the **log-odds scale**
-(§4.5.3 explains why raw percentage points are unsafe here) via the `precision:contaminated` term of a
+(§4.5.3 explains why raw percentage points are unsafe here) via the `precision:exposure_proxy` term of a
 mixed-effects logistic regression (§4.5.5).
 
 - **Near zero:** quantization's accuracy drop is not modulated by contamination status. Existing papers'
@@ -317,15 +317,15 @@ design cannot actually power.
 | Qwen2.5-32B-Instruct | 32.5B | bf16 | Primary | Dense, GQA+RoPE; no official QAT checkpoint exists, so naive-PTQ comparisons are uncontaminated by a QAT confound |
 | Qwen2.5-7B-Instruct | 7B | bf16 | Pilot workhorse + size axis | Cheap to run; used to secure item counts for the pilot and as a secondary "does the effect scale with model size" probe |
 | Llama-3.1-8B-Instruct | 8B | bf16 | Size axis + externally verified cutoff | The only main-analysis model whose training cutoff is already independently verified by LLMLagBench (arXiv:2511.12116): declared 2023-12, detected knowledge-drop changepoint 2023-03. We use the declared (later) date as the conservative contamination boundary; the detected/declared gap and its consequence for this arm's LCB pre-cutoff pool are discussed in §4.2. Family tie to arXiv:2505.20276's BNB-nf4 fragility prior, which was measured on Llama-3.1-**70B** — same family and data recipe, roughly 9× smaller, so a weak prior rather than a confirmed expectation (§6) |
-| Olmo3-7B-Instruct | 7B | bf16 | Ground-truth label validation + size axis | Fully open training data across all stages (pretraining and post-training), enabling direct measurement (rather than assumption) of the proxy-label error rate *e* in §4.5.2. Dense transformer, so no architecture confound is introduced. Joins the pilot (§4.7) |
-| Olmo3.1-32B-Instruct | 32B | bf16 | Ground-truth label validation + size axis | Official 32B final Instruct release (`allenai/Olmo-3.1-32B-Instruct`), replacing the unavailable Olmo3-32B-Instruct name in the original design and matching Qwen2.5-32B-Instruct's footprint |
+| Olmo3-7B-Instruct | 7B | bf16 | Corpus-reference label validation + size axis | Fully open training data across all stages (pretraining and post-training), enabling operational estimation (rather than pure assumption) of the proxy-label error rate *e* in §4.5.2. Dense transformer, so no architecture confound is introduced. Joins the pilot (§4.7) |
+| Olmo3.1-32B-Instruct | 32B | bf16 | Corpus-reference label validation + size axis | Official 32B final Instruct release (`allenai/Olmo-3.1-32B-Instruct`), replacing the unavailable Olmo3-32B-Instruct name in the original design and matching Qwen2.5-32B-Instruct's footprint |
 
 All five arms use the instruction-tuned (\*-Instruct) releases: code-generation pass@1 under
 instruction prompts is the measured quantity, the illustrative base rates in §4.5.3 are
 instruction-tuned figures, and the LLMLagBench verification (§5, step 4) probes instruct checkpoints.
 Shorthand names elsewhere in this document (e.g., "Qwen2.5-7B") refer to these Instruct checkpoints.
 An instruct checkpoint also widens the contamination surface — benchmark items can enter through
-post-training (instruction-tuning) data as well as pretraining — which is why the Olmo3 ground-truth
+post-training (instruction-tuning) data as well as pretraining — which is why the Olmo3 corpus-reference
 search in §5, step 5 covers both stages.
 
 QAT-shipped models (e.g., Gemma-family official QAT checkpoints) are excluded entirely: an official QAT
@@ -337,7 +337,7 @@ second inference stack, whose numerics differences would confound the very contr
 Architecture is still not treated as a controlled axis: Qwen2.5, Llama-3.1, and Olmo3 are all dense
 transformers, so this column would carry no information. **Size is the only model-comparison axis.**
 Training-corpus transparency is instead an operational model-selection property: Olmo3 releases its
-training corpora, allowing §4.5.2 to measure contamination labels for its arm directly rather than infer
+training corpora, allowing §4.5.2 to estimate corpus-reference labels for its arm directly rather than infer
 them from a release-date proxy. It is not treated as an effect-modifying axis or a basis for cross-model
 contrasts. All within-model comparisons use the model's own full-precision baseline, and all five models
 share the same baseline precision (bf16), so no cross-model baseline-precision issue arises.
@@ -358,63 +358,80 @@ bf16 baseline), and this scale ceiling is recorded as a scope limitation in §8.
 
 ### 4.2 Data: contamination axis
 
-| Axis | Condition | Target *n* | Rationale | Note |
+| Axis | Condition | Available *n* | Rationale | Note |
 |---|---|---|---|---|
-| Primary contamination | LiveCodeBench, pre-cutoff | 873 available | Same source and format as the clean control; only publication date differs, minimizing the difficulty confound in §4.5.3 | The pre-specified ≥1,000 target is not met |
-| Primary control | LiveCodeBench, post-cutoff | 182 available | On or after 2025-01-01, the first day after the latest model-level cutoff | The pre-specified ≥1,000 target is not met; Q2 is secondary and confidence-interval-only |
-| Secondary contamination | HumanEval | 164 (hard ceiling) | Released 2021; plausible contamination for all five models | Sufficient for Q1 (§3.0) but not Q2 (§4.5.3) |
-| Secondary contamination | MBPP+ | 378 | Separate arm | **Not pooled** with HumanEval — different difficulty distributions would reintroduce the base-rate confound *inside* a nominally single condition. The combined n=542 is a sample-size reference only, never a pooled analysis cell. |
+| Primary suspect proxy | LiveCodeBench, model-specific `possible-exposure` | Arm-specific subset of the 873-item candidate envelope | Same source and format as the shared control; publication time defines possible exposure, not confirmed contamination | The suspect cell is constructed per model and is never the full 873 for every arm |
+| Primary shared control | LiveCodeBench, `shared-clean-control` | 182 available | On or after 2025-01-01, the first day after the latest model-level cutoff | Clean only in the temporal sense defined below; Q2 is secondary and confidence-interval-only |
+| Secondary suspect proxy | HumanEval | 164 (hard ceiling) | Released 2021; plausible exposure for all five models, not confirmed membership | Sufficient for Q1 (§3.0) but not Q2 (§4.5.3) |
+| Secondary suspect proxy | MBPP+ | 378 | Separate arm | **Not pooled** with HumanEval — different difficulty distributions would reintroduce the base-rate confound *inside* a nominally single condition. The combined n=542 is a sample-size reference only, never a pooled analysis cell. |
 
-Pre/post-cutoff is the primary axis for two reasons: it isolates contamination while holding
-source/format/difficulty roughly constant (ruling out "it's a different kind of problem" as an
-alternative explanation), and — because difficulty is held roughly constant — it also directly reduces
-the base-rate confound quantified in §4.5.3. One design change addresses two problems.
+The temporal split is the primary proxy axis because it holds source and format fixed and reduces — but
+does not eliminate — the difficulty confound in §4.5.3. A publication date before a model's bound means
+only that the item **could have been exposed** during training; it does not establish that the item was
+actually present. Conversely, `clean-by-cutoff` means only that the item falls after the stated temporal
+bound, not that semantic duplication or later-stage exposure has been ruled out. We therefore reserve
+`contaminated` for corpus-confirmed membership and use `possible-exposure` / `clean-by-cutoff` for the
+date proxy.
 
-The common boundary is 2025-01-01. Under LiveCodeBench `release_v6`, it yields 873 pre-cutoff and 182
-post-cutoff items (1,055 total). This data-availability check fails the pre-specified ≥1,000 target in
-both cells, so Q2 is demoted to a secondary, confidence-interval-only analysis as specified below.
+Under LiveCodeBench `release_v6`, the common 2025-01-01 boundary yields an 873-item pre-common candidate
+envelope and 182 shared-control items (1,055 total). **The 873 items are not one contamination-suspect
+analysis cell shared by all models.** Each arm's suspect cell is the subset published before that arm's
+own primary bound; items after an arm's bound but before 2025-01-01 are temporally clean for that arm but
+are excluded from the primary shared-control contrast. The original ≥1,000 target is therefore missed on
+both sides: the common control has 182 items, and every arm-specific suspect cell has at most 873. Q2 is
+accordingly secondary and confidence-interval-only.
 
 **Pre-specified boundary rule.** Cutoff evidence quality differs by arm, so the boundary is defined to
 remain valid under the weakest evidence rather than under the most optimistic reading:
 
-| Arm | Cutoff evidence | Evidence tier | Conservative exposure bound |
-|---|---|---|---|
-| Olmo3-7B / Olmo3.1-32B | Official model cards for both final Instruct checkpoints state `Date cutoff: Dec. 2024` ([7B](https://huggingface.co/allenai/Olmo-3-7B-Instruct), [32B](https://huggingface.co/allenai/Olmo-3.1-32B-Instruct)) | Official model-level declaration | 2024-12; month-level conservatism makes 2025-01-01 the first eligible post-cutoff day |
-| Llama-3.1-8B | Declared 2023-12; externally verified by LLMLagBench (detected drop 2023-03) | Verified declaration | 2023-12 (declared) |
-| Qwen2.5-7B / Qwen2.5-32B | No unambiguous official cutoff declaration | Release-date bound (weakest) | 2024-09-19 ([official release announcement](https://qwenlm.github.io/blog/qwen2.5/)); at day-level resolution, LCB-post eligibility begins 2024-09-20 |
+| Arm | Cutoff evidence | Evidence tier | Primary first post-boundary date | Sensitivity first post-boundary date |
+|---|---|---|---|---|
+| Olmo3-7B / Olmo3.1-32B | Official model cards for both final Instruct checkpoints state `Date cutoff: Dec. 2024` ([7B](https://huggingface.co/allenai/Olmo-3-7B-Instruct), [32B](https://huggingface.co/allenai/Olmo-3.1-32B-Instruct)) | Official model-level declaration | 2025-01-01 | — |
+| Llama-3.1-8B | Declared 2023-12; externally verified by LLMLagBench (detected drop 2023-03) | Verified declaration | 2024-01-01 (declared cutoff through Dec. 2023) | 2023-04-01 (detected boundary through Mar. 2023) |
+| Qwen2.5-7B / Qwen2.5-32B | No unambiguous official cutoff declaration | Release-date bound (weakest) | 2024-09-20 ([official release announcement](https://qwenlm.github.io/blog/qwen2.5/); release day excluded) | — |
 
 A release date is an unconditionally valid upper bound — a model cannot have trained on data published
-after its own release — so an arm with no declaration still has a defensible boundary. The LCB
-post-cutoff boundary is pre-specified as **the latest of the per-arm conservative bounds**. The Olmo
-model-level declaration is the latest: because it has month resolution, all of December 2024 remains
-potentially exposed and LCB-post begins on 2025-01-01. Qwen2.5 retains its arm-level 2024-09-19 release
-bound (LCB-post begins 2024-09-20), but it does not determine the common boundary.
+after its own release — so an arm with no declaration still has a defensible temporal bound. Let
+*t*<sub>*i*</sub> be an item's publication date and *c*<sub>*m*</sub> the first post-boundary date for
+model *m*. The stored labels are **model–item labels**, not one global item label:
+
+- `possible-exposure` if *t*<sub>*i*</sub> < *c*<sub>*m*</sub>;
+- `clean-by-model-cutoff` if *t*<sub>*i*</sub> ≥ *c*<sub>*m*</sub>;
+- `shared-clean-control` if *t*<sub>*i*</sub> ≥ 2025-01-01, the latest primary bound across arms; and
+- `boundary-ambiguous = true` when an item lies between an arm's sensitivity and primary bounds.
+
+The interval after an arm's own bound but before 2025-01-01 is retained as
+`clean-by-model-cutoff` metadata but excluded from the primary shared-control contrast. Thus an item can
+be `possible-exposure` for Olmo3 yet `clean-by-model-cutoff` for Qwen2.5 or Llama-3.1. The primary pooled
+LCB contrast uses each arm's own `possible-exposure` items against the same 182-item
+`shared-clean-control`; per-model results are reported before any pooled estimate.
+
+Corpus evidence is stored on a **separate, non-exclusive axis** — `confirmed-match`, `no-match-found`, or
+`not-observable` — rather than collapsed into the temporal label. In particular, `no-match-found` is not
+renamed `clean`: the open-corpus procedures have imperfect recall. This separation lets the Olmo3 arm
+estimate method-conditional temporal-proxy error against an operational corpus reference without treating
+either publication time or search non-detection as perfect ground truth.
 
 One asymmetry specific to the Llama-3.1-8B arm: LLMLagBench detects its knowledge-drop changepoint at
-2023-03, nine months before the declared 2023-12 cutoff (§4.1). We use the declared, later date as the
-conservative boundary for what the model *may have seen* — a knowledge drop is evidence of thin coverage,
-not proof of non-exposure. But if the effective pretraining boundary is in fact earlier, this arm's LCB
-pre-cutoff pool (which begins 2023-05) contains items the model plausibly never saw, diluting its
-contamination-suspect condition toward the clean side. Its secondary suspect conditions (HumanEval,
-MBPP+, both released 2021) are unaffected.
+2023-03, nine months before the declared 2023-12 cutoff (§4.1). We use the declared, later date for the
+primary label because a knowledge drop is evidence of thin coverage, not proof of non-exposure. Items
+from 2023-04-01 through 2023-12-31 are flagged `boundary-ambiguous`: they are `possible-exposure` in the
+declared-boundary primary run and `clean-by-model-cutoff` in the detected-boundary sensitivity run. Since
+LCB collection begins in 2023-05, the sensitivity run leaves no LCB `possible-exposure` items for this
+arm. Its secondary suspect conditions are unaffected: HumanEval and the original MBPP problem statements
+date to 2021, although MBPP+'s augmented tests were released later.
 
-Rather than merely flagging this, we pre-specify a **boundary sensitivity analysis**. Every analysis
-that consumes this arm's LCB contamination labels (Q1b, Q2) is run twice: once under the **declared
-boundary** (2023-12; the 2023-05–2023-12 window counts as contamination-suspect) and once under the
-**detected boundary** (2023-03; the window counts as clean — which empties this arm's LCB-pre set,
-since LCB collection begins 2023-05, and drops the arm from the LCB contrast, leaving HumanEval and
-MBPP+ as its only suspect conditions). The declared-boundary run is primary; the detected-boundary run
-is sensitivity. **Which run is which is fixed here, in advance, and is not revisited after seeing
-results.** Agreement between the runs demonstrates robustness to the nine-month ambiguity; disagreement
-quantifies exactly how much rides on it — either way a reportable outcome. The re-run costs no
-additional generation or scoring: only analysis-time label assignment changes, and the item-level
-raw-data requirement (§5, step 8) exists precisely to make such re-analyses possible.
+Every analysis that consumes this arm's LCB temporal labels (Q1b, Q2) is therefore run twice. The
+declared-boundary run is primary; the detected-boundary run is sensitivity. **Which run is which is fixed
+here, in advance, and is not revisited after seeing results.** Agreement demonstrates robustness to the
+nine-month ambiguity; disagreement quantifies how much rides on it. The re-run costs no additional
+generation or scoring because only the stored model–item label changes.
 
 The rule generalizes beyond this arm: **any arm whose cutoff evidence is bracketed by competing bounds is
 re-analyzed under those bounds**. Qwen2.5 currently has only its release-date bound. Olmo3 has matching
 model-card declarations and needs no sensitivity run. As a purely descriptive check, we also compare the ambiguous-window items'
-full-precision detector-score distribution against the definitely-clean (post-boundary) and
-definitely-suspect distributions; this comparison is reported separately and is **never fed back into
+full-precision detector-score distribution against the post-primary-boundary and pre-sensitivity-boundary
+distributions; this comparison is reported separately and is **never fed back into
 Q1b's labels** — doing so would let the detectors under evaluation adjudicate their own ground truth.
 
 HumanEval and MBPP+ are usable for **Q1** at their native sample sizes (§3.0) but are demoted to secondary
@@ -485,8 +502,10 @@ and CDD as a comparison arm. The pilot (§4.7) measures d directly before the fu
 
 #### 4.5.2 Q1b — detector-family AUC comparison, and its dependence on label quality
 
-AUC separability of contaminated vs. clean items, per detector, per precision; compared as **paired**
-AUCs (both computed from the same item set) since the same items are scored by both detectors.
+AUC separability of `possible-exposure` vs. `shared-clean-control` items, per detector, per precision;
+compared as **paired** AUCs (both computed from the same model–item set) since the same items are scored
+by both detectors. On Olmo3, the independent corpus-status axis additionally supports a corpus-confirmed
+validation analysis; it does not replace the temporal labels in the other arms.
 
 | Items per condition | SE(AUC) | Detectable ΔAUC, r=0 | r=0.8 | r=0.9 |
 |---|---|---|---|---|
@@ -499,10 +518,11 @@ At r=0.8, the 164-item ceiling's detection limit is 0.051 — **just short** of 
 exactly gives 170 items, not 164). HumanEval alone is therefore a hair short of the target, and MBPP+ or
 additional LCB items are needed to close the gap.
 
-**Label noise is the more serious threat to Q1b.** Until TRACER (§5, step 5) provides a direct
-contamination measurement, the pre/post-cutoff split is a **proxy** label with some error rate *e*. Label
-noise does not primarily inflate standard error — it **attenuates the true AUC difference itself**,
-roughly as ΔAUC_observed ≈ (1 − 2e) × ΔAUC_true:
+**Label noise is the more serious threat to Q1b.** The model–item temporal label is a **proxy** with some
+error rate *e*. Under the table's explicitly simplified sensitivity model — symmetric,
+nondifferential label flips at rate *e* — label noise attenuates the true AUC difference roughly as
+ΔAUC_observed ≈ (1 − 2e) × ΔAUC_true. The Olmo3 corpus comparison will also report false-positive and
+false-negative rates separately, because real temporal-label errors need not be symmetric:
 
 | Proxy-label error rate *e* | Observed ΔAUC (true = 0.050) | Items needed (r=0.8) |
 |---|---|---|
@@ -511,19 +531,23 @@ roughly as ΔAUC_observed ≈ (1 − 2e) × ΔAUC_true:
 | 20% | 0.030 | 541 |
 | 30% | 0.020 | 1,268 |
 
-At e=20%, Q1b's item requirement rises to Q2's level (≈542); Q1b's power advantage over Q2 is therefore
-conditional on label quality, which is why TRACER's residual-contamination measurement (§5, step 5) is a
-prerequisite for Q1b. Q1a does not use a contamination label and remains interpretable under label noise.
+At e=20%, Q1b's item requirement rises to ≈541 — the same order as Q2's paired-model requirement
+(≈555); Q1b's power advantage over Q2 is therefore conditional on label quality. The Olmo3 corpus work
+is the design's only empirical anchor for that sensitivity analysis and must complete before Q1b is
+interpreted across arms; it does not turn the closed-corpus arms' labels into observed truth. Q1a does not
+use a contamination label and remains interpretable under label noise.
 
-**The Olmo3 arm makes *e* measurable rather than assumed.** For every other model, *e* is unobservable:
+**The Olmo3 arm makes *e* operationally estimable rather than wholly assumed.** For every other model, *e* is unobservable:
 the training corpora are closed, so the table above can only be read as a sensitivity analysis. Olmo3
 releases its pretraining corpus, so benchmark items can be searched against the training data directly
-(§5, step 5) and the pre/post-cutoff proxy can be scored against that result — yielding a measured *e* for
-that arm instead of an assumed one. This does not change any figure in the table; it changes which column
+(§5, step 5) and the temporal proxy can be scored against the separate corpus-status label — yielding a
+method-conditional estimate of *e* for that arm instead of a free assumption. Because `no-match-found` is
+not proof of absence, this estimate is reported by completed search method and is not called exact ground
+truth. This does not change any figure in the table; it changes which sensitivity region
 we know we are in. It also supplies the one thing the label-noise correction otherwise lacks: an empirical
 anchor for how good the release-date proxy actually is on this benchmark family. The prior from §2.4 is
 not encouraging — arXiv:2602.12413 reports 78% semantic duplication in CodeForces-derived data within this
-very corpus — which is precisely why measuring rather than assuming *e* matters here.
+very corpus — which is precisely why estimating rather than freely assuming *e* matters here.
 
 #### 4.5.3 Q2 — pass@1 interaction, base rate, and scale
 
@@ -615,10 +639,10 @@ requirement.
 #### 4.5.5 Statistical model
 
 ```
-correct ~ precision * contaminated + (1 | item) + (1 | model)
+correct ~ precision * exposure_proxy + (1 | item) + (1 | model)
 ```
 
-Mixed-effects logistic regression; the `precision:contaminated` interaction term is the estimand of
+Mixed-effects logistic regression; the `precision:exposure_proxy` interaction term is the estimand of
 interest for Q2, reported on the log-odds scale with a confidence interval. Item and model random effects
 absorb both the pairing benefit (§4.5.3) and cross-model heterogeneity without requiring the analyst to
 assume a value for the item-level correlation r in advance. (A two-sample test such as Welch's t-test is
@@ -672,8 +696,9 @@ standalone finding (Contribution 4, §1).
 
 **Qwen2.5-7B and Olmo3-7B, BNB-nf4 arm first** (§4.3 — the arm expected to show the largest effect, so the
 pilot is maximally informative about worst-case behavior). Olmo3-7B is included in the pilot rather than
-held for the main run because it is the only arm that yields a measured proxy-label error rate *e*
-(§4.5.2), and *e* is a prerequisite for Q1b: discovering a large *e* after the full run is sized would
+held for the main run because it is the only arm that yields a method-conditional estimate of proxy-label
+error *e* (§4.5.2), and that empirical anchor is a prerequisite for final Q1b sizing: discovering a large
+*e* after the full run is sized would
 invalidate the sizing.
 
 Five quantities must be measured, together, before finalizing sample sizes — measuring only one leaves the
@@ -681,11 +706,11 @@ plan unable to locate itself within the tables in §4.5:
 
 (a) Q1a detector-score shift size *d*; (b) Q1b's observed AUC and the cross-precision AUC correlation *r*;
 (c) Q2's log-odds effect size and item-level correlation *r*; (d) each condition's actual base-rate
-accuracy, **per model** (§4.5.3); (e) the proxy-label error rate *e* on the Olmo3 arm, from the
-corpus-search labels of §5, step 5, which locates the whole design within the label-noise table in §4.5.2.
+accuracy, **per model** (§4.5.3); (e) the method-conditional proxy-label error estimate *e* on the Olmo3
+arm, from the corpus-reference labels of §5, step 5, which anchors the label-noise sensitivity in §4.5.2.
 If the CDD baseline AUC measured in (b) is below 0.6, prioritize completing the TRACER
-residual-contamination measurement (§5, step 5) before proceeding, since a sub-0.6 AUC is itself a sign of
-high label noise in the proxy contamination labels (§4.5.2).
+residual-contamination measurement (§5, step 5) before attributing the cause: a sub-0.6 AUC is compatible
+with either detector-floor failure or temporal-label error and does not distinguish them by itself (§6).
 
 ---
 
@@ -697,27 +722,31 @@ high label noise in the proxy contamination labels (§4.5.2).
 2. **Build the detector-scoring pipeline** (CDD, perplexity, Min-k% Prob per item, per precision) —
    required for Q1. Budget CDD's per-item multi-sample requirement (§4.4) into the generation-cost
    estimate; design steps 1 and 2 to share underlying generations wherever possible.
-3. **Count available LiveCodeBench pre-/post-cutoff items** against the common 2025-01-01 boundary.
-   `release_v6` contains pre 873 / post 182 / total 1,055. The ≥1,000 target is therefore unmet in both
-   cells, so **Q2 is a secondary, confidence-interval-only analysis**; Q1 remains unaffected.
-4. **Verify actual training cutoffs** via LLMLagBench (arXiv:2511.12116) rather than trusting declared
-   dates. Llama-3.1-8B is already on the public leaderboard (declared 2023-12, detected 2023-03; §4.1).
-   Qwen2.5 has no unambiguous official cutoff declaration, so its primary bound is fixed at the official
-   2024-09-19 release date (LCB-post begins 2024-09-20 at day resolution).
-   Both final Olmo Instruct model cards state `Date cutoff: Dec. 2024`; month-level conservatism makes
-   2025-01-01 the first eligible post-cutoff day. Direct searches of the public pretraining and
-   post-training corpora remain necessary for item-level contamination ground truth, not for setting
-   this operational time boundary.
+3. **Materialize and count the model–item temporal labels** (§4.2), rather than splitting LCB once globally.
+   For every model–item pair store `publication_date`, `primary_first_post_date`,
+   `sensitivity_first_post_date` (if any), `possible-exposure` / `clean-by-model-cutoff`,
+   `shared-clean-control`, and `boundary-ambiguous`. Under `release_v6`, the common 2025-01-01 split still
+   gives the availability envelope pre 873 / shared control 182 / total 1,055, but the suspect count is
+   recomputed per arm and is not reported as 873 for every model. The ≥1,000 target is therefore unmet;
+   **Q2 remains a secondary, confidence-interval-only analysis**.
+4. **Verify and freeze the model-level temporal bounds** rather than trusting one global date.
+   Llama-3.1-8B uses first-post dates 2024-01-01 (declared; primary) and 2023-04-01 (detected;
+   sensitivity). Qwen2.5 has no unambiguous official cutoff declaration, so its first-post date is fixed
+   at 2024-09-20, the day after the official release. Both final Olmo Instruct model cards state
+   `Date cutoff: Dec. 2024`, making 2025-01-01 their first post-boundary date. Direct searches of the
+   public pretraining and post-training corpora populate the separate corpus-status axis, not the temporal
+   cutoff label.
 5. **Measure residual contamination via TRACER (arXiv:2605.24079), against the released Olmo3
    pretraining and post-training corpora** — the only complete model-training pipeline in the design open
    enough to run it on: TRACER is defined as a function of
    a training corpus and a test set, and Qwen2.5's and Llama-3.1's corpora are closed (§4.5.2). This is
-   a prerequisite for Q1b specifically (§4.5.2) and can proceed in parallel with step 6, since Q1a does
-   not require it. TRACER has no confirmed public code release; we reimplement it from the paper's own
+   the only empirical anchor for Q1b's label-noise sensitivity and must complete before cross-arm Q1b
+   interpretation; it can proceed in parallel with step 6 because Q1a does not require it. TRACER has no
+   confirmed public code release; we reimplement it from the paper's own
    specification (its appendix publishes the prompts for all three LLM stages, the embedding model, and
    the triage thresholds), with a retrieval pre-stage (n-gram/BM25 top-k candidates per benchmark item)
    in front, since exhaustive pairwise comparison against a pretraining-scale corpus is infeasible.
-   **For the Olmo3 arm, also derive ground-truth labels directly** from the released training data — the
+   **For the Olmo3 arm, also derive operational corpus-reference labels** from the released training data — the
    pretraining corpus *and* the post-training (instruction-tuning) sets, both public for Olmo3, since the
    instruct checkpoints (§4.1) can absorb benchmark items at either stage. We run all three open-data
    detection families in arXiv:2404.00699's taxonomy rather than choosing one, because on this corpus they
@@ -756,8 +785,8 @@ high label noise in the proxy contamination labels (§4.5.2).
    finding of 78% semantic duplication in this corpus's CodeForces-derived data (arXiv:2602.12413)
    predicts a large spread, and a small one would be the surprising outcome worth reporting.
 
-   Score both the pre/post-cutoff proxy and the TRACER reimplementation's output against these labels.
-   This yields the measured *e* of §4.5.2 and, separately, a fidelity measurement for the reimplementation
+   Score both the model–item temporal proxy and the TRACER reimplementation's output against these labels.
+   This yields the method-conditional *e* estimate of §4.5.2 and, separately, a fidelity measurement for the reimplementation
    itself against known-contaminated items — the only point in the design where either can be checked
    rather than assumed. Note the scope limit recorded in §6: these labels are specific to Olmo3 and
    validate the *method*, not the labels of the closed-corpus arms.
@@ -778,7 +807,7 @@ high label noise in the proxy contamination labels (§4.5.2).
      effect).
    - *Q1b:* per-precision AUC with paired-AUC confidence intervals; report any detector-ranking reversal
      explicitly.
-   - *Q2:* `correct ~ precision * contaminated + (1|item) + (1|model)`, log-odds interaction term and CI;
+   - *Q2:* `correct ~ precision * exposure_proxy + (1|item) + (1|model)`, log-odds interaction term and CI;
      interpret only after the difficulty-stratification check (§4.5.3) confirms the constant-odds-ratio
      assumption.
    - *Boundary sensitivity (pre-specified, §4.2):* re-run the Q1b/Q2 label assignments under each
@@ -796,15 +825,14 @@ high label noise in the proxy contamination labels (§4.5.2).
   study cannot replicate at this model scale (§2.3).
 - **Declared training-cutoff dates may be wrong, and cutoff evidence quality is heterogeneous across
   arms.** Mitigated via LLMLagBench verification (§5, step 4) and, structurally, via §4.2's evidence-tier
-  rule: the primary LCB
-  contrast uses the most conservative per-arm bound, trading post-cutoff pool size for validity, and the
-  per-arm evidence tier is reported alongside results. Residual uncertainty within each tier remains a
-  limitation on the pre/post-cutoff split's precision.
+  rule: suspect labels use arm-specific bounds while the shared control is restricted to dates after every
+  primary bound, and the per-arm evidence tier is reported alongside results. Residual uncertainty within
+  each tier remains a limitation on the model–item temporal labels' precision.
 - **"Filtered by date" does not guarantee "uncontaminated."** arXiv:2602.12413 and arXiv:2311.04850
   document that semantic duplication and paraphrase evade time- and n-gram-based filtering. We do not
-  claim LiveCodeBench-post is a clean ground truth; we describe it as "lower-contamination" and use
-  TRACER (§5, step 5) to measure, rather than assume, residual contamination in every condition, feeding
-  that measurement into the label-noise correction in §4.5.2.
+  claim `shared-clean-control` is clean ground truth; it is a temporal label. On Olmo3, TRACER and direct
+  corpus search measure residual contamination and feed that measurement into §4.5.2. The closed-corpus
+  arms retain temporal proxies and an unmeasured, sensitivity-analyzed error rate.
 - **Extrapolation risk from arXiv:2603.03203, on two independent dimensions.** *Scale:* that paper's
   findings are established at 70M–410M, roughly one to two and a half orders of magnitude below this
   design's 7B–32B range, and the paper itself disclaims extrapolation. *Mechanism:* separately from scale, the
@@ -817,11 +845,12 @@ high label noise in the proxy contamination labels (§4.5.2).
   a standalone contribution. The gate measures the **composite** of both extrapolations and cannot separate
   them: a failed gate does not tell us whether CDD failed because of scale, because the memorization was
   never adapter-shaped to begin with, or both.
-- **Olmo3's ground-truth labels are model-local.** The corpus search in §5, step 5 establishes
-  contamination status for Olmo3 only. Qwen2.5's and Llama-3.1's training corpora remain closed, so those
-  arms keep the proxy labels and their unmeasured error rate. Olmo3's labels therefore validate the
-  *labelling method* — how well a release-date split tracks actual corpus membership on this benchmark
-  family — and must not be presented as ground truth for the other arms. A measured *e* on the Olmo3 arm
+- **Olmo3's corpus-reference labels are model-local and method-conditional.** The corpus search in §5,
+  step 5 supplies direct positive matches and searched non-matches for Olmo3 only; non-detection is not
+  proof of absence. Qwen2.5's and Llama-3.1's training corpora remain closed, so those arms keep the proxy
+  labels and their unmeasured error rate. Olmo3's labels therefore validate the *labelling method* — how
+  well a release-date split tracks operational corpus-search results on this benchmark family — and must
+  not be presented as ground truth for the other arms. An estimated *e* on the Olmo3 arm
   transfers to the others only under the assumption that the proxy behaves similarly against a different
   corpus, which we state as an assumption rather than a result.
 - **Scale mismatch in the bnb-nf4 effect-size prior.** The 32% BNB-nf4 drop cited in §2.7 and §4.3 was
@@ -843,15 +872,15 @@ high label noise in the proxy contamination labels (§4.5.2).
   constant-odds-ratio assumption, which is itself validated (not assumed) via difficulty stratification.
   If that assumption fails, the design falls back to a difficulty-matched comparison rather than reporting
   an uninterpretable interaction term.
-- **Proxy contamination labels carry error** until TRACER measurement is complete (§4.5.2); this
-  attenuates, rather than adds noise to, the true effect being measured in Q1b, and is addressed by
-  treating TRACER measurement as a Q1b prerequisite rather than an optional check.
+- **Temporal exposure labels carry error** (§4.5.2). Olmo3 makes the error operationally estimable against its separate
+  corpus-status axis; Qwen2.5 and Llama-3.1 retain unmeasured error because their corpora are closed. The
+  symmetric attenuation table is therefore a sensitivity model, not a correction known to hold in every arm.
 - **TRACER is a reimplementation, not the authors' code.** No public code release is confirmed for
   TRACER; §5, step 5 rebuilds it from the paper's published prompts, embedding model, and thresholds.
   Reimplementation fidelity is therefore itself a threat — mitigated, but only on the Olmo3 arm, by
-  scoring the reimplementation against the corpus-search ground truth (§5, step 5). Its accuracy on the
+  scoring the reimplementation against the operational corpus-reference labels (§5, step 5). Its accuracy on the
   closed-corpus arms' conditions is an assumption inherited by every TRACER-dependent quantity: the
-  measured *e*, and Q1b's label-noise correction.
+  estimated *e*, and Q1b's label-noise sensitivity analysis.
 - **Scope limits.** Five models (7B–32.5B), four quantization configurations, code generation only,
   predominantly Python. Findings need not generalize to other architectures (e.g., MoE), other
   tokenizers, or other domains (e.g., natural-language QA), and we do not claim they do.
