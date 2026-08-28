@@ -3,8 +3,10 @@ pipeline_build_plan.md, matching paper §5 step 8's requirement: "Store
 item-level raw data for every condition... Aggregate-only storage would
 foreclose the paired and mixed-effects analyses this design depends on."
 
-- `items.parquet` — one row per item (id, dataset, condition, difficulty,
-  contamination proxy label, TRACER label, release/version pin).
+- `items.parquet` — one row per item (id, dataset, difficulty, coarse legacy
+  proxy, TRACER evidence, release/version pin).
+- `model_item_labels.parquet` — one row per (model, item), carrying primary
+  and sensitivity temporal labels plus the frozen boundaries that produced them.
 - `generations.<part>.parquet` — one row per (model, quant, item, sample):
   generated text, full completion per-token logprob array, fixed prompt
   per-token logprob array on the greedy row, partial pass rate, decoding
@@ -73,6 +75,11 @@ class RawDataWriter:
     def write_items(self, items: list[Item]) -> Path:
         path = self.output_dir / f"{self.file_prefix}items.parquet"
         _write_parquet_atomic(pd.DataFrame([_item_to_row(item) for item in items]), path)
+        return path
+
+    def write_model_item_labels(self, rows: list[dict]) -> Path:
+        path = self.output_dir / f"{self.file_prefix}model_item_labels.parquet"
+        _write_parquet_atomic(pd.DataFrame(rows), path)
         return path
 
     def add_generation(

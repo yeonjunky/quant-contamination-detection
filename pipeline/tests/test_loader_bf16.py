@@ -1,7 +1,9 @@
 """Regression coverage for the explicitly forced BF16 baseline."""
 
-import torch
-import transformers
+import pytest
+
+torch = pytest.importorskip("torch")
+transformers = pytest.importorskip("transformers")
 
 from qcd.config import Quant
 from qcd.models.loader import _load_bf16

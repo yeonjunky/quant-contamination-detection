@@ -1,8 +1,8 @@
-"""Shared orchestration core for the real (non-mock) H100 drivers —
-`scripts/run_pilot.py` (PILOT_MODELS, BNB-nf4 arm first per §4.7) and
-`scripts/run_main.py` (MAIN_ANALYSIS_MODELS, full quantization ladder).
-Both are thin CLI wrappers over `run()` here, selecting which models/quant
-levels/item scope to use.
+"""Shared orchestration core for the real (non-mock) H100 study driver.
+
+`scripts/run_main.py` selects the frozen main-analysis models, quantization
+levels, and item scope. Bounded engineering checks use dedicated smoke-test
+drivers and their outputs are never passed to the study analysis.
 
 Structurally mirrors `qcd.dry_run`'s generate -> score -> detect -> write
 loop, but against `load_model(mock=False)` and the real dataset loaders.
@@ -28,6 +28,7 @@ from qcd.data.humaneval import load_humaneval
 from qcd.data.livecodebench import REPO_REVISION as LCB_REPO_REVISION, load_livecodebench_split
 from qcd.data.mbppplus import load_mbppplus
 from qcd.data.schema import Dataset, Item
+from qcd.data.temporal_labels import materialize_model_item_labels
 from qcd.detectors.cdd import peakedness
 from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score
@@ -100,7 +101,7 @@ class RealRunConfig:
     n_cdd_samples: int = CDD_N_SAMPLES
     include_humaneval: bool = True
     include_mbppplus: bool = True
-    item_limit_per_condition: int | None = None  # pilot-scale cap; None = all items
+    item_limit_per_condition: int | None = None  # validation/debug cap; main study uses None
 
 
 def load_all_items(config: RealRunConfig) -> list[Item]:
@@ -168,6 +169,9 @@ def _assemble_candidate_code(item: Item, completion_text: str) -> str:
 
 def run(config: RealRunConfig) -> None:
     items = load_all_items(config)
+    model_item_labels = materialize_model_item_labels(
+        items, config.models, shared_control_boundary=config.lcb_cutoff_boundary
+    )
     run_config = {
             "models": [m.name for m in config.models],
             "model_revisions": {m.name: m.revision for m in config.models},
@@ -175,6 +179,12 @@ def run(config: RealRunConfig) -> None:
             "baseline_dtype": "bfloat16",
             "n_items": len(items),
             "lcb_cutoff_boundary": config.lcb_cutoff_boundary.isoformat(),
+            "model_primary_first_post_boundaries": {
+                model.name: model.primary_first_post_boundary for model in config.models
+            },
+            "model_sensitivity_first_post_boundaries": {
+                model.name: model.sensitivity_first_post_boundary for model in config.models
+            },
             "lcb_release_version": config.lcb_release_version,
             "lcb_repository_revision": LCB_REPO_REVISION,
             "n_cdd_samples": config.n_cdd_samples,
@@ -198,6 +208,7 @@ def run(config: RealRunConfig) -> None:
 
     writer = RawDataWriter(config.output_dir / "raw")
     writer.write_items(items)
+    writer.write_model_item_labels(model_item_labels)
 
     cache = GenerationCache(config.output_dir / "cache")
 

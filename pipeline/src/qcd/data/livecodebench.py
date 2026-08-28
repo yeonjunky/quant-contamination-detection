@@ -15,9 +15,9 @@ during pipeline construction that the six files are non-overlapping
 2023-05-07, matching CLAUDE.md §4.2's "LCB collection begins 2023-05"), so
 concatenating a release's file list and never mixing releases is safe.
 
-The pre/post-cutoff split boundary is **not** owned by this module — paper
-§4.2's evidence-tier rule makes it a per-arm, pre-specified date that this
-loader takes as a parameter (`cutoff_boundary`), not a constant here.
+The split passed to this loader is the latest shared-control boundary. It
+creates a collection envelope only; paper §4.2's per-arm labels are
+materialized later in `data/temporal_labels.py`.
 """
 
 from __future__ import annotations
@@ -102,16 +102,12 @@ def load_livecodebench_split(
     *,
     release_version: str = DEFAULT_RELEASE,
 ) -> tuple[list[Item], list[Item]]:
-    """Loads one LiveCodeBench release and splits it into (pre-cutoff,
-    post-cutoff) `Item` lists against `cutoff_boundary` — the per-arm
-    conservative bound from paper §4.2's evidence-tier rule, supplied by the
-    caller, never hardcoded here (different model arms use different
-    boundaries).
+    """Load one release and split the collection envelope at the shared bound.
 
-    An item's `contest_date` strictly before the boundary is contamination-
-    suspect (`Dataset.LCB_PRE`); on or after it is the clean control
-    (`Dataset.LCB_POST`), matching §4.2's "after the latest of the five
-    main-analysis models' training cutoffs" framing for the control side.
+    `Dataset.LCB_PRE` means only "before the shared-control boundary" here;
+    it is not a model-specific exposure label. `materialize_model_item_labels`
+    later applies each model's own cutoff and excludes the intermediate
+    `clean-by-model-cutoff` window from the primary contrast.
     """
     rows = _download_release_rows(release_version)
     pre: list[Item] = []

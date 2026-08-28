@@ -14,7 +14,8 @@ from qcd.config import ModelSpec
 # Primary five-model comparison (paper §4.1, 2026-08-05 roster). Architecture
 # is not a control axis (AGENTS.md §5 point 8: Qwen2.5 and Llama-3.1 are both
 # dense GQA+RoPE); the only axis that carries information across models is
-# size; Olmo additionally provides corpus transparency for ground truth.
+# size; Olmo additionally provides corpus transparency for confirmed-positive
+# exposure evidence, not verified negative labels.
 # Llama-3.3-70B and Gemma-4-31B-it were removed from the design on
 # 2026-08-05 (single-device compute ceiling / QAT confounds — see
 # paper/revision_provenance.md); do not re-add them here without a matching
@@ -28,7 +29,8 @@ QWEN2_5_7B = ModelSpec(
     param_count_b=7,
     hf_repo_id="Qwen/Qwen2.5-7B-Instruct",
     revision="a09a35458c702b33eeacc393d103063234e8bc28",
-    role="Pilot workhorse + size axis",
+    role="7B size axis",
+    primary_first_post_boundary="2024-09-20",
 )
 QWEN2_5_32B = ModelSpec(
     name="Qwen2.5-32B-Instruct",
@@ -36,6 +38,7 @@ QWEN2_5_32B = ModelSpec(
     hf_repo_id="Qwen/Qwen2.5-32B-Instruct",
     revision="5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd",
     role="Primary",
+    primary_first_post_boundary="2024-09-20",
 )
 LLAMA3_1_8B = ModelSpec(
     name="Llama-3.1-8B-Instruct",
@@ -43,20 +46,24 @@ LLAMA3_1_8B = ModelSpec(
     hf_repo_id="meta-llama/Llama-3.1-8B-Instruct",
     revision="0e9e39f249a16976918f6564b8830bc894c89659",
     role="Size axis + externally verified cutoff (LLMLagBench: declared 2023-12, detected 2023-03)",
+    primary_first_post_boundary="2024-01-01",
+    sensitivity_first_post_boundary="2023-04-01",
 )
 OLMO3_7B = ModelSpec(
     name="Olmo3-7B-Instruct",
     param_count_b=7,
     hf_repo_id="allenai/Olmo-3-7B-Instruct",
     revision="6e5971d9eba42665f5bd5a0fcf047f299ce1dccc",
-    role="Ground-truth label validation + size axis",
+    role="Open-corpus confirmed-positive evidence + size axis",
+    primary_first_post_boundary="2025-01-01",
 )
 OLMO3_1_32B = ModelSpec(
     name="Olmo3.1-32B-Instruct",
     param_count_b=32,
     hf_repo_id="allenai/Olmo-3.1-32B-Instruct",
     revision="ac0587e4a7744a551c059d8cd17ba220bc940dae",
-    role="Ground-truth label validation + size axis",
+    role="Open-corpus confirmed-positive evidence + size axis",
+    primary_first_post_boundary="2025-01-01",
 )
 
 MAIN_ANALYSIS_MODELS: tuple[ModelSpec, ...] = (

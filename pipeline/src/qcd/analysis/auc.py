@@ -39,9 +39,20 @@ def hanley_mcneil_se(auc: float, n: int) -> float:
     exactly at AUC=0.70: n=164->0.029, 300->0.021, 542->0.016, 1000->0.012
     (verified during pipeline construction; see tests/test_auc_hanley_mcneil.py).
     """
+    return hanley_mcneil_se_unequal(auc, n, n)
+
+
+def hanley_mcneil_se_unequal(auc: float, n_positive: int, n_negative: int) -> float:
+    """Hanley–McNeil SE for unequal positive and negative group sizes."""
+    if n_positive < 2 or n_negative < 2:
+        raise ValueError("AUC SE needs at least two items in each label group")
     q1 = auc / (2 - auc)
     q2 = 2 * auc**2 / (1 + auc)
-    var = (auc * (1 - auc) + (n - 1) * (q1 - auc**2) + (n - 1) * (q2 - auc**2)) / (n * n)
+    var = (
+        auc * (1 - auc)
+        + (n_positive - 1) * (q1 - auc**2)
+        + (n_negative - 1) * (q2 - auc**2)
+    ) / (n_positive * n_negative)
     return float(np.sqrt(var))
 
 
@@ -52,7 +63,21 @@ def paired_auc_detection_limit(n: int, auc: float, r: float, alpha: float = ALPH
     r=0 -> 0.114/0.084/0.063/0.046, r=0.8 -> 0.051/0.038/0.028/0.021,
     r=0.9 -> 0.036/0.027/0.020/0.015 for n=164/300/542/1000.
     """
-    se = hanley_mcneil_se(auc, n)
+    return paired_auc_detection_limit_unequal(n, n, auc, r, alpha, power)
+
+
+def paired_auc_detection_limit_unequal(
+    n_positive: int,
+    n_negative: int,
+    auc: float,
+    r: float,
+    alpha: float = ALPHA,
+    power: float = POWER_TARGET,
+) -> float:
+    """Paired-AUC detection limit for the actual two label-group sizes."""
+    if not -1 <= r <= 1:
+        raise ValueError("paired-AUC correlation r must be in [-1, 1]")
+    se = hanley_mcneil_se_unequal(auc, n_positive, n_negative)
     se_diff = np.sqrt(2 * se**2 * (1 - r))
     return float(z_for_two_sided_test(alpha, power) * se_diff)
 

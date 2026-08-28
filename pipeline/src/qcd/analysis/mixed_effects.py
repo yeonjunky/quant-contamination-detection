@@ -1,5 +1,5 @@
-"""`correct ~ precision * contaminated + (1 | item) + (1 | model)` — paper
-§4.5.5, the estimand for Q2 (the `precision:contaminated` interaction term,
+"""`correct ~ precision * exposure_proxy + (1 | item) + (1 | model)` — paper
+§4.5.5, the estimand for Q2 (the `precision:exposure_proxy` interaction term,
 on the log-odds scale).
 
 **Dependency note (a deliberate, flagged deviation from CLAUDE.md §6's
@@ -18,7 +18,7 @@ logistic GLMM — added to requirements-local.txt for this module alone.
 
 The interaction term's exact fitted-parameter *name* is data-dependent
 (patsy's category-reference-level choice, e.g. "precision[T.quant]:
-contaminated[T.True]" vs some other level ordering) so it's located
+exposure_proxy[T.True]" vs some other level ordering) so it's located
 programmatically (any fixed-effect name containing ":"), never assumed.
 """
 
@@ -39,17 +39,17 @@ class MixedEffectsResult:
     raw: object  # the underlying statsmodels VBResults, for anyone who wants more than the interaction term
 
 
-def fit_precision_contamination_glmm(
+def fit_precision_exposure_proxy_glmm(
     df: pd.DataFrame,
     *,
     item_col: str = "item_id",
     model_col: str = "model",
     precision_col: str = "precision",
-    contaminated_col: str = "contaminated",
+    exposure_proxy_col: str = "exposure_proxy",
     correct_col: str = "correct",
 ) -> MixedEffectsResult:
     """`df` must have one row per (item, model, precision) measurement, with
-    `correct_col` a 0/1 (or bool) outcome, `contaminated_col` constant
+    `correct_col` a 0/1 (or bool) outcome, `exposure_proxy_col` constant
     within an item (it's a property of the item, not the measurement)."""
     from statsmodels.genmod.bayes_mixed_glm import BinomialBayesMixedGLM  # noqa: PLC0415
 
@@ -58,13 +58,13 @@ def fit_precision_contamination_glmm(
             item_col: "item",
             model_col: "model",
             precision_col: "precision",
-            contaminated_col: "contaminated",
+            exposure_proxy_col: "exposure_proxy",
             correct_col: "correct",
         }
     )
 
     glmm = BinomialBayesMixedGLM.from_formula(
-        "correct ~ precision * contaminated",
+        "correct ~ precision * exposure_proxy",
         {"item": "0 + C(item)", "model": "0 + C(model)"},
         working,
     )
@@ -77,7 +77,7 @@ def fit_precision_contamination_glmm(
     interaction_indices = [i for i, name in enumerate(fe_names) if ":" in name]
     if len(interaction_indices) != 1:
         raise RuntimeError(
-            f"expected exactly one precision:contaminated interaction term in the "
+            f"expected exactly one precision:exposure_proxy interaction term in the "
             f"fitted fixed effects, found {len(interaction_indices)} (names: {fe_names})"
         )
     idx = interaction_indices[0]

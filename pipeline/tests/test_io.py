@@ -32,6 +32,26 @@ def test_write_items_roundtrip(tmp_path):
     assert meta == {"platform": "codeforces"}
 
 
+def test_write_model_item_labels_roundtrip(tmp_path):
+    writer = RawDataWriter(tmp_path)
+    path = writer.write_model_item_labels([{
+        "model": "model",
+        "item_id": "item",
+        "dataset": "lcb_pre",
+        "publication_date": "2023-06-01",
+        "primary_first_post_date": "2024-01-01",
+        "sensitivity_first_post_date": "2023-04-01",
+        "shared_control_start_date": "2025-01-01",
+        "primary_label": "possible-exposure",
+        "sensitivity_label": "clean-by-model-cutoff",
+        "boundary_ambiguous": True,
+    }])
+    row = pd.read_parquet(path).iloc[0]
+    assert row["primary_label"] == "possible-exposure"
+    assert row["publication_date"] == "2023-06-01"
+    assert bool(row["boundary_ambiguous"]) is True
+
+
 def test_add_generation_and_flush_roundtrip(tmp_path):
     writer = RawDataWriter(tmp_path)
     writer.add_generation(

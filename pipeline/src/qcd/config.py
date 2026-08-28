@@ -1,5 +1,5 @@
 """Run configuration dataclasses shared by the mock dry-run harness and the
-real H100 drivers (scripts/run_pilot.py and scripts/run_main.py). Kept
+real H100 study driver (`scripts/run_main.py`). Kept
 deliberately thin: this is wiring, not experimental design —
 the actual axes (which models, which quant levels, which datasets) are fixed
 by paper/paper_draft.md §4.1-§4.3 and mirrored in models/registry.py.
@@ -33,8 +33,12 @@ class ModelSpec:
     # Verified Hugging Face repository ID; revision pins the exact snapshot.
     hf_repo_id: str
     revision: str  # immutable Hugging Face commit SHA
-    role: str  # paper §4.1's "Role" column, e.g. "Pilot workhorse + size axis"
+    role: str  # paper §4.1's "Role" column, e.g. "7B size axis"
     included_in_main_analysis: bool = True
+    # ISO first-post-boundary dates used to materialize model–item temporal
+    # proxy labels. A sensitivity date is present only for bracketed cutoffs.
+    primary_first_post_boundary: str | None = None
+    sensitivity_first_post_boundary: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)

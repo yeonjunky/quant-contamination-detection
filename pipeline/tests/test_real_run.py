@@ -1,11 +1,12 @@
 """Real-network, GPU-free tests for qcd.real_run — the shared core behind
-scripts/run_pilot.py and scripts/run_main.py. Confirms the parts of the
+scripts/run_main.py. Confirms the parts of the
 real (non-mock) pipeline that don't need a GPU: item loading/capping,
 candidate-code assembly, and that `run()` fails at exactly the expected
 place (model loading) rather than somewhere earlier due to a wiring bug —
 leaving items.parquet and manifest.json already written when it does.
 """
 
+import dataclasses
 import datetime as dt
 import json
 from types import SimpleNamespace
@@ -19,9 +20,14 @@ from qcd.models.registry import QWEN2_5_7B
 from qcd.real_run import RealRunConfig, _assemble_candidate_code, _generation_prompt, load_all_items, run
 
 
+_TEST_QWEN = dataclasses.replace(
+    QWEN2_5_7B, primary_first_post_boundary="2023-11-01"
+)
+
+
 def _small_config(tmp_path, **overrides) -> RealRunConfig:
     defaults = dict(
-        models=(QWEN2_5_7B,),
+        models=(_TEST_QWEN,),
         quant_levels=(Quant.BF16,),
         output_dir=tmp_path,
         lcb_cutoff_boundary=dt.datetime(2023, 12, 1),
@@ -165,6 +171,7 @@ def test_run_fails_at_model_loading_not_earlier(tmp_path, monkeypatch):
     # Items and manifest should already be on disk — the failure happens
     # after those writes, not before.
     assert (tmp_path / "raw" / "items.parquet").exists()
+    assert (tmp_path / "raw" / "model_item_labels.parquet").exists()
     assert (tmp_path / "manifest.json").exists()
     df = pd.read_parquet(tmp_path / "raw" / "items.parquet")
     assert len(df) > 0
@@ -173,7 +180,10 @@ def test_run_fails_at_model_loading_not_earlier(tmp_path, monkeypatch):
 def test_run_scores_fixed_prompt_and_keeps_completion_confidence(tmp_path, monkeypatch):
     import qcd.real_run as real_run_module
 
-    item = Item(item_id="q1", dataset=Dataset.LCB_PRE, prompt="fixed prompt")
+    item = Item(
+        item_id="q1", dataset=Dataset.LCB_PRE, prompt="fixed prompt",
+        metadata={"contest_date": "2023-06-01"},
+    )
 
     class FakeModel:
         tokenizer = object()
@@ -216,6 +226,9 @@ def test_run_scores_fixed_prompt_and_keeps_completion_confidence(tmp_path, monke
     }
     assert manifest["config"]["baseline_dtype"] == "bfloat16"
     assert manifest["config"]["n_cdd_samples"] == 2
+    assert manifest["config"]["model_primary_first_post_boundaries"] == {
+        QWEN2_5_7B.name: "2023-11-01",
+    }
     generations = pd.concat(
         [pd.read_parquet(path) for path in sorted((tmp_path / "raw").glob("generations*.parquet"))],
         ignore_index=True,
