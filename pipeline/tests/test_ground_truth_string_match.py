@@ -16,7 +16,8 @@ def test_normalized_verbatim_tolerates_case_unicode_and_whitespace():
     )
     assert normalize_text("Ａ") == "a"
     assert rows[0]["normalized_verbatim"] is True
-    assert rows[0]["string_match_label"] is True
+    assert rows[0]["match_detected"] is True
+    assert rows[0]["corpus_status"] == "confirmed-match"
     assert rows[0]["document_id"] == "doc-1"
 
 
@@ -28,15 +29,19 @@ def test_ngram_overlap_can_retrieve_near_verbatim_without_exact_match():
     )
     assert row["normalized_verbatim"] is False
     assert row["ngram_coverage"] == 0.8
-    assert row["string_match_label"] is True
+    assert row["match_detected"] is True
+    assert row["corpus_status"] == "confirmed-match"
 
 
-def test_absent_item_emits_auditable_negative_row():
+def test_absent_item_emits_no_match_status_only_after_complete_scan():
     [row] = scan_corpus(
         [_item("none", "one two three four")], [{"id": "doc", "text": "unrelated corpus text"}],
         corpus_name="synthetic", stage="rlvr", config=MatchConfig(2, 0.5),
+        coverage_complete=True,
     )
-    assert row["string_match_label"] is False
+    assert row["match_detected"] is False
+    assert row["corpus_status"] == "no-match-found"
+    assert row["coverage_complete"] is True
     assert row["document_id"] is None
     assert row["documents_scanned"] == 1
 
@@ -62,12 +67,24 @@ def test_same_item_id_in_different_datasets_does_not_collide():
         corpus_name="synthetic",
         stage="sft",
         config=MatchConfig(2, 0.8),
+        coverage_complete=True,
     )
 
-    assert [(row["dataset"], row["string_match_label"]) for row in rows] == [
-        ("humaneval", True),
-        ("mbppplus", False),
+    assert [(row["dataset"], row["corpus_status"]) for row in rows] == [
+        ("humaneval", "confirmed-match"),
+        ("mbppplus", "no-match-found"),
     ]
+
+
+def test_absent_item_in_incomplete_scan_is_not_observable():
+    [row] = scan_corpus(
+        [_item("none", "one two three four")],
+        [{"id": "doc", "text": "unrelated corpus text"}],
+        corpus_name="synthetic", stage="rlvr", config=MatchConfig(2, 0.5),
+        coverage_complete=False,
+    )
+    assert row["match_detected"] is False
+    assert row["corpus_status"] == "not-observable"
 
 
 def test_progress_callback_reports_completed_intervals():

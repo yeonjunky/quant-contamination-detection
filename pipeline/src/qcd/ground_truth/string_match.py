@@ -15,7 +15,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
-from qcd.data.schema import Item
+from qcd.data.schema import CorpusReferenceStatus, Item
 
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*|\d+(?:\.\d+)?|[^\w\s]", re.UNICODE)
 
@@ -84,6 +84,7 @@ def scan_corpus(
     top_k: int = 1,
     evidence_only: bool = False,
     include_document_text: bool = False,
+    coverage_complete: bool = False,
 ) -> list[dict[str, Any]]:
     """Scan an iterable once and return bounded evidence rows per item.
 
@@ -92,6 +93,8 @@ def scan_corpus(
     benchmark side.  It is suitable for HF ``IterableDataset`` streams, though
     a full multi-terabyte pretraining pass remains an operationally expensive
     fallback rather than a substitute for a public/persistent corpus index.
+    Callers must set ``coverage_complete=True`` only when the requested corpus
+    scope was exhausted; otherwise a non-match remains ``not-observable``.
     """
     if top_k < 1:
         raise ValueError("top_k must be positive")
@@ -196,6 +199,16 @@ def scan_corpus(
         for candidate_rank, evidence in enumerate(evidence_rows or [{}], start=1):
             coverage = float(evidence.get("ngram_coverage", 0.0))
             exact = bool(evidence.get("normalized_verbatim", False))
+            matched = exact or coverage >= config.ngram_coverage_threshold
+            status = (
+                CorpusReferenceStatus.CONFIRMED_MATCH
+                if matched
+                else (
+                    CorpusReferenceStatus.NO_MATCH_FOUND
+                    if coverage_complete
+                    else CorpusReferenceStatus.NOT_OBSERVABLE
+                )
+            )
             row = {
                 "item_id": item_id,
                 "dataset": dataset,
@@ -206,7 +219,9 @@ def scan_corpus(
                 "ngram_size": config.ngram_size,
                 "ngram_coverage": coverage,
                 "ngram_threshold": config.ngram_coverage_threshold,
-                "string_match_label": exact or coverage >= config.ngram_coverage_threshold,
+                "match_detected": matched,
+                "corpus_status": status.value,
+                "coverage_complete": coverage_complete,
                 "document_id": evidence.get("document_id"),
                 "matched_ngrams": int(evidence.get("matched_ngrams", 0)),
                 "query_ngrams": int(evidence.get("query_ngrams", len(queries[query_key]["grams"]))),

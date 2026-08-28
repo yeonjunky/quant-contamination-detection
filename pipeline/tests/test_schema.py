@@ -1,4 +1,4 @@
-from qcd.data.schema import Dataset, Item
+from qcd.data.schema import CorpusReferenceStatus, Dataset, Item, TemporalProxyLabel
 
 
 def _item(dataset: Dataset) -> Item:
@@ -23,3 +23,11 @@ def test_dataset_enum_values_are_stable_strings():
     assert Dataset.LCB_POST.value == "lcb_post"
     assert Dataset.HUMANEVAL.value == "humaneval"
     assert Dataset.MBPPPLUS.value == "mbppplus"
+
+
+def test_proxy_and_corpus_status_values_are_explicit_non_binary_strings():
+    assert TemporalProxyLabel.POSSIBLE_EXPOSURE.value == "possible-exposure"
+    assert TemporalProxyLabel.SHARED_CLEAN_CONTROL.value == "shared-clean-control"
+    assert CorpusReferenceStatus.CONFIRMED_MATCH.value == "confirmed-match"
+    assert CorpusReferenceStatus.NO_MATCH_FOUND.value == "no-match-found"
+    assert CorpusReferenceStatus.NOT_OBSERVABLE.value == "not-observable"

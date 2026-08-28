@@ -1,9 +1,9 @@
-# Olmo training-data ground-truth search
+# Olmo training-data corpus-reference search
 
 This CPU-only first pass for paper section 5, step 5 searches released Olmo
 training rows for normalized-verbatim prompt occurrences and token n-gram
-overlap. Its `string_match_label` is method-family evidence, not the final Q1b
-ground-truth label. Surface/AST matching, semantic/paraphrase matching, and the
+overlap. Its `corpus_status` is method-family evidence, not a verified Q1b
+contamination label. Surface/AST matching, semantic/paraphrase matching, and the
 TRACER reimplementation remain separate later stages; their outputs must not be
 averaged into this score.
 
@@ -105,9 +105,16 @@ failed.
 For deterministic local validation, `--jsonl PATH` accepts JSONL rows and
 recursively extracts string fields from plain-text or nested chat schemas. The
 output keeps corpus, stage, document ID, scan count, exact flag, n-gram coverage,
-threshold, and label in every benchmark-item row. The defaults (`n=13`, coverage
+threshold, `match_detected`, `corpus_status`, and `coverage_complete` in every
+benchmark-item row. `confirmed-match` requires positive evidence;
+`no-match-found` is emitted only after a complete requested scan; bounded smoke
+or shard scans use `not-observable` until exhaustive finalization. The defaults (`n=13`, coverage
 `0.8`) are provisional retrieval settings and must be frozen or recalibrated
 without looking at Q1 results before a full scientific run.
+
+The resumable manifest records evidence schema version 3 for this tri-state
+output. A schema-2 manifest must be reinitialized rather than mixed with new
+shard rows.
 
 ## Not implemented in this first pass
 
@@ -115,8 +122,12 @@ without looking at Q1 results before a full scientific run.
 - embedding retrieval and semantic/paraphrase adjudication;
 - TRACER's three LLM stages and validation against open-data evidence;
 - an indexed search service that avoids transferring every pretraining shard;
-- synthesis of separate method families into the final item-level label and
-  measured proxy-label error rate *e*.
+- descriptive comparison of separate method families and TRACER on confirmed
+  positive evidence.
 
 These omissions are explicit because exact/n-gram evidence alone is a lower
-bound on contamination and cannot establish a clean label.
+bound on contamination and cannot establish a clean label. Even after the
+additional method families are run, `no-match-found` is not verified
+non-exposure; therefore this workflow reports `confirmed-match`,
+`no-match-found`, and `not-observable` and does not identify proxy-label error
+rate *e*, false-positive rate, or false-negative rate.

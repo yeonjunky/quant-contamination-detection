@@ -32,7 +32,7 @@ from qcd.ground_truth.shard_manifest import (
 from qcd.ground_truth.string_match import MatchConfig, extract_text, scan_corpus, tokenize
 
 
-EVIDENCE_SCHEMA_VERSION = "2"
+EVIDENCE_SCHEMA_VERSION = "3"
 
 
 def retrieval_metadata(args) -> dict[str, str]:
@@ -141,6 +141,7 @@ def run(args, connection) -> None:
                 completion_callback=completion_count.append,
                 top_k=args.candidates_per_item, evidence_only=True,
                 include_document_text=True,
+                coverage_complete=False,
             )
             document_count = completion_count[0]
             evidence = rows
@@ -228,13 +229,19 @@ def finalize(args, connection) -> None:
                 "ngram_size": ngram_size,
                 "ngram_coverage": 0.0,
                 "ngram_threshold": ngram_coverage_threshold,
-                "string_match_label": False,
+                "match_detected": False,
+                "corpus_status": "no-match-found",
+                "coverage_complete": True,
                 "document_id": None,
                 "matched_ngrams": 0,
                 "query_ngrams": max(0, len(tokenize(item.prompt)) - ngram_size + 1),
                 "source_shard": None,
             }]
         for candidate_rank, row in enumerate(item_candidates, start=1):
+            row["corpus_status"] = (
+                "confirmed-match" if row.get("match_detected") else "no-match-found"
+            )
+            row["coverage_complete"] = True
             row["candidate_rank"] = candidate_rank
             row["corpus"] = corpus
             row["documents_scanned"] = stats["documents_scanned"]

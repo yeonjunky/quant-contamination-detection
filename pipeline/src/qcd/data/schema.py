@@ -29,11 +29,9 @@ class Dataset(enum.Enum):
     MBPPPLUS = "mbppplus"
 
 
-# Dataset-design contamination label: True for the two contamination-suspect
-# conditions, False for the one clean control. This is a coarse *proxy* label
-# with a nonzero error rate e (paper §4.5.2) — TRACER (Item.tracer_label)
-# measures the residual contamination that this proxy misses, it does not
-# replace it.
+# Legacy dataset-level grouping used by the mock harness and secondary
+# HumanEval/MBPP+ contrasts. Primary LCB analyses must use the separately
+# materialized model–item temporal labels, not this coarse property.
 _PROXY_CONTAMINATED = {
     Dataset.LCB_PRE: True,
     Dataset.LCB_POST: False,
@@ -54,10 +52,10 @@ class Item:
     # derive an empirical bucket separately rather than relying on this being set.
     difficulty: str | None = None
 
-    # Residual contamination score from TRACER (arXiv:2605.24079), filled in
-    # during step 5 (CLAUDE.md §7) — a prerequisite for Q1b, not for Q1a.
-    # None until that measurement has actually been made; do not default this
-    # to a placeholder number.
+    # Residual-contamination evidence from TRACER (arXiv:2605.24079), filled in
+    # during step 5 (AGENTS.md §7). It is stored separately from Q1b's temporal
+    # proxy label and is not a verified negative label or a prerequisite for
+    # computing Q1b. None until that measurement has actually been made.
     tracer_label: float | None = None
 
     # Dataset snapshot/version pin (e.g. LiveCodeBench release_version, or the
@@ -71,6 +69,21 @@ class Item:
 
     @property
     def contamination_proxy(self) -> bool:
-        """Dataset-design contamination-suspect label (not TRACER's measured
-        residual). True for LCB-pre/HumanEval/MBPP+, False for LCB-post."""
+        """Coarse dataset-level exposure proxy for legacy/secondary paths.
+
+        Primary LCB Q1b/Q2 analyses use `model_item_labels.parquet`; this
+        property must not be used as a model-specific training-cutoff label.
+        """
         return _PROXY_CONTAMINATED[self.dataset]
+
+
+class TemporalProxyLabel(enum.Enum):
+    POSSIBLE_EXPOSURE = "possible-exposure"
+    CLEAN_BY_MODEL_CUTOFF = "clean-by-model-cutoff"
+    SHARED_CLEAN_CONTROL = "shared-clean-control"
+
+
+class CorpusReferenceStatus(enum.Enum):
+    CONFIRMED_MATCH = "confirmed-match"
+    NO_MATCH_FOUND = "no-match-found"
+    NOT_OBSERVABLE = "not-observable"

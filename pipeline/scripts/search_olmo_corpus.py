@@ -115,6 +115,7 @@ def main() -> None:
         config=MatchConfig(args.ngram_size, args.ngram_coverage_threshold),
         progress_every=args.progress_every,
         progress_callback=report_progress,
+        coverage_complete=(args.max_documents is None and args.hf_file is None),
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8") as handle:
