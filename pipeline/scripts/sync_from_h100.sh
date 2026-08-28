@@ -2,7 +2,7 @@
 # rsync wrapper: pulls data/raw/ down from the H100 box to this machine.
 # pipeline_build_plan.md's "Raw data schema + sync" section: excludes model-
 # weight caches (only the raw/manifests tree is synced, not HF_HOME), and
-# should always be run with --dry-run first before a real pilot/main sync.
+# should always be run with --dry-run first before validation/main artifact sync.
 #
 # Usage:
 #   scripts/sync_from_h100.sh <ssh-alias> [<remote-repo-path>] [-- <extra rsync args>]

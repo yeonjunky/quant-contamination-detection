@@ -1,37 +1,14 @@
 import pytest
 
-from qcd.constants import CDD_GATE_AUC
-from qcd.pilot.cdd_gate import check_cdd_gate
-from qcd.pilot.pilot_report import PilotReport, base_rate, cohens_d_paired, pearson_r, proxy_label_error_rate
+from qcd.pilot.pilot_report import (
+    ValidationDiagnostics,
+    base_rate,
+    cohens_d_paired,
+    pearson_r,
+)
 
 
-# --- CDD gate ----------------------------------------------------------------
-
-
-def test_cdd_gate_passes_above_threshold():
-    result = check_cdd_gate(CDD_GATE_AUC + 0.05)
-    assert result.passed is True
-    assert "stays in the primary analysis" in result.reason
-
-
-def test_cdd_gate_fails_below_threshold():
-    result = check_cdd_gate(CDD_GATE_AUC - 0.05)
-    assert result.passed is False
-    assert "drop CDD" in result.reason
-
-
-def test_cdd_gate_boundary_at_exact_threshold_passes():
-    result = check_cdd_gate(CDD_GATE_AUC)
-    assert result.passed is True
-
-
-def test_cdd_gate_reports_diagnostics():
-    result = check_cdd_gate(0.85)
-    assert result.assumed_quantization_delta_auc > 0
-    assert result.detection_limit_at_reference_n > 0
-
-
-# --- pilot_report primitives -------------------------------------------------
+# --- validation-diagnostic primitives ---------------------------------------
 
 
 def test_cohens_d_paired_known_answer():
@@ -72,19 +49,6 @@ def test_base_rate_empty_raises():
         base_rate([])
 
 
-def test_proxy_label_error_rate_known_answer():
-    proxy = [True, True, False, False]
-    truth = [True, False, False, False]
-    # one disagreement (index 1) out of 4 -> e = 0.25
-    assert proxy_label_error_rate(proxy, truth) == pytest.approx(0.25)
-
-
-def test_proxy_label_error_rate_perfect_agreement_is_zero():
-    labels = [True, False, True, False]
-    assert proxy_label_error_rate(labels, labels) == 0.0
-
-
-def test_pilot_report_default_construction():
-    report = PilotReport()
+def test_validation_diagnostics_default_construction():
+    report = ValidationDiagnostics()
     assert report.q1a_effect_size_d == {}
-    assert report.olmo3_proxy_label_error_rate is None

@@ -4,7 +4,8 @@
 Runs one pre- and one post-cutoff item of each test type with
 Qwen2.5-7B-Instruct/BNB-NF4. This validates the model-output extraction,
 public/private test decoding, sandbox scoring, pass@1 fields, and parquet
-round trip before the pilot.
+round trip before the frozen main run. Outputs are engineering-validation
+artifacts and are not study observations.
 """
 
 from __future__ import annotations

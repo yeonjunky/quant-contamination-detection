@@ -38,28 +38,10 @@ HOLM_WORST_CASE_MULTIPLIER = 3.3393
 
 # Illustrative bf16 base rates used in that same worked table (paper §4.5.3,
 # "these two figures are illustrative values for a Qwen-class instruction-tuned
-# model" — NOT a claim about every model; real base rates are measured per
-# model in the pilot, §4.7 item (d)).
+# model" — NOT a claim about every model. Main-study base rates are reported
+# from the frozen analysis and never used to redesign the study.
 BASE_RATE_HUMANEVAL_ILLUSTRATIVE = 0.85
 BASE_RATE_LCB_POST_ILLUSTRATIVE = 0.35
-
-# CDD pilot gate (§4.6): break-even baseline AUC below which CDD is dropped
-# from the primary analysis. The draft states "≈0.79"; 0.7936 is the exact
-# value solving detection_limit(n=542, AUC, r=0.8) == quantization_delta_auc(AUC)
-# (CLAUDE.md §4.1 records this same value). Use this constant, not 0.79 — the
-# rounded figure is for prose, not for a threshold comparison in code.
-CDD_GATE_AUC = 0.7936
-
-# §4.6's assumed quantization-induced reduction in CDD separation, expressed
-# on the binormal d'-scale (d' = sqrt(2) * Phi^-1(AUC)); reproduces the
-# table's ΔAUC column exactly (0.002/0.010/0.019/0.026/0.019 for
-# AUC=0.52/0.60/0.70/0.85/0.95).
-CDD_GATE_ASSUMED_SEPARATION_REDUCTION = 0.10
-
-# §4.6's reference item count and cross-precision correlation for the gate
-# table (542-item, r=0.8 reference point).
-CDD_GATE_REFERENCE_N = 542
-CDD_GATE_REFERENCE_R = 0.8
 
 # §4.5.2's baseline AUC assumption for the Q1b SE(AUC)/label-noise tables.
 Q1B_REFERENCE_AUC = 0.70

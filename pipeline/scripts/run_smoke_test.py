@@ -4,7 +4,7 @@ smoke-test checklist". A loading/integration check, not a scientific run:
 proves the real generate()/score_logprobs() path (models/loader.py) works
 end-to-end on real hardware — real quantized load, real sampling, real
 sandboxed code execution, real detector scoring, real raw-data writer —
-before any pilot-scale run is trusted. Deliberately tiny: 5 shortest-prompt
+before the frozen main run begins. Deliberately tiny: 5 shortest-prompt
 HumanEval items, 1 greedy + 2 T=0.8 samples each (not the full
 CDD_N_SAMPLES=50).
 

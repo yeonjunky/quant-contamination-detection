@@ -1,6 +1,6 @@
-"""Paired AUC + Hanley-McNeil SE, and the CDD pilot-gate ΔAUC model. Every
+"""Paired AUC and Hanley-McNeil SE utilities. Every
 formula here was independently re-derived and checked against
-paper/paper_draft.md's worked tables (§4.5.2, §4.6) during pipeline
+paper/paper_draft.md's worked tables (§4.5.2) during pipeline
 construction, not copied from memory of "the standard formula" — see the
 docstrings below for the exact table cells each function reproduces.
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from qcd.analysis._stats import bisect, normal_cdf, normal_ppf, z_for_two_sided_test
+from qcd.analysis._stats import bisect, z_for_two_sided_test
 from qcd.constants import ALPHA, POWER_TARGET
 
 
@@ -94,41 +94,3 @@ def items_needed_for_delta_auc(target_delta_auc: float, auc: float, r: float, al
     # bracket and infers direction from the endpoints itself.
     n = bisect(f, 2, 1_000_000, iters=60)
     return int(np.ceil(n))
-
-
-def quantization_delta_auc(auc: float, reduction: float) -> float:
-    """§4.6's "assumed `reduction` reduction in separation" model, applied on
-    the binormal d'-scale (d' = sqrt(2) * Phi^-1(AUC)) rather than to
-    (AUC-0.5) directly. Reproduces the gate table's ΔAUC column exactly:
-    AUC=0.52->0.002, 0.60->0.010, 0.70->0.019, 0.85->0.026, 0.95->0.019 at
-    reduction=0.10 (verified during pipeline construction against a
-    (AUC-0.5)*reduction hypothesis, which does *not* reproduce the table).
-
-    `auc` is clamped away from {0, 1} before the Phi^-1 call: a *measured*
-    AUC on a small pilot sample can legitimately come back as exactly 1.0
-    (perfect separation), where Phi^-1 is undefined — found when the mock
-    dry run's small item count produced exactly this (pipeline
-    construction). The clamp keeps the gate check from crashing on real
-    small-n pilot data instead of only ever seeing this in a mock."""
-    auc = min(max(auc, 1e-9), 1 - 1e-9)
-    d_prime = np.sqrt(2) * normal_ppf(auc)
-    d_prime_reduced = (1 - reduction) * d_prime
-    auc_reduced = normal_cdf(d_prime_reduced / np.sqrt(2))
-    return float(auc - auc_reduced)
-
-
-def cdd_gate_breakeven_auc(
-    n: int = 542,
-    r: float = 0.8,
-    reduction: float = 0.10,
-    alpha: float = ALPHA,
-    power: float = POWER_TARGET,
-) -> float:
-    """Solves for the baseline AUC where quantization_delta_auc equals
-    paired_auc_detection_limit — the pilot gate's break-even point.
-    Reproduces CLAUDE.md §4.1 / paper §4.6's "≈0.79" (exact value 0.7936)."""
-
-    def f(auc: float) -> float:
-        return quantization_delta_auc(auc, reduction) - paired_auc_detection_limit(n, auc, r, alpha, power)
-
-    return bisect(f, 0.5001, 0.9999, iters=60)

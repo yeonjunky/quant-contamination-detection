@@ -1,55 +1,24 @@
 #!/usr/bin/env python
-"""H100 pilot driver (paper §4.7): Qwen2.5-7B and Olmo3-7B, BNB-nf4 arm
-first. Thin CLI wrapper over qcd.real_run.run(); real bf16/bnb/AWQ loading,
-generation, fixed-prompt detector scoring, completion-confidence storage,
-sandbox scoring, and raw-data paths are implemented.
+"""Deprecated compatibility entry point.
 
-Usage: python scripts/run_pilot.py [--output-dir data/raw/pilot]
-                                    [--lcb-cutoff 2025-01-01] [--item-limit 50]
+The former ``run_pilot.py`` mixed engineering validation with a scientific
+pilot: it ran a small real-model sample and immediately converted those rows
+into effect-size, power, and CDD-gate outputs. That workflow is no longer part
+of the study design. Validation observations must not determine analysis
+eligibility, sample size, or manuscript results.
+
+Use ``run_dry_run.py`` for GPU-free implementation validation,
+``run_smoke_test.py``/``run_lcb_smoke_test.py`` for bounded H100 wiring checks,
+and ``run_main.py`` for the frozen study execution.
 """
-
-import argparse
-import datetime as dt
-from pathlib import Path
-
-from qcd.config import Quant
-from qcd.constants import CDD_N_SAMPLES
-from qcd.models.registry import PILOT_MODELS
-from qcd.pilot.aggregate import aggregate_pilot
-from qcd.real_run import RealRunConfig, run
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--output-dir", type=Path, default=Path("data/raw/pilot"))
-    parser.add_argument(
-        "--lcb-cutoff", type=str, default="2025-01-01",
-        help="First eligible common LCB-post day. Olmo 3's official model "
-             "cards give a Dec. 2024 cutoff; month-level conservatism makes "
-             "2025-01-01 the first post-cutoff day.",
+    raise SystemExit(
+        "run_pilot.py has been retired: validation-only runs must not produce "
+        "scientific pilot statistics. Use run_dry_run.py, run_smoke_test.py, "
+        "or run_main.py as appropriate."
     )
-    parser.add_argument("--lcb-release", type=str, default="release_v6")
-    parser.add_argument(
-        "--item-limit", type=int, default=50,
-        help="Pilot-scale per-condition item cap. Pass -1 to disable (use every item).",
-    )
-    parser.add_argument("--n-cdd-samples", type=int, default=CDD_N_SAMPLES)
-    args = parser.parse_args()
-
-    config = RealRunConfig(
-        models=PILOT_MODELS,
-        quant_levels=(Quant.BF16, Quant.BNB_NF4),
-        output_dir=args.output_dir,
-        lcb_cutoff_boundary=dt.datetime.fromisoformat(args.lcb_cutoff),
-        lcb_release_version=args.lcb_release,
-        n_cdd_samples=args.n_cdd_samples,
-        item_limit_per_condition=None if args.item_limit < 0 else args.item_limit,
-    )
-    run(config)
-    summary, power = aggregate_pilot(args.output_dir)
-    print(f"Pilot summary: {args.output_dir / 'pilot_summary.json'}")
-    print(f"Power recompute: {args.output_dir / 'power_recompute.json'}")
-    print(f"CDD gates: {summary['cdd_gate']}")
 
 
 if __name__ == "__main__":

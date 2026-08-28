@@ -2,7 +2,9 @@
 """H100 main-experiment driver (paper §5 step 8): all five
 MAIN_ANALYSIS_MODELS, the full quantization ladder. Thin CLI wrapper over
 qcd.real_run.run(); the real bf16/bnb/AWQ loading and scoring paths are
-implemented. Run the pre-pilot audit and pilot gate before this full driver.
+implemented. Complete engineering validation and freeze the operational
+configuration before invoking this study-data driver. Validation outputs must
+not be used to change C1-C4, sample planning, or detector priority.
 
 Usage: python scripts/run_main.py --lcb-cutoff <final-common-boundary>
 """

@@ -76,10 +76,6 @@ MAIN_ANALYSIS_MODELS: tuple[ModelSpec, ...] = (
 
 ALL_MODELS: tuple[ModelSpec, ...] = MAIN_ANALYSIS_MODELS
 
-# Pilot arm (paper §4.7): Qwen2.5-7B and Olmo3-7B, BNB-nf4 first.
-PILOT_MODELS: tuple[ModelSpec, ...] = (QWEN2_5_7B, OLMO3_7B)
-
-
 def get_model(name: str) -> ModelSpec:
     for model in ALL_MODELS:
         if model.name == name:
