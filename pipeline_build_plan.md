@@ -1,16 +1,23 @@
 # Data-Collection Pipeline: Build Plan
 
+> **DESIGN CHANGE 2026-08-28 — scientific pilot removed.** Local dry runs and bounded H100
+> smoke tests are engineering validation only. Their outputs cannot be used as manuscript evidence,
+> effect-size or power inputs, CDD screening, detector ranking, or confirmatory-test eligibility.
+> `run_main.py` is the only study-data driver. The former `run_pilot.py` and
+> `aggregate_pilot.py` entrypoints now intentionally refuse execution; older status notes below are
+> retained as implementation history and are superseded wherever they describe a scientific pilot.
+
 > **DESIGN CHANGE 2026-08-05 — this plan predates a model-roster change.** Llama-3.3-70B and
 > Gemma-4-31B-it were removed from the design entirely; Llama-3.1-8B-Instruct was added
 > (see `paper/revision_provenance.md`, 2026-08-05 entry). This document has been updated to
 > remove the resulting 70B/multi-GPU execution path. No arm exceeds 32.5B, the whole ladder
-> fits a single H100/H200, and `pilot_report.py` computes the five pilot quantities (a)–(e)
-> from paper §4.7. The registry in `pipeline/src/qcd/models/registry.py` is the authoritative roster.
+> fits a single H100/H200. The registry in `pipeline/src/qcd/models/registry.py` is the authoritative roster.
 
 > **BUILD STATUS 2026-08-14 — the mock-verifiable scope of this plan is built.** Every module
 > below reachable without a CUDA GPU exists and is tested (data loaders, generation, scoring
-> incl. real sandboxed code execution, all three detectors, the full analysis layer, pilot
-> gate/report, io writers, `scripts/run_dry_run.py`/`run_pilot.py`/`run_main.py`/
+> incl. real sandboxed code execution, all three detectors, the full analysis layer, the then-current
+> pilot gate/report later retired by the 2026-08-28 change, io writers, `scripts/run_dry_run.py`/
+> `run_pilot.py`/`run_main.py`/
 > `sync_from_h100.sh`). `models/loader.py`'s real `generate()`/`score_logprobs()`, the
 > GPTQ/AWQ backend, and `scripts/run_smoke_test.py` remain deferred to a session on an actual
 > CUDA machine (this build pass ran on a Mac, Apple Silicon, no CUDA — confirmed with the user
@@ -46,7 +53,7 @@
 > does the one-time offline quantization (quantize-once-and-save, unlike bnb's
 > load-time quantization); `models/loader.py`'s `_load_gptq_or_awq` loads the result. Validated
 > on Qwen2.5-7B-Instruct (×2 calibration variants) and Olmo3-7B-Instruct (×1) — Llama-3.1-8B and
-> the two 32B models are deliberately not quantized in this pass, left for the real pilot/main
+> the two 32B models are deliberately not quantized in this pass, left for the frozen main
 > run. Also ran a live comparison of code-domain vs. general-chat calibration data (motivated by
 > §2.7/§4.3's literature review) — no detectable difference at n=5 (too small to resolve either
 > way); canonicalized the code-domain variant, consistent with the original hypothesis. Real
@@ -65,7 +72,7 @@ no code, scripts, or environment file existed then (confirmed at that time:
 that machine). The paper's own committed execution order (AGENTS.md §7 / paper draft
 §5) has 9 steps, but nothing has been built to run any of them. The user wants a plan
 to actually start collecting data, split across two machines: **spike tests here**
-(RTX 4060 laptop GPU, 8GB VRAM) and **the actual pilot/main experiment on an
+(RTX 4060 laptop GPU, 8GB VRAM) and **the actual main experiment on an
 already-provisioned H100 SSH box**. This plan is the engineering scaffolding needed to
 execute the paper's existing 9-step plan — it does not change the experimental design,
 which is fixed by AGENTS.md §5's invariants (log-odds scale for Q2, no HumanEval/MBPP+
@@ -112,7 +119,7 @@ pipeline/
   requirements-local.txt     # mock-only profile (no torch/transformers/bitsandbytes needed)
   requirements-h100.txt      # full pinned GPU stack
   src/qcd/
-    constants.py             # single source for CDD_GATE_AUC=0.7936, α, power target —
+    constants.py             # single source for α, power target, CDD separation-reduction assumption —
                               #   imported everywhere, never re-typed (AGENTS.md §3.3 discipline)
     config.py                # ModelSpec / QuantSpec / DatasetSpec / RunConfig dataclasses
     models/
@@ -144,11 +151,10 @@ pipeline/
       auc.py                        # paired AUC + Hanley-McNeil SE, numpy-only (matches the
                                      #   "scipy 없음" convention already used for AGENTS.md's numbers)
       aggregation.py                 # HARD-FAILS if HumanEval+MBPP+ combined into one cell
-      power.py                        # power recompute from pilot values
-      mixed_effects.py                 # correct ~ precision*contaminated + (1|item) + (1|model)
-    pilot/
-      cdd_gate.py                      # gate check against constants.CDD_GATE_AUC (0.7936)
-      pilot_report.py                   # computes pilot quantities (a)-(d) from paper §4.7
+      power.py                        # pre-execution planning/sensitivity calculations
+      mixed_effects.py                 # correct ~ precision*exposure_proxy + (1|item) + (1|model)
+    pilot/                              # legacy package name; development-only diagnostics
+      pilot_report.py                   # synthetic validation diagnostics, not study estimates
     io/
       raw_writer.py                     # item-level raw data writer
       manifest.py                        # per-run manifest: git commit, config hash, lib
@@ -157,8 +163,7 @@ pipeline/
     test_logodds.py                      # regression test against paper §4.5.3's worked table
                                           #   (β=0.50 → 5.6pp/7.7pp/−2.2pp — verified against draft)
     test_pooling_guard.py
-    test_cdd_gate.py                      # parametrized against §4.6's table, gate = 0.7936
-                                          #   (verified against draft: break-even ≈0.79)
+    test_pilot.py                         # validation-diagnostics regression tests
     test_auc_hanley_mcneil.py             # reproduces §4.5.2's SE(AUC) values
     test_mink_prob.py / test_perplexity.py
     test_raw_schema_roundtrip.py
@@ -166,11 +171,11 @@ pipeline/
   scripts/
     run_dry_run.py                          # local mock spike, interactive
     run_smoke_test.py                        # local real Qwen2.5-7B nf4 smoke test
-    run_pilot.py                              # H100 pilot driver
+    run_pilot.py                              # retired compatibility entrypoint; exits without running
     run_main.py                                # H100 main-experiment driver
     sync_from_h100.sh                          # rsync wrapper
 data/                                           # gitignored
-  raw/{pilot,main}/...
+  raw/{validation,main}/...
   cache/generations/...
   manifests/...
 ```
@@ -207,16 +212,13 @@ installed):**
 **1. Dry-run (mock, no GPU/downloads):**
 `models/mock.py` implements the same interface real loaders expose, so the rest of the
 pipeline never branches on mock-vs-real. Use a real small tokenizer (e.g. GPT-2's,
-CPU-only) for realistic token ids, but synthetic logits/text. The mock must inject a
-*known* generative process — a hidden contaminated/clean flag and quality parameter per
-synthetic item — producing peakier/more-repeatable completions and higher-confidence
-logprobs for "contaminated" items, and a fractional (not just 0/1) partial pass rate.
-This lets the end-to-end test assert **expected-signed** outputs, not just "didn't
-crash." Run ~10-20 fake items covering all four conditions (LCB-pre/post-style,
-HumanEval-style, MBPP+-style) through the full step 1→9 code path, asserting the three
-named invariants directly: log-odds transform matches the paper's worked table, pooling
-HumanEval+MBPP+ raises an error, and the CDD gate check classifies correctly against
-0.7936. Ship as both a pytest test (CI-runnable, no GPU) and an interactive script.
+CPU-only) for realistic token ids, but synthetic logits/text. The mock injects a known
+generative process so end-to-end tests can assert implementation invariants rather than
+only "didn't crash." Run ~10-20 fake items covering all four conditions through the
+validation path, checking schema integrity, finite scores, the log-odds worked example,
+and the HumanEval+MBPP+ pooling guard. Synthetic diagnostics are explicitly marked
+validation-only and cannot become study estimates. Ship as both a pytest test and an
+interactive script.
 
 **2. Real smoke test (Qwen2.5-7B, BNB-nf4, if the dry-run passes):**
 Deliberately tiny — a loading/integration check, not a scientific run. 5-10 HumanEval
@@ -235,14 +237,14 @@ Mapped onto the paper's own step numbering (AGENTS.md §7):
 
 | Step | What | Notes |
 |---|---|---|
-| (pre-step) | Env setup + pinned lockfile + known-answer check | e.g. Qwen2.5-7B bf16 pass@1 roughly matches its public HumanEval score — real-hardware sanity gate before trusting anything downstream |
+| (pre-step) | Env setup + pinned lockfile + implementation checks | Validate loading, schema, finite log-probabilities, sandboxing, memory, and throughput without using outcome values as study evidence or design inputs |
 | 1-2 | Continuous scoring + detector scoring pipelines, at scale | Built/tested locally first (dry-run + smoke); CDD's multi-sample cost shares generations with step 1 via the cache |
 | 3 | Count LCB pre/post items (≥1,000 target each) | The common boundary is 2025-01-01: Olmo 3's official model cards state a Dec. 2024 cutoff, later than Qwen2.5's 2024-09-19 release bound. Current release_v6 count: pre 873 / post 182 (availability check, not an experiment result). |
-| 4 | Cutoff verification | Llama-3.1 is externally verified; Qwen2.5 uses its official release date; both Olmo Instruct model cards state Dec. 2024. Month-level conservatism makes 2025-01-01 the first eligible common post-cutoff day. Direct Olmo corpus search remains the ground-truth-labeling step. |
-| 5 | TRACER residual contamination (+ Olmo3 corpus ground-truth search) | Storage was verified before the exhaustive scan: the pinned 7B pretraining manifest is 3.23 TB compressed and the project filesystem had about 290 TB free. Search pretraining and post-training stages separately. |
-| 6 | Pilot: Qwen2.5-7B + Olmo3-7B, BNB-nf4 | **Check the CDD gate (≥0.7936) before trusting any Q1b pilot number** — if it fails, fall back to probability-based detectors only for the rest of the pilot |
-| 7 | Recompute power from pilot values | Pure computation, local or H100; decide final main-experiment n |
-| 8 | Full run, store all item-level raw data | All retained 7B/8B/32B bf16 baselines and quantized arms run on one H100; record actual 32B memory headroom before the main run. |
+| 4 | Cutoff verification | Llama-3.1 is externally verified; Qwen2.5 uses its official release date; both Olmo Instruct model cards state Dec. 2024. Month-level conservatism makes 2025-01-01 the first eligible common post-cutoff day. Direct Olmo corpus search supplies confirmed-positive evidence, not verified negative labels. |
+| 5 | TRACER positive-evidence search (+ Olmo3 corpus-reference search) | Storage was verified before the exhaustive scan: the pinned 7B pretraining manifest is 3.23 TB compressed and the project filesystem had about 290 TB free. Search pretraining and post-training stages separately; report `confirmed-match`, `no-match-found`, and `not-observable` without estimating *e*, false-positive rate, or false-negative rate. |
+| 6 | Engineering validation only | Run local dry-run and bounded H100 smoke tests; inspect only loading, compatibility, schemas, finite values, sandboxing, memory, and throughput. Store separately from study data. |
+| 7 | Freeze operational configuration | Hardware/runtime failures observed before outcome inspection may change operational settings; document and freeze them. C1–C4, item sets, detector priority, and sample planning remain unchanged. |
+| 8 | Full run, the only study-data source | All retained 7B/8B/32B bf16 baselines and quantized arms run on one H100; store all item-level rows. |
 | 9 | Analysis (Q1a/Q1b/Q2) | No GPU needed once `data/raw/` is synced back |
 
 ## Raw data schema + sync
@@ -251,14 +253,20 @@ Parquet, one row per measurement (not per aggregate) — required for the paired
 and mixed-effects (Q2, `(1|item)+(1|model)`) analyses; aggregate-only storage would
 foreclose both:
 - `items.parquet` — item/dataset metadata (id, dataset, condition, difficulty bucket,
-  contamination proxy label, TRACER label, release/version pins).
+  legacy dataset-level condition, release/version pins).
+- `model_item_labels.parquet` — one row per (model, item), with the frozen primary and
+  optional sensitivity temporal boundaries, `possible-exposure` / `clean-by-model-cutoff` /
+  `shared-clean-control`, and `boundary_ambiguous`. Q1b/Q2 join this table rather than a
+  global item label.
+- Corpus-reference outputs — method-specific `confirmed-match`, `no-match-found`, or
+  `not-observable` plus coverage metadata; they are not merged into temporal proxy labels.
 - `generations.parquet` — one row per (model, quant, item, sample): generated text, full
   per-token logprob array (Min-k% needs the actual lowest-k% subset, not a scalar),
   partial pass rate, test results, decoding params, model/tokenizer revision hashes.
 - `detector_scores.parquet` — one row per (model, quant, item, detector): score,
   threshold used, source sample ids.
-- `pilot_summary.json` / `power_recompute.json` — small, **committed to git** like
-  `figures/*.png` (citation-relevant numeric artifacts).
+- Validation diagnostics — stored outside the study-data namespace and marked
+  `development_only_not_manuscript_evidence`; never committed as citation-relevant results.
 - `manifest.json` per run — git commit, library versions, model revision hashes, seeds,
   machine id, timestamps.
 
@@ -274,13 +282,12 @@ from memory):
 - `test_logodds.py` — regression vs. §4.5.3's table (β=0.50 → 5.6pp/7.7pp/−2.2pp) —
   **verified against `paper/paper_draft.md` line 540 during this planning session.**
 - `test_pooling_guard.py` — HumanEval+MBPP+ combination raises `PooledSecondaryConditionsError`.
-- `test_cdd_gate.py` — parametrized against §4.6's table, gate = 0.7936 — **verified
-  against the draft's "break-even point is a baseline AUC of ≈0.79" (line 599).**
+- `test_pilot.py` — verifies synthetic validation-diagnostics construction only; no CDD gate or study eligibility.
 - `test_auc_hanley_mcneil.py` — reproduces §4.5.2's SE(AUC) values, numpy-only.
 - `test_mink_prob.py` / `test_perplexity.py` — known-answer tests on synthetic logprob arrays.
 - `test_raw_schema_roundtrip.py`, `test_mock_pipeline_end_to_end.py`.
 The real GPU smoke test stays a manual checklist in `pipeline/README.md` (no GPU CI
-runner) — the explicit go/no-go gate before spending H100 time.
+runner). Passing it authorizes only that the implementation is ready to start the frozen main run.
 
 ## Engineering decisions and remaining assumptions
 
@@ -331,11 +338,11 @@ runner) — the explicit go/no-go gate before spending H100 time.
 1. `pytest pipeline/tests/` passes fully on this machine with the mock-only profile
    installed (no GPU library present) — proves the pipeline logic is sound independent
    of hardware.
-2. `python pipeline/scripts/run_dry_run.py` produces a small `data/raw/` tree and a
-   pilot-quantities report from purely synthetic data, with expected-signed results.
+2. `python pipeline/scripts/run_dry_run.py` produces a small validation-only tree and
+   synthetic implementation diagnostics that are not study estimates.
 3. `python pipeline/scripts/run_smoke_test.py` on this machine loads real Qwen2.5-7B nf4,
    completes without OOM/NaN, and produces output matching the mock's schema.
-4. On the H100: the known-answer check (real bf16 pass@1 vs. public score) passes before
-   any pilot data is trusted.
-5. `scripts/sync_from_h100.sh --dry-run` then a real sync round-trips a small test file
-   correctly before the first real pilot sync.
+4. On the H100: loading, schema, finite-value, sandbox, memory, and throughput checks pass
+   before the operational configuration is frozen; outcome values are not used for design decisions.
+5. `scripts/sync_from_h100.sh --dry-run` then a real sync round-trips a small validation
+   file correctly before the first main-run sync.

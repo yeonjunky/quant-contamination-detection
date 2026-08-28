@@ -4,7 +4,7 @@ Data-collection pipeline for the quantization contamination-detection paper.
 See `../pipeline_build_plan.md` at the repo root for the full design and
 rationale; this file is just setup + run instructions.
 
-Olmo training-data string-match ground-truth work is documented separately in
+Olmo training-data string-match corpus-reference work is documented separately in
 [`OLMO_GROUND_TRUTH.md`](OLMO_GROUND_TRUTH.md). It is CPU-only and does not turn
 partial streaming scans into clean labels.
 
@@ -14,8 +14,9 @@ The following GPU-free components are built and tested: dataset
 loaders (LiveCodeBench/HumanEval+/MBPP+), generation sampling + cache,
 sandboxed scoring (real subprocess execution, not mocked), all three
 detectors (CDD/perplexity/Min-k% Prob), the full statistical analysis layer
-(power tables, log-odds base-rate model, mixed-effects GLMM), the pilot gate
-+ report, raw-data/manifest writers, and the mock dry run
+(power tables, log-odds base-rate model, mixed-effects GLMM), development-only
+synthetic diagnostics, model–item temporal-label materialization, raw-data/manifest writers,
+and the mock dry run
 (`scripts/run_dry_run.py`) exercising all of it end-to-end.
 
 **Built and validated on real H100 hardware (2026-08-15):**
@@ -24,8 +25,9 @@ bitsandbytes (int8/nf4) backends, exercised end-to-end by
 `scripts/run_smoke_test.py` against Qwen2.5-7B-Instruct/BNB-nf4 — real
 quantized load (peak 6.69GB), real sampling, real sandboxed code execution,
 real detector scoring, real raw-data writer, all checklist items passing.
-`scripts/run_pilot.py`/`run_main.py` now work all the way through for the
-bf16/bnb quant levels (`Quant.BF16`/`BNB_INT8`/`BNB_NF4`).
+`run_main.py` now works all the way through for the bf16/bnb quant levels
+(`Quant.BF16`/`BNB_INT8`/`BNB_NF4`). The former `run_pilot.py` entrypoint is
+retired because engineering validation rows must not be aggregated as study estimates.
 
 **Real finding from that run, fixed same session (2026-08-15):**
 `real_run.py`'s `_assemble_candidate_code()` used to assume HumanEval+/MBPP+
@@ -64,7 +66,7 @@ compared on the same 5-item smoke test. Both passed 4/5 items; the fifth had
 a model error, and detector scores were similar. This sample is insufficient
 to compare calibration domains. The code-domain variant is stored at
 `data/quantized/<model>-awq/`; the chat-domain comparison checkpoint stays
-on disk as `-awq-chat` for a future re-comparison at real pilot scale.
+on disk as `-awq-chat` for a future separately designed calibration study.
 
 **Real finding along the way:** `AutoModelForCausalLM.from_pretrained()` on
 our AWQ (W4A16, asymmetric) checkpoints uses ~15-16GB peak GPU memory for a
@@ -78,8 +80,8 @@ erode the memory headroom the paper's own compute table assumed AWQ/GPTQ
 would provide over bf16.
 
 **Still not empirically exercised:** Llama-3.1-8B-Instruct and the two 32B
-models (Qwen2.5-32B, Olmo3.1-32B) — deliberately deferred to the real
-pilot/main run, not attempted in this validation pass.
+models (Qwen2.5-32B, Olmo3.1-32B) — deliberately deferred to the frozen main
+run, not attempted in this validation pass.
 
 ## Environments
 
@@ -110,7 +112,7 @@ pip install --upgrade pip
 pip install -r requirements-local.txt        # mock-only, no GPU library at all
 pip install -e .
 
-# only when running against a real GPU backend (smoke test or H100 pilot/main):
+# only when running against a real GPU backend (smoke test or H100 main run):
 pip install torch --index-url https://download.pytorch.org/whl/cu124
 pip install -r requirements-smoke.txt        # local laptop-scale smoke test
 # or: pip install -r requirements-h100.txt   # full pinned H100 stack
@@ -150,22 +152,31 @@ persistent generation-cache hits.
 python scripts/run_dry_run.py
 ```
 
-Exercises the full step 1-9 code path on ~10-20 synthetic items with zero
-GPU/downloads. Also runnable as `pytest tests/test_mock_pipeline_end_to_end.py`.
+Exercises the implementation path on ~10-20 synthetic items with zero
+GPU/downloads. Its diagnostics are validation-only and are not manuscript evidence,
+power inputs, or detector-selection inputs. Also runnable as
+`pytest tests/test_mock_pipeline_end_to_end.py`.
 
-## Running and aggregating the pilot
-
-```bash
-python scripts/run_pilot.py --lcb-cutoff 2025-01-01
-```
-
-After writing item-level parquet, the driver creates `pilot_summary.json`
-and `power_recompute.json`. To rebuild only those summaries without loading
-models or regenerating answers:
+## Engineering validation and the main run
 
 ```bash
-python scripts/aggregate_pilot.py data/raw/pilot
+python scripts/run_dry_run.py
+python scripts/run_smoke_test.py --help
+python scripts/run_lcb_smoke_test.py --help
 ```
+
+Dry-run and smoke-test outputs are kept separate from study data. Inspect only
+implementation properties such as loading, schema integrity, finite log-probabilities,
+sandbox behavior, memory, and throughput. Do not calculate effect sizes, AUCs, pass
+rates, correlations, power, or detector rankings from validation rows.
+
+```bash
+python scripts/run_main.py --help
+```
+
+`run_main.py` is the only study-data driver. Freeze the operational configuration
+before starting it. `run_pilot.py` and `aggregate_pilot.py` are deprecated compatibility
+entrypoints that intentionally exit without running or aggregating data.
 
 ## Running the full test suite
 
@@ -177,7 +188,7 @@ GPU-free throughout: some tests hit the network for real (LiveCodeBench/
 evalplus dataset downloads) and run real sandboxed code execution (no model
 needed), but nothing here needs a GPU or model weights.
 
-## Syncing pilot/main results down from the H100
+## Syncing validation/main artifacts down from the H100
 
 ```bash
 scripts/sync_from_h100.sh <ssh-alias> [<remote-repo-path>] -- --dry-run   # preview first
