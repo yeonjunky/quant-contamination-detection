@@ -26,7 +26,7 @@ membership inference, 소형 언어모델의 양자화와 verbatim 추출을 다
 CDD(*Contamination Detection via output Distribution* — 모델 출력 분포의 첨도를 점수화하는
 탐지기)가 자주 실패하며, 그 일부 조건에서 확률 기반 기법은 신호를 유지한다. 이 결과들은
 양자화 하에서 CDD·perplexity·Min-k% Prob(문항에서 확률이 가장 낮은 토큰들의 평균
-로그확률)를 대응 비교할 동기를 제공하며, 7B–32.5B에서의 거동을 미리 보장하지 않는다.
+로그확률)를 대응 비교할 동기를 제공하며, 7B–32.5B에서의 거동은 가정하지 않는다.
 
 본 문서는 실행 전 관찰 연구 설계이다. 7B–32.5B 구간의 instruction-tuned 체크포인트 5개를
 LiveCodeBench·HumanEval·MBPP+에서 bf16과 세 가지 학습 후 양자화 설정(BNB int8, BNB-nf4,
@@ -50,19 +50,23 @@ AWQ-int4)으로 채점한다. LiveCodeBench 문항에는 시간 노출 대리 �
 학습 후 양자화(PTQ)는 이제 대규모 언어모델 배포의 표준 관행이며, 그것이 다운스트림 정확도에
 미치는 영향을 보고하는 문헌도 상당히 축적되어 있다. 그 문헌은 대체로 정확도 하락을 *능력* 저하의
 측정치로 취급한다. 이 프레이밍에는 그런 보고들이 직접 시험하는 일이 드문 가정이 하나 있다:
-full precision에서의 벤치마크 성능이 암기된 학습 데이터의 회상이 아니라 능력을 반영한다는 가정이다.
+전정밀도(full precision)에서의 벤치마크 성능이 암기된 학습 데이터의 회상이 아니라 능력을 반영한다는 가정이다.
 
 서로 독립적인 두 갈래의 증거가 이 가정을 당연시해서는 안 된다고 시사한다.
 
 **양자화의 반올림 격자는 작은 파라미터 차이를 지울 수 있다.** 재학습 없이 학습된 모델에서 특정
 지식만 억제하는 기술인
 machine unlearning 연구들은 "지워진" 지식이 양자화 후 종종 되살아난다는 것을 발견했다: 한
-연구는 utility 제약이 있는 unlearning 기법들에서 잔존 지식 비율이 full precision에서 21%였다가
-4-bit 양자화 후 83%로 상승했다고 보고한다 (arXiv:2410.16454; 이 한정어는 원문 자신의 것으로,
-제약 없는 기법의 수치는 misleading하다고 원문이 직접 경고한다). 메커니즘을 규명한 후속 연구가 그 이유를 설명한다: 성공적인
-unlearning을 구성하는 파라미터 변화는 NF4(4비트 NormalFloat) 양자화 bin 하나의 폭보다 47–828배 작은 경우가
-많아, 양자화의 반올림이 그 변화를 그냥 지워버린다 (arXiv:2605.15138, "Forgetting That
-Sticks"). 즉 그 연구들에서 양자화는 원래의 암기를 지우는 것이 아니라 *되살린다*. 본 설계로
+연구는 utility 제약이 있는 unlearning 기법들에 걸쳐 **평균한** 잔존 지식 비율이 전정밀도에서
+21%였다가 4-bit round-to-nearest(RTN) 양자화 후 83%로 상승했다고 보고하며, 측정은 MUSE 벤치마크에서
+이루어졌다 (arXiv:2410.16454 §4.2; 이 한정어는 원문 자신의 것으로, 제약 없는 gradient ascent(GA)
+한 기법을 지목해 — 그 기법의 양자화 후 "완전한 망각"은 모델 utility가 통째로 무너진 데서 온 것이므로 —
+misleading하다고 경고한다). 메커니즘을 규명한 후속 연구가 그 이유를 설명한다: 경사 기반
+unlearning이 만드는 파라미터당 변화는 NF4(4비트 NormalFloat) 양자화 bin 하나의 폭보다 47–828배 작아
+양자화의 반올림이 그 변화를 그냥 지워버린다 (arXiv:2605.15138, "Forgetting That
+Sticks"). 이 47–828배는 빈도가 아니라 Llama-3.1-8B-Instruct / WMDP-bio 조건에서 측정한 두 경사상승
+기준선의 파라미터당 변화 RMS 대 NF4 bin 폭(8.4×10⁻⁴) 비율이다 — Global GA가 약 1/828, Surgical GA가
+약 1/47 (원문 부록 M, Table 15). 즉 그 연구들에서 양자화는 원래의 암기를 지우는 것이 아니라 *되살린다*. 본 설계로
 이어지는 것은 그 방향이 아니라 크기 논증이다. 연결 가설은, 노출이 적은 벤치마크 내용도
 bin 폭보다 작은 가중치 차이로 담겨 있을 수 있고 그렇다면 반올림이 그것 역시 지울 수 있다는
 것이다. 같은 논증은 반대 예측도 한다 — 강하게 암기된 내용은 파라미터 차이가 bin 폭을 넘어
@@ -73,11 +77,11 @@ bin 폭보다 작은 가중치 차이로 담겨 있을 수 있고 그렇다면 �
 
 **오염 탐지기들은 서로 대체 가능하지 않다.** Sela의 70M–410M Pythia 재현 연구에서는
 미세조정으로 오염을 주입해도 CDD가 자주 우연 수준에 머물며, 탐지 신호가 있는 조건에서 확률
-기반 탐지기가 CDD를 능가한다(arXiv:2603.03203). 저자들은 발견이 "should not be extrapolated
+기반 탐지기가 CDD를 능가한다(arXiv:2603.03203). 저자는 발견이 "should not be extrapolated
 to larger scales without further investigation"라고 명시한다. 그 논문이 인용하는 긍정적 7B
 결과는 재현 연구 자체가 아니라 Dong et al.의 원 CDD 연구에서 나온 것이다. 두 연구 모두 본
 설계의 자연 노출 7B–32.5B Instruct 체크포인트에서 CDD의 거동을 확립하지 않는다. 보고된 용량
-임계값은 검증된 미세조정 조건에서 모델 크기·학습 가능 파라미터·학습 기간에 관계한다(§2.4).
+임계값은 시험된 미세조정 조건에서 모델 크기·학습 가능 파라미터·학습 기간에 관계한다(§2.4).
 
 전정밀도 체크포인트에서 얻은 오염 판정은 탐지기 점수가 정밀도에 따라 이동할 경우 양자화된
 배포 모델에 전이되지 않을 수 있다. 양자화는 일반적인 배포 변환이며, 격자 구조가 암기 흔적을
@@ -109,8 +113,9 @@ to larger scales without further investigation"라고 명시한다. 그 논문�
    추정치 — 인과 효과가 아닌 연관(association)으로 보고하고, 척도 가정과 난이도 진단을 명시적으로
    포함 (Q2).
 4. 재사용 가능한 문항 단위 데이터셋 — pass@1, 부분 점수, 토큰 로그확률, 세 가지 탐지기 점수를
-   양자화 기법·정밀도·모델과 교차한 것 — 본 논문의 결론과 독립적으로 향후 오염 탐지 벤치마킹
-   연구를 지원하는 것이 목적.
+   양자화 기법·정밀도·모델과 교차한 것. 노출에 관한 주석은 §4.2의 모델–문항 시간 대리 라벨과,
+   Olmo3 두 arm에 한해 §5 5번의 코퍼스 참조 상태뿐이다. 검증된 오염 라벨은 들어 있지 않으므로,
+   오염 탐지의 정답 자료가 아니라 같은 문항에서 방법들을 비교하는 용도다.
 5. 32B 규모에서 양자화가 CDD 점수를 얼마나 이동시키는지와 시간 대리 집단 분리에 대한 증거. 대리 AUC만으로 실제 오염에 대한 작동 여부를 확립하지 않는다.
 
 기여 1과 2가 주 주장이고 기여 3은 보조다. 기여 1·2의 확증 근거는 모델 하나와 대비 하나 —
@@ -125,8 +130,8 @@ Qwen2.5-32B-Instruct의 bf16→BNB-nf4 — 에서 나오며, 설계의 나머지
 나타나는 것 — 은 이미 여러 서베이가 존재하는 성숙한 연구 분야이다. arXiv:2404.00699 (*A
 Comprehensive Survey of Contamination Detection Methods in Large Language Models*, TMLR
 2025)가 탐지 기법 커버리지는 가장 넓다; arXiv:2502.14425는 정의·원인·완화를 다룬 더 최신의
-종합 서베이이지만 탐지 기법 커버리지는 덜 철저하다; arXiv:2605.26133은 오염을 membership
-inference·학습 데이터 추출과 통합한다; arXiv:2502.17521은 정적 벤치마킹에서 동적
+종합 서베이이지만 탐지 기법 커버리지는 덜 철저하다; arXiv:2605.26133은 데이터 오염과 membership
+inference를 "pretraining data exposure"라는 하나의 틀로 묶은 통합 서베이이다; arXiv:2502.17521은 정적 벤치마킹에서 동적
 벤치마킹으로의 전환을 논증하며, 우리는 이를 LiveCodeBench 사용의 정당화 근거로 인용한다.
 
 ### 2.2 시간 분할 기반 오염 측정
@@ -136,8 +141,10 @@ Roberts et al.(arXiv:2310.10628, *Data Contamination Through the Lens of Time*)�
 자동으로 보장하지 않는다. 본 연구의 시간 라벨은 날짜별 난이도·주제 차이에 영향을 받는
 관찰 대리변수이다. LiveCodeBench(arXiv:2403.07974)는 이 비교에 적합한 날짜 기록 문제
 수집을 제공한다. arXiv:2504.14655 (*LeetCodeDataset*)는 같은 시간 분할 원리를
-LeetCode 문제에 적용한다; 우리는 날짜 기록 풀이 더 큰 LiveCodeBench를 쓰지만, 독립적인 두 번째
-사례의 존재가 이 설계 패턴을 방증한다. 공개 선언된 training cutoff 날짜는 틀리거나 없을 수 있으므로,
+LeetCode 문제에 적용하며, 공표된 분할 날짜는 2024년 7월이다. 우리가 LiveCodeBench를 쓰는 이유는
+계속 갱신되는 날짜별 릴리스가 본 설계의 공통 경계 2025-01-01을 넘어서까지 이어지기 때문이다(§4.2).
+대응되는 풀끼리 비교한 바가 없으므로 어느 쪽 수집이 더 큰지는 주장하지 않는다. 독립적인 두 번째
+사례의 존재는 이 설계 패턴을 방증한다. 공개 선언된 training cutoff 날짜는 틀리거나 없을 수 있으므로,
 우리는 추가로 arXiv:2511.12116 (*LLMLagBench*) — 최근 사건에 대한 모델의 지식으로부터
 개연적인 시간적 지식 경계를 추정하는 방법 — 을 독립적인 행동 진단(§5의 4번)으로 사용한다.
 이는 마지막 학습 데이터 날짜나 탐지 변화점 이후의 비노출을 검증하는 절차가 아니다.
@@ -146,10 +153,13 @@ LeetCode 문제에 적용한다; 우리는 날짜 기록 풀이 더 큰 LiveCode
 arXiv:2501.18771은 1B/8B 모델을 기계번역 데이터로 직접 사전학습하며 오염을 단계·규모·형식별로
 통제 주입하여, 오염 효과에 대한 인과적으로 식별된 통제 추정치를 제공한다. 우리는 이를 인과
 식별의 방법론적 참조점으로 삼지만, **그 설계를 재현할 수는 없다**: 처음부터의 사전학습이
-필요한데, 본 연구는 코드 도메인의 기성(off-the-shelf) 7B–32B 모델을 쓰기 때문이다. 따라서 그
-인과 설계를 관찰 연구로 근사할 수밖에 없다 (§6). arXiv:2403.04811과 arXiv:2506.02791은 코드
-생성에 특화해 오염의 효과 크기를 정량화하며, 후자는 대부분의 선행 연구가 sample-level 오염만
-측정해 더 흔한 부분 오염(partial contamination) 사례를 과소 집계한다고 지적한다. 한편
+필요한데, 본 연구는 코드 도메인의 기성(off-the-shelf) 7B–32.5B 모델을 쓰기 때문이다. 따라서 그
+인과 설계를 관찰 연구로 근사할 수밖에 없다 (§6). arXiv:2403.04811은 코드 생성에서 오염의 효과
+크기를 정량화한다. arXiv:2506.02791은 코드 번역·생성·요약 세 과제에 걸쳐 세분화된 오염 조건을
+구성하며, 대부분의 선행 연구가 sample-level 오염만
+측정해 더 흔한 부분 오염(partial contamination) 사례를 과소 집계한다고 지적한다. 다만 그 논문의 주
+결과는 자신이 구성한 오염 조건 대부분이 유의한 과대추정을 만들지 *않는다*는 것이고, 예외는
+사전학습 후 곧바로 추론하는 방식의 모델에서 나타나는 paired contamination이다. 한편
 arXiv:2403.04811은 이 설계에서 효과 크기 출처일 뿐 아니라 **방법론적** 출처이기도 하다:
 HumanEval과 MBPP를 사전학습 규모 코퍼스에 대해 다루려고 개발된 그 표면+AST 매칭 파이프라인이
 §5 5번의 Olmo3 코퍼스 참조 양성 근거 탐색에 채택한 방법이다.
@@ -178,14 +188,20 @@ arXiv:2602.12413 (*Soft Contamination Means Benchmarks Test Shallow Generalizati
   LoRA r=256, 전체 미세조정(full fine-tuning) — 을 3 에폭과 20 에폭으로 적용해 오염을 통제
   주입했다. 검정한 조건의 대부분에서 CDD는
   우연 수준 정확도로 무너진다 — 기저 데이터가 "detectable by simpler
-  methods"인 경우에도 그러하다. 확률 기반 탐지기(perplexity, Min-k% Prob)는 *어떤* 기법이든
-  우연을 넘긴 모든 조건에서 CDD를 능가한다. 확률 기반 기법을 주 탐지기 계열로 쓰는 것을
+  methods"인 경우에도 그러하다. 원논문은 확률 기반 탐지기(perplexity, Min-k% Prob)가 *어떤* 기법이든
+  우연을 넘긴 모든 조건에서 CDD를 능가한다고 보고한다. 확률 기반 기법을 주 탐지기 계열로 쓰는 것을
   지지하는 이 논문의 가장 강한 인용문은 다음이다: *"The gap is largest precisely where it
   matters most: at low contamination levels and under parameter-efficient fine-tuning, where
   CDD is uniformly at chance but probability-based methods already show signal."* 우리는 이를
   "확률 기반 기법은 CDD가 실패하는 곳이면 어디서든 작동한다"로 의역하지 않는다. 원논문 초록의
-  비교 표현은 동어반복적으로 한정되어 있고 — "outperform CDD in all conditions where any method
-  exceeds chance"는 확률 기반 기법이 항상 우연을 넘는다는 것을 함의하지 않는다 — 결론 절이 이보다
+  비교 표현은 조건을 붙인 것이며 — "outperform CDD in all conditions where any method
+  exceeds chance"는 확률 기반 기법이 항상 우연을 넘는다는 것을 함의하지 않는다. 그 근거인 Table 2의
+  범위도 명시되어 있다: Pythia-410M·3 에폭의 27개 조건(미세조정 방식 3종 × 오염 수준
+  c ∈ {1, 5, 10} × GSM8K·HumanEval·MATH)이고, 거기서 "우연 이상"은 정확도 0.55 초과로 정의되며,
+  CDD는 27개 중 7개에서 그 선을 넘는 반면 perplexity는 26개, Min-k% Prob는 25개에서 넘는다.
+  또 "*any* method"를 문자 그대로 읽으면 학습 코퍼스 접근이 필요한 N-gram 기준선까지 포함해야
+  한다: 같은 표의 HumanEval·LoRA r=8·c=1 칸에서 N-gram은 1.0인데 CDD·perplexity·Min-k% Prob는
+  모두 0.53이므로, 그 조건에서 확률 기반 기법은 CDD를 능가하지 않는다. 원논문 결론 절이 이보다
   더 나아가긴 하지만 (*"…including those where CDD fails entirely"*), 그 절은 해당 조건 집합이
   CDD의 완전 실패 사례를 *포함*한다는 것을 확립할 뿐 그것을 남김없이 망라한다는 뜻은 아니다.
   위에 인용한 문장은 우리에게 실제로 필요한 설계 결정 — 확률 기반 탐지기를 주 지표로, CDD를
@@ -198,9 +214,12 @@ arXiv:2602.12413 (*Soft Contamination Means Benchmarks Test Shallow Generalizati
   fine-tuning capacity crosses a threshold"이고 그 임계값은 "depends on the interaction of
   model size, adapter rank, and training duration"이다. 원논문의 실험에서 붕괴를 만들어내는
   방식은 전체 미세조정이며(GSM8K, Pythia-410M, 오염 수준 10에서 3 에폭 CDD 정확도 0.955),
-  같은 학습 기간의 LoRA r=8에서는 CDD가 우연 수준이다. 논문은 이를 구체적으로 *"the relevant
-  factor is not the LoRA rank itself but the absolute number of trainable parameters"*에
-  귀속시킨다. 원논문이 그리는 절대 용량(absolute capacity) 비교는 원 CDD 논문의 긍정적 7B
+  같은 학습 기간의 LoRA r=8에서는 CDD가 우연 수준이다. 원논문 Discussion은 *"the relevant
+  factor is not the LoRA rank itself but the absolute number of trainable parameters"*라고 적지만,
+  rank와 파라미터 수가 임계값의 전부는 아니다: 임계값은 모델 크기·어댑터 rank·학습 기간의
+  상호작용으로 서술되며, 긴 학습이 낮은 rank를 부분적으로 대신한다 — LoRA r=8을 20 에폭 학습하면
+  GSM8K 오염 수준 10에서 0.920에 이르러 LoRA r=256의 3 에폭과 비슷하다(원문 §4.3).
+  원논문이 그리는 절대 용량(absolute capacity) 비교는 원 CDD 논문의 긍정적 7B
   결과와 재현 논문 자신의 소형 모델 실험 사이의 것이다: *"LoRA r=8 on a 7B model yields roughly
   4M trainable parameters; the same rank on our 70M model yields only 98K. Our LoRA r=256, which
   provides 3–25M trainable parameters, is closer in absolute capacity to what low-rank LoRA
@@ -221,8 +240,10 @@ arXiv:2602.12413 (*Soft Contamination Means Benchmarks Test Shallow Generalizati
   검출 불가능해지는 것은 아니다. 모든 탐지기는 고정된 분석에 유지한다(§4.7).
 
 ### 2.5 코드 벤치마크 특화 오염
-arXiv:2605.24079 (*TRACER*)는 코드 오염을 3단계 의미 중복 문제(기능적 동일 / 거의 동일 /
-논리 공유)로 모델링하며, pre/post-cutoff 날짜 대리변수를 넘어선 의미적 양성 일치
+arXiv:2605.24079 (*TRACER*)는 코드 오염을 의미 중첩(semantic overlap)의 3단계(기능적 동일 /
+거의 동일 / 논리 공유)로 모델링한다. 이 중 중복(duplication)에 해당하는 것은 앞의 두 단계뿐이며,
+논리 공유는 목적이 서로 다르면서 핵심 알고리즘·추론 전략만 같은 문항 쌍을 가리킨다. 이 도구는
+pre/post-cutoff 날짜 대리변수를 넘어선 의미적 양성 일치
 근거를 탐색하는 데 사용한다(§5의 5번). arXiv:2411.10842 (*CodeCleaner*)와
 arXiv:2503.06643은 리팩터링·변형 기반 완화 접근을 제공한다; arXiv:2503.13572는 도메인
 특화(Verilog) 오염 사례 연구로, Python/범용 코드 밖에서도 같은 문제가 나타남을 보여준다.
@@ -246,12 +267,16 @@ Llama-3.1-70B가 32% 하락한 사례 포함. 이
 도 평가하며 다섯 가지 양자화 방법에 AWQ-int4를 포함하므로, 크기와 방법이 모두 일치하는 결과가
 같은 출처 안에 존재한다. 32% 수치는 그 초록이 제시하는 유일한 모델별 숫자이고, 8B/7B/32B의
 대응 수치는 인용하지 않으므로 §4.3으로 넘기는 숫자는 70B의 것으로 남는다. 코드 생성에
-특화해서는, arXiv:2503.07103,
-arXiv:2507.09665, arXiv:2506.22776의 중론이 **캘리브레이션 기반** 4-bit 양자화(AWQ/GPTQ)는
-유의한 저하가 거의 또는 전혀 없다는 것이고, 한 연구(arXiv:2506.22776)에서는 양자화 모델이
-적대적 조건에서 오히려 *더* 강건하다 (51.59% vs. 42.86%). 이 중론은 AWQ 비교의 기대 효과
-크기를 좁히며 — 그 중론 자체가 오염 여부가 검증되지 않은 벤치마크에서 대부분 도출되었기
-때문에 — 큰 효과를 기대할 근거가 아니라 본 논문의 동기의 일부이다 (§4.5.3, §7).
+특화해서는 세 연구가 같은 방향을 가리키지만 각각 재는 대상이 다르다. arXiv:2503.07103은 34B까지의
+코드 LLM에서 선행 양자화 연구를 재현해 성능이 유지되는 정밀도로 4-bit를 제시하며, 초록에서 특정
+양자화 방법을 지목하는 대신 코드 특화 캘리브레이션 데이터셋을 포함한 캘리브레이션 데이터 비교를
+다룬다. arXiv:2507.09665는 CodeLlama와 DeepSeekCoder에 **AWQ**를 적용해 기능적 정확성과 함께
+유지보수성·구조적 단순성 같은 코드 품질 속성도 보존된다고 보고한다. arXiv:2506.22776은 정확도가
+아니라 견고성 연구다: 350M–33B의 네 모델 계열에서 입력 프롬프트에 적대적 공격을, 모델 가중치에
+잡음을 가하며, 51.59% 대 42.86%는 정확도가 아니라 **적대적 실험 중 양자화 모델과 전정밀도 모델이
+각각 더 견고했던 실험의 비율**이다. 이 세 결과를 합치면 AWQ 비교의 기대 효과
+크기가 좁아지며 — 그 결과들 자체가 오염 여부가 검증되지 않은 벤치마크에서 대부분 도출되었기
+때문에 — 큰 효과를 기대할 근거가 아니라 본 논문의 동기의 일부이다 (§4.3, §4.5.3).
 
 ### 2.8 본 논문이 다루는 공백
 
@@ -298,7 +323,7 @@ Memories: Measuring Verbatim Extraction Across LLM Quantization*)는 Pythia-160M
 탐색적 의심 대리 대비를 제공한다.
 
 Q2가 보조인 이유는 주 공통 대조 셀이 182문항으로 고정되기 때문이다.
-§4.5.3의 보수적 비대응 p=0.5 계산에서 의심 셀이 무한해도 최소 검출 가능 교차효과는
+§4.5.3의 보수적 비페어링 p=0.5 계산에서 의심 셀이 무한해도 최소 검출 가능 교차효과는
 **14.7%p**이며, 최대 873문항 후보 외피를 모두 쓸 수 있다고 가정해도 **16.1%p**다. 실제 모델별
 의심 부분집합은 873문항 이하이다(Olmo가 873에 해당). 보조 HumanEval 대비도 164문항 상한에서 최선이 15.5%p다. 이는 5–10pp 크기의 예시 목표를 충분히 검출하지 못한다. 코드 양자화 문헌(§2.7)은 다른 설정의 근거이므로 본 설계의 효과 크기를 확정하지 않는다. 반면 Q1의 예시 계획 요건은 더 작다. Q1a의 대응 표준화 효과가 0.3–0.2이면 정규근사 요건은
 약 87–196문항이다(§4.5.1; 확증 검정군의 Holm 보정 α/4 기준으로는 약 124–279문항, §4.5.6).
@@ -361,7 +386,7 @@ bf16→BNB-nf4(§4.5.6). 나머지 네 모델, BNB int8과 AWQ-int4, HumanEval�
 
 **C1–C3 기각이 뜻하는 것과 뜻하지 않는 것.** C1–C3는 노출 라벨을 쓰지 않고 LCB 전체
 1,055문항에서 탐지기 하나의 nf4−bf16 문항 내 평균 이동을 검정한다. 어느 하나를 기각한다는 것은
-그 탐지기의 점수 척도가 — 따라서 bf16에서 교정한 어떤 판정 임계값도 — 정밀도에 따라 옮겨간다는
+그 탐지기의 점수 척도가 — 따라서 bf16에서 캘리브레이션한 어떤 판정 임계값도 — 정밀도에 따라 옮겨간다는
 뜻이다. 이 이동은 모든 문항에 똑같이 걸리며 노출 관련 이동과 분리되지 않으므로, 그 자체로
 오염 신호가 약해졌다는 근거가 되지 않는다. 노출 관련 분리 성능이 양자화를 견디는지는 대리
 라벨을 쓰는 Q1b만이 다룬다.
@@ -390,7 +415,12 @@ bf16→BNB-nf4(§4.5.6). 나머지 네 모델, BNB int8과 AWQ-int4, HumanEval�
 다섯 arm 모두 instruction-tuned(\*-Instruct) 릴리스를 사용한다: 측정 대상이 instruction 프롬프트
 하의 코드 생성 pass@1이고, §4.5.3의 예시 기저율이 instruction-tuned 수치이며, LLMLagBench
 행동 진단(§5 4번)도 instruct 체크포인트를 프로빙한다. 이 문서의 축약 표기(예: "Qwen2.5-7B")는 모두
-이 Instruct 체크포인트를 가리킨다. instruct 체크포인트는 오염 유입 표면도 넓힌다 — 벤치마크
+이 Instruct 체크포인트를 가리킨다. 크기 없이 쓴 "Olmo3"는 공개 데이터 arm 두 개 —
+Olmo3-7B-Instruct와 Olmo3.1-32B-Instruct — 를 함께 가리키며, 어느 한 체크포인트를 뜻하지 않는다.
+둘은 벌크 사전학습 혼합이 서로 다른 데이터셋인 별개 릴리스이므로, §5 5번의 코퍼스 참조 검색은
+"Olmo3 코퍼스" 하나에 대해 한 번 돌리는 것이 아니라 체크포인트별로 돌리고 체크포인트별로
+보고한다: 한쪽 arm의 학습 데이터에서 확인된 일치는 그 arm에 대한 증거일 뿐이다.
+instruct 체크포인트는 오염 유입 표면도 넓힌다 — 벤치마크
 문항이 사전학습만이 아니라 post-training(instruction-tuning) 데이터로도 들어올 수 있다 — §5
 5번의 Olmo3 코퍼스 참조 검색이 두 단계를 모두 포괄하는 이유다.
 
@@ -406,12 +436,19 @@ future work로 미룬다; 배포 체크포인트의 포맷(llama.cpp q4_0)도 �
 공개성은 양성 일치 근거 확보를 위한 운영상 선택 속성이며 효과 수정 비교 축이 아니다.
 모델 내부 PTQ 대비는 같은 고정 체크포인트와 bf16 기준선을 사용한다.
 
-**컴퓨트 footprint.** 가용 하드웨어는 H100(80GB) 1장이다. KV cache와 activation 이전의 가중치 footprint는 다음과 같다:
+**컴퓨트 footprint.** 가용 하드웨어는 H100(80GB) 1장이며, 필요시 H200(141GB) 1장을 확보할 수 있다. KV cache와 activation 이전의 가중치 footprint는 다음과 같다:
 
 | 모델 | bf16 | int8 | int4 (nf4) | 단일 장비에 bf16으로 적재 가능? |
 |---|---|---|---|---|
 | Qwen2.5-7B / Olmo3-7B / Llama-3.1-8B | ~14–16 GB | ~7–8 GB | ~4–5 GB | 가능 (H100) |
 | Qwen2.5-32B / Olmo3.1-32B | ~64–65 GB | ~32 GB | ~18 GB | 빠듯하게 가능 (H100, KV cache용 여유 ~15 GB); H200에서는 여유 |
+
+이 표의 모든 수치는 파라미터 수에서 유도한 **추정값이며 측정값이 아니다**. int8과 int4 열은
+**양자화되는 선형 레이어만** 센 값이다: bitsandbytes 두 단은 임베딩 행렬과 language-model head를
+bf16으로 남기는데(§4.3), 이 로스터의 어휘 크기에서 두 행렬은 작지 않으므로 각 arm의 실제 양자화
+footprint는 이 열의 값보다 크다. 아래의 여유 폭도 그렇게 읽는다 — 단 사이의 대소 관계와 단일 장치
+적재 결론은 정확한 수치에 의존하지 않으며, 실제 메모리 사용량은 구현 검증이 확인하는 항목에
+들어 있다(§4.6).
 
 따라서 모든 arm이 완전한 양자화 사다리를 — bf16 기준선을 포함해 — 단일 가용 장비에서
 실행한다. 어떤 arm도 다른 arm과 다른 정밀도의 기준선을 요구하지 않으며, 이는 Q1a의 bf16 기준
@@ -449,11 +486,14 @@ LiveCodeBench `release_v6`에서 공통 2025-01-01 경계를 적용하면 공통
 |---|---|---|---|---|
 | Olmo3-7B / Olmo3.1-32B | 두 최종 Instruct 체크포인트의 공식 모델 카드가 모두 `Date cutoff: Dec. 2024`를 명시하되, 이 날짜가 어느 학습 단계까지 적용되는지는 밝히지 않음 ([7B](https://huggingface.co/allenai/Olmo-3-7B-Instruct), [32B](https://huggingface.co/allenai/Olmo-3.1-32B-Instruct)) | 공식 모델 수준 선언, 적용 단계 미기재 | 2025-01-01 | — |
 | Llama-3.1-8B | 선언 2023-12; LLMLagBench 지식 급락 탐지 2023-03 | 선언 + 독립 행동 진단 | 2024-01-01 (선언 cutoff는 2023년 12월까지) | 2023-04-01 (탐지 경계는 2023년 3월까지) |
-| Qwen2.5-7B / Qwen2.5-32B | 명확한 공식 cutoff 선언 없음 | 출시일 상한 (최약) | 2024-09-20 ([공식 출시 발표](https://qwenlm.github.io/blog/qwen2.5/); 출시 당일 제외) | — |
+| Qwen2.5-7B / Qwen2.5-32B | 명확한 공식 cutoff 선언 없음 | 출시일 상한 (최약) | 2024-09-20 ([공식 출시 발표](https://qwenlm.github.io/blog/qwen2.5/); 출시일인 2024-09-19는 post-boundary 날짜가 아니므로, 그날 공개된 문항은 분석에서 빠지는 것이 아니라 `possible-exposure`가 된다) | — |
 
 불변 출시 체크포인트에서는 출시일이 학습 수행 시점의 상한이다. 그러나 비공개 선공개 버전,
-이전의 동등 문항, 이후 보정 데이터 사용까지 배제하지는 않는다. 이 경계는 기록된 벤치마크
+이전의 동등 문항, 이후 캘리브레이션 데이터 사용까지 배제하지는 않는다. 이 경계는 기록된 벤치마크
 문항의 공개일에 적용한다. 문항 공개일을 t_i, 모델 m의 첫 post 날짜를 c_m이라 할 때,
+LiveCodeBench에서 *t*<sub>*i*</sub>는 릴리스 자체의 `contest_date` 필드이며 거기 기록된 달력
+날짜로 읽는다: `release_v6`는 이 값을 시간대 정보 없는 자정 ISO 타임스탬프로 배포하고 우리는
+시간대 변환을 하지 않으므로, 아래 비교의 양쪽은 모두 단순 달력 날짜다.
 저장하는 라벨은 전역 문항 라벨이 아닌 **모델–문항 라벨**이다.
 
 - *t*<sub>*i*</sub> < *c*<sub>*m*</sub>이면 `possible-exposure`;
@@ -461,15 +501,33 @@ LiveCodeBench `release_v6`에서 공통 2025-01-01 경계를 적용하면 공통
 - *t*<sub>*i*</sub> ≥ 2025-01-01이면 모든 arm의 최신 주 경계 뒤인 `shared-clean-control`;
 - 민감도 경계와 주 경계 사이 문항이면 `boundary_ambiguous = true`.
 
+위 세 조건은 문자 그대로는 서로 배타적이지 않다: 2025-01-01 이후 문항은 모든 arm의 자체 경계
+뒤이기도 하므로, `shared-clean-control`은 `clean-by-model-cutoff`의 **부분집합**이다. 세 라벨을
+LCB 1,055문항의 분할로 집계할 때는 각 문항을 가장 좁은 라벨 하나에만 센다 —
+`shared-clean-control`을 먼저, 그다음 `clean-by-model-cutoff`, 그다음 `possible-exposure`. 따라서
+집계표의 `clean-by-model-cutoff` 수는 공통 대조를 이미 뺀 나머지이며, *t*<sub>*i*</sub> ≥
+*c*<sub>*m*</sub>을 만족하는 문항 전체가 아니다.
+
 arm 자체 경계 뒤이면서 2025-01-01 전인 구간은 `clean-by-model-cutoff` 메타데이터로 보존하지만
 주 공통 대조에는 넣지 않는다. 따라서 같은 문항이 Olmo3에는 `possible-exposure`이고 Qwen2.5나
 Llama-3.1에는 `clean-by-model-cutoff`일 수 있다. 주 LCB 풀링 대비는 각 arm 자체의
 `possible-exposure` 문항과 동일한 182문항 `shared-clean-control`을 사용하며, 풀링 추정치보다
 모델별 결과를 먼저 보고한다.
 
-코퍼스 증거는 시간 라벨에 합치지 않고 **별도의 비배타적 축**으로 저장한다:
-`confirmed-match`, `no-match-found`, `not-observable`. 공개 코퍼스 검색도 재현율이 완전하지
-않으므로 `no-match-found`를 `clean`으로 바꾸지 않는다. 이 분리를 통해 Olmo3 arm은 공개일이나
+코퍼스 증거는 시간 라벨에 합치지 않고 **별도의 축**으로, 시간 라벨과 나란히 저장한다: 모델–문항
+쌍은 두 값을 모두 갖고 어느 쪽도 다른 쪽을 덮어쓰지 않는다. 이 축의 세 값은 §5 5번의 검색 절차로
+정의되며, arm별로 그리고 세 검색 계열별로 따로 기록한다.
+
+- `confirmed-match` — 해당 계열이 그 arm 자체의 공개 학습 데이터에서 그 벤치마크 문항을 담고 있다고
+  인정된 레코드를 하나 이상 찾은 경우. 계열 (i)은 문항 텍스트와의 정확·근사 *n*-gram 일치로 판정하고,
+  계열 (ii)·(iii)은 후보를 내놓을 뿐이어서 판정이 같은 문제라고 인정한 뒤에야 `confirmed-match`가
+  된다(§5 5번).
+- `no-match-found` — 해당 계열이 확보 가능한 코퍼스를 검색했고 인정된 일치가 없었던 경우. 공개 코퍼스
+  검색도 재현율이 완전하지 않으므로 이 값을 `clean`으로 바꾸지 않는다.
+- `not-observable` — 검색해야 할 코퍼스 구간을 확보하지 못해, 그 계열이 어느 방향으로도 근거를 내지
+  못하는 경우.
+
+이 분리를 통해 Olmo3 arm은 공개일이나
 검색 비검출을 완전한 ground truth로 취급하지 않으면서 시간 대리 라벨과 확인된 코퍼스
 양성 근거의 관계를 기술적으로 비교할 수 있다.
 
@@ -511,18 +569,18 @@ post-training을 노출 경로로 본다(§4.1). 둘째, Olmo3 Instruct 체크�
 HumanEval과 MBPP+는 모든 문항이 노출 가능 쪽에 있어 벤치마크 내부에 자체 대조군이 없다. 두
 벤치마크는 각자의 표본 수에서 노출 라벨이 필요 없는 문항 내 대응 이동, 즉 **탐색적 Q1a**에만
 사용하고, 같은 벤치마크 안에 라벨이 다른 두 집단을 요구하는 **Q1b**에는 사용하지 않는다(§4.5.2).
-**Q2**에서는 서로 풀링하지 않는 별도의 탐색적 대비다. HumanEval의 164문항 상한은 공유 대조
+**Q2**에서는 서로 풀링하지 않는 별도의 탐색적 대비다. HumanEval의 164문항 상한은 공통 대조
 데이터를 아무리 늘려도 해당 보조 Q2 대비의 최선 검출 한계를 15.5%p로 제한한다(§4.5.3). 주 Q2
 셀은 LiveCodeBench의 `possible-exposure` 대 `shared-clean-control` 대비다.
 
 ### 4.3 양자화 축
 
-**bf16 기준선** → **BNB int8** → **BNB int4-nf4** → **AWQ-int4**
+**bf16 기준선** → **BNB int8** → **BNB-nf4** → **AWQ-int4**
 
 double quantization은 네 조건의 범위를 고정하기 위해 제외한다. 정확도나 탐지기 점수에
-영향이 없다고 가정하지 않는다. llm-compressor 기반 AWQ는 BNB와 비교할 보정 기반 조건을
+영향이 없다고 가정하지 않는다. llm-compressor 기반 AWQ는 BNB와 비교할 캘리브레이션 기반 조건을
 제공한다. 이는 해당 구성 간 비교를 지원하며 양자화 일반에 대한 무제한 주장을 뒷받침하지는
-않는다. nf4 대비는 가능한 스트레스 조건으로 사전 선택하지만, 장문맥 근거나 보정 유무만으로
+않는다. nf4 대비는 가능한 스트레스 조건으로 사전 선택하지만, 장문맥 근거나 캘리브레이션 유무만으로
 코드 태스크·탐지기 효과가 가장 크다고 입증되지 않는다. 운영상 먼저 검증할 수 있으나 출력으로
 연구 arm을 선택하지 않는다(§4.6).
 
@@ -533,7 +591,7 @@ double quantization은 네 조건의 범위를 고정하기 위해 제외한다.
 |---|---|---|---|
 | bf16 기준선 | transformers, `dtype=bfloat16`, `device_map="auto"` | 양자화 없음 | 전부 |
 | BNB int8 | 적재 시점 bitsandbytes, `load_in_8bit=True` | LLM.int8() 혼합정밀 분해; 이상치 임계값(`llm_int8_threshold`)은 라이브러리 기본값 그대로 | 라이브러리 기본 제외 목록(언어 모델 head) |
-| BNB int4-nf4 | 적재 시점 bitsandbytes, `load_in_4bit=True` | `quant_type="nf4"`, compute dtype bf16, double quantization **끔**(`bnb_4bit_use_double_quant=False`); 블록 크기는 라이브러리 기본값 그대로 | 같은 기본 제외 목록 |
+| BNB-nf4 | 적재 시점 bitsandbytes, `load_in_4bit=True` | `quant_type="nf4"`, compute dtype bf16, double quantization **끔**(`bnb_4bit_use_double_quant=False`); 블록 크기는 라이브러리 기본값 그대로 | 같은 기본 제외 목록 |
 | AWQ-int4 | llm-compressor 오프라인 one-shot, 이후 transformers/compressed-tensors로 체크포인트 적재 | `AWQModifier(duo_scaling="both")` + `QuantizationModifier(scheme="W4A16_ASYM", targets=["Linear"])`: 모든 `nn.Linear` 층에 **비대칭** 4비트 가중치; 그룹 크기는 해당 scheme의 기본값 그대로 | `lm_head`, 명시적으로 제외 |
 
 "라이브러리 기본값 그대로"라고 적은 설정은 우리가 덮어쓰지 않는다는 뜻이며, 확정된 값은 실행
@@ -549,17 +607,17 @@ compressed-tensors가 적재한다. 제2의 런타임을 도입하지 않으므�
 bitsandbytes 0.50.1, accelerate 1.14.0, llm-compressor 0.13.0, compressed-tensors 0.18.0). GPU 드라이버와
 CUDA 버전도 함께 기록한다.
 
-본 실행 전에 모델별 AWQ 보정 산출물 하나를 고정하고 데이터셋 revision·선택 행 해시·seed·
-토크나이저·양자화 recipe·소프트웨어 버전을 기록한다. 현재 코드 보정 후보는
+본 실행 전에 모델별 AWQ 캘리브레이션 산출물 하나를 고정하고 데이터셋 revision·선택 행 해시·seed·
+토크나이저·양자화 recipe·소프트웨어 버전을 기록한다. 현재 코드 캘리브레이션 후보는
 `flytech/python-codes-25k`, revision `0ed98ff2a76c5d133d8c157b814189a5a17ebd20`이며,
-seed 42로 섞은 256행, 최대 시퀀스 길이 512를 사용한다. 보정은 그 데이터셋의 `text` 열 —
+seed 42로 섞은 256행, 최대 시퀀스 길이 512를 사용한다. 캘리브레이션은 그 데이터셋의 `text` 열 —
 instruction 텍스트와 fenced Python 블록 — 을 배포된 그대로 읽으며 chat template을 적용하지 않는다.
 비교용 chat 세트(`HuggingFaceH4/ultrachat_200k`, revision `8049631c405ae6576f93f445c6b8166f76f5505a`)는
-행이 메시지 목록이므로 각 모델 자신의 chat template으로 먼저 렌더링한다. 본 실행에는 모델당 보정
-산출물 하나만 들어간다. 사용 전에 모든 평가 프롬프트와 참조
+행이 메시지 목록이므로 각 모델 자신의 chat template으로 먼저 렌더링한다. 본 실행에는 모델당
+캘리브레이션 산출물 하나만 들어간다. 사용 전에 모든 평가 프롬프트와 참조
 정답에 대해 후보를 대조하고 검색 범위·제외 항목을 기록한다. 이 중복 점검은 실행 전 필수
-단계이지 완료된 결과나 의미적 비중복의 증명이 아니다. 보정 노출도 추가적인 벤치마크 정보
-유입 경로가 된다. 기존 코드/chat 구현 비교에서 관측한 탐지기·태스크 성능으로 보정을 선택하지 않는다.
+단계이지 완료된 결과나 의미적 비중복의 증명이 아니다. 캘리브레이션 노출도 추가적인 벤치마크 정보
+유입 경로가 된다. 기존 코드/chat 구현 비교에서 관측한 탐지기·태스크 성능으로 캘리브레이션을 선택하지 않는다.
 
 ### 4.4 탐지 신호 (Q1용)
 
@@ -569,7 +627,13 @@ instruction 텍스트와 fenced Python 블록 — 을 배포된 그대로 읽으
 - **확률 계열:** perplexity, Min-k% Prob.
 
 **고정 채점 프로토콜.** 모델·정밀도·문항마다 greedy 출력 하나와 temperature 0.8의 n=50
-샘플을 생성한다. 생성 상한은 512토큰이다. 디코딩 설정은 모두 명시적으로 지정하며 체크포인트의
+샘플을 생성한다. 생성 상한은 512토큰이다. 생성은 실행 형식을 덧붙인 프롬프트에서 하고, 확률
+탐지기는 덧붙이지 않은 벤치마크 텍스트를 채점한다: LiveCodeBench의 경우 생성 프롬프트에
+starter code가 있는 문항에는 그 starter code와 그것을 완성하라는 지시문을, 그 밖의 문항에는
+표준 입력을 읽고 표준 출력에 쓰는 프로그램을 작성하라는 지시문을 덧붙이며, HumanEval+와 MBPP+
+프롬프트는 배포된 그대로 쓴다. greedy 출력과 50샘플 전부 — 따라서 CDD와 pass@1 모두 — 가 그 보강 프롬프트에서
+나오고, perplexity와 Min-k%는 아래에 명시하는 대로 문제 지문만 teacher-forcing으로 채점한다.
+보강 내용은 모든 정밀도에서 동일하므로 정밀도 대비 사이에서 달라질 수 없다. 디코딩 설정은 모두 명시적으로 지정하며 체크포인트의
 `generation_config`를 따르지 않는다: `top_p=1.0`, top-k 샘플링 비활성, `repetition_penalty=1.0`,
 length penalty와 최소 길이 제약 없음. 같은 설정이 greedy 기준 출력에도 적용된다. greedy는 샘플링을
 끈 것만 다르며, 특히 repetition penalty는 greedy 출력도 바꾸기 때문이다. 이는 기본값의 불필요한
@@ -587,15 +651,21 @@ sha256(item_id, sample_id, temperature)로 유도해 각 생성 직전에 설정
 
 Perplexity와 Min-k%는 문항마다 고정된 텍스트 하나의 teacher-forced 자연로그 확률을 사용한다.
 샘플 답변도, 참조 해답도 포함하지 않는다. 점수 대상 텍스트는 벤치마크 자신의 문제 지문이다:
-LiveCodeBench는 `question_content` 필드만 쓰고 starter code·예시 입출력·생성 때 덧붙이는 실행
-형식 지시는 제외한다. 그래야 점수 대상 텍스트가 정밀도 간에 동일하고 문제 유형에 따라 달라지지
-않는다. HumanEval+와 MBPP+는 배포된 prompt 필드(함수 시그니처와 docstring)를 쓰고 canonical
-solution은 제외한다. 이 텍스트를 사용자 메시지 하나에 담아 체크포인트 자신의 chat template으로
+LiveCodeBench는 `question_content` 필드 전체를 쓴다 — 그 필드가 담고 있는 예제와 입출력 예시
+블록도 포함하며, `release_v6` 문항은 거의 전부가 이를 갖고 있다. 제외하는 것은 생성 때만 덧붙는
+것뿐이다: starter code가 있는 문항에 붙이는 starter code 블록과 실행 형식 지시문. HumanEval+와
+MBPP+는 배포된 prompt 필드(함수 시그니처와 docstring)를 쓰고 canonical solution은 제외한다.
+따라서 점수 대상 텍스트는 정밀도 간에 동일하며, LiveCodeBench에서는 문항에 starter code가 있든
+없든 같은 필드를 채점한다. 이 텍스트를 사용자 메시지 하나에 담아 체크포인트 자신의 chat template으로
 렌더링하고 assistant 생성 마커를 붙인다. 우리 쪽에서 시스템 메시지를 따로 넣지 않으므로, 템플릿이
 기본 시스템 문구나 날짜 줄을 넣더라도 모든 정밀도에 같은 것이 들어간다. 점수에는 벤치마크 텍스트
 안에 온전히 들어가는 토큰만 포함한다. 템플릿·특수·생성 마커 토큰은 문자 오프셋으로 제외하고,
-좌측 인과 문맥이 없는 대상 토큰은 버린다. Perplexity는 exp(−평균 로그확률)이다. Q1a와 저장된 `perplexity` 점수는 수치적으로 안정된 −log(perplexity), 즉 평균 로그확률을 사용한다. 이는 원시 perplexity 이동과 다른 추정 대상이다. Min-k%는 k=20으로 낮은 로그확률
-max(1, round(0.2N))개의 평균을 사용한다(Python 최근접 짝수 반올림). 생성 답변 점수는
+좌측 인과 문맥이 없는 대상 토큰은 버린다. Perplexity는 exp(−평균 로그확률)이다. Q1a와 저장된 `perplexity` 점수는 수치적으로 안정된 −log(perplexity), 즉 평균 로그확률을 사용한다. 이는 원시 perplexity 이동과 다른 추정 대상이다. Min-k%는 k=20으로, 점수 대상 토큰 N개 중
+로그확률이 낮은 max(1, round(0.2N))개의 평균을 사용한다. 원 논문은 이 집합을 확률이 최소인
+"토큰의 k%"로 정의할 뿐 0.2N이 정수가 아닐 때의 규칙을 정하지 않으므로(arXiv:2310.16789 §3과
+Algorithm 1), 여기서 규약을 명시한다: 최근접 정수로 반올림하되 최소 1개. 다른 자연스러운 읽기인
+내림을 쓰면 N ≡ 3 또는 4 (mod 5)이고 N ≥ 8일 때마다 토큰을 하나 적게 고르므로(N=8이면 2개 대
+1개), 짧은 문항에서 두 규약의 점수가 달라진다. 생성 답변 점수는
 별도 진단이다. 정밀도 간 같은 텍스트·채점 규칙을 쓰도록 대상 텍스트·토큰 경계·절단·chat
 template·토크나이저/체크포인트 revision·디코딩 설정을 기록한다.
 
@@ -623,15 +693,15 @@ CDD의 51회 생성이 생성 비용의 대부분이며 pass@1·부분 점수와
 준다. 운영상 n을 바꾼다면 연구 결과 확인 전에 기록·고정하고 채점식과 명세에도 일관되게
 반영한다(§4.6).
 
-**임계값 처리 (ξ).** CDD 원논문은 7B 모델에서 교정한 탐지 임계값 ξ=0.01을 고정한다
+**임계값 처리 (ξ).** CDD 원논문은 7B 모델에서 캘리브레이션한 탐지 임계값 ξ=0.01을 고정한다
 (출처 표기는 arXiv:2603.03203 §3.1); arXiv:2603.03203 자신은 자기 평가셋과 소형 모델에서
 Youden index 최대화로 조건마다 ξ를 재선택하며, 이것이
 "gives CDD every advantage"라고 명시한다 — 즉 낙관적으로 편향된 oracle 선택 임계값이다.
-**Q1b의 주 지표는 임계값과 무관한 AUC이므로**, Q1b에는 ξ 재교정이 필요 *없다*. ξ는 CDD 점
+**Q1b의 주 지표는 임계값과 무관한 AUC이므로**, Q1b에는 ξ 재캘리브레이션이 필요 *없다*. ξ는 CDD 점
 정확도(point-accuracy)를 보조 기술 통계로 보고할 경우에만 유관하며, 그 경우 조건마다 평가셋
 위에서 ξ를 재선택해서는 **안 된다** (원논문의 고정 임계값이 아니라 arXiv:2603.03203의 평가셋
 Youden 선택을 재생산하게 된다); 대신
-모든 정밀도 조건에 동일한 사전 고정 임계값을 적용하거나, held-out 분할에서 교정한 임계값을
+모든 정밀도 조건에 동일한 사전 고정 임계값을 적용하거나, held-out 분할에서 캘리브레이션한 임계값을
 사용한다.
 
 ### 4.5 통계 설계
@@ -640,7 +710,7 @@ Youden 선택을 재생산하게 된다); 대신
 
 확증 통계량은 문항별 nf4−bf16 점수 차이의 평균이며, 양측 대응 t-검정으로 검정한다(§4.5.6).
 여기서 Cohen's d는 차이의 평균을 문항별 차이의 표준편차로 나눈 d_z이다. 탐색적 다중 모델
-적합은 이 세 주 검정을 대체하지 않는다.
+적합은 이 세 확증 검정(§4.5.6의 C1–C3)을 대체하지 않는다.
 
 | 효과 크기 (d_z) | 근사 문항 수 (80% 검정력, α=0.05, 대응 정규근사) |
 |---|---|
@@ -661,14 +731,15 @@ Youden 선택을 재생산하게 된다); 대신
 코퍼스 상태 축으로 확인된 양성 근거의 기술적 검증 분석도 수행하되, 이것이 다른 arm의
 시간 라벨을 대체하지 않는다.
 
-| 조건당 문항 수 | SE(AUC) | 검출 가능 ΔAUC, r=0 | r=0.8 | r=0.9 |
+| 라벨 집단당 문항 수 | SE(AUC) | 검출 가능 ΔAUC, r=0 | r=0.8 | r=0.9 |
 |---|---|---|---|---|
-| 라벨 집단당 164 (총 328) | 0.029 | 0.114 | **0.051** | 0.036 |
-| 300 | 0.021 | 0.084 | 0.038 | 0.027 |
-| 라벨 집단당 542 (가상 참고값) | 0.016 | 0.063 | 0.028 | 0.020 |
-| 1,000 | 0.012 | 0.046 | 0.021 | 0.015 |
+| 164 (총 328문항) | 0.029 | 0.114 | **0.051** | 0.036 |
+| 300 (총 600) | 0.021 | 0.084 | 0.038 | 0.027 |
+| 542 (총 1,084; 가상 참고값) | 0.016 | 0.063 | 0.028 | 0.020 |
+| 1,000 (총 2,000) | 0.012 | 0.046 | 0.021 | 0.015 |
 
-이 Hanley–McNeil 계획 예제는 AUC A=0.70, 집단별 같은 문항 수 n, 정규근사를 가정한다.
+각 행의 *n*은 `possible-exposure`와 `shared-clean-control` 각각의 **라벨 집단당** 문항 수이므로,
+AUC는 그 두 배의 문항에서 계산된다. 이 Hanley–McNeil 계획 예제는 AUC A=0.70, 집단별 같은 문항 수 n, 정규근사를 가정한다.
 Q₁=A/(2−A), Q₂=2A²/(1+A)이며
 SE²=[A(1−A)+(n−1)(Q₁−A²)+(n−1)(Q₂−A²)]/n²이다.
 검출 가능 차이는 2.8016√[2(1−r)]SE이며 r은 개별 탐지기 점수의 상관이 아니라 **두 AUC
@@ -684,7 +755,7 @@ HumanEval과 MBPP+는 분리한다. 실제 LCB 집단은 불균형하므로(예:
 오염 정답표에 대한 AUC로 재해석하려 하면 대리 라벨 오류가 실제 라벨 AUC 차이를 감쇠시킬 수
 있다. 아래 표가 명시적으로 채택한 단순 민감도 모형 — 실제 양성 비율 0.5인 균형 집단에서 가상 오류율 *e*의 대칭적·비차별적 라벨 반전 — 아래에서 관계는 대략 ΔAUC_관측 ≈ (1 − 2e) × ΔAUC_진짜다:
 
-| 가상 대리 라벨 오류율 *e* | 관측 ΔAUC (진짜 = 0.050) | 필요 문항 수 (r=0.8) |
+| 가상 대리 라벨 오류율 *e* | 관측 ΔAUC (진짜 = 0.050) | 라벨 집단당 필요 문항 수 (r=0.8) |
 |---|---|---|
 | 0% (대리 라벨이 정확) | 0.050 | 170 |
 | 10% | 0.040 | 287 |
@@ -757,6 +828,8 @@ Bernoulli 셀·p=0.5·같은 셀 크기·원시 %p 대비·정규근사를 전�
 **기저율 교란.** 아래 두 수치는 Qwen 계열 instruction-tuned 모델에 대한 예시값이다; 실제 기저율은
 모델마다 다르며 — 특히 Olmo3의 기저율이 Qwen2.5와 같다고 가정해서는 안 된다 — 고정된 본 연구
 데이터에서 모델별로 추정한다. 아래 부호와 크기는 예시 기저율과 SD=1.5인 공통 정규 문항 난이도 분포에 의존한다. 모든 모델에서 기저율 차이나 그 방향이 확인된 것은 아니다.
+0.85와 0.35는 둘 다 위 분해 표와 같은 규약으로, 문항별 로짓 하나가 아니라 그 SD=1.5 난이도 분포에
+대한 **주변 평균**으로 들어간다: 이를 μ=logit(p)로 읽으면 아래 표의 모든 행이 달라진다.
 HumanEval(bf16 pass@1 ≈ 0.85)과 LiveCodeBench-post(≈0.35)는 기저 정확도가
 크게 다르다. 원시 %p 스케일에서는 이 차이만으로도, 문항 조건부 양자화 효과(로그오즈)가 두
 조건에서 *동일*할 때조차 **가짜 교차효과**가 생긴다:
@@ -798,7 +871,10 @@ correct ~ precision * exposure_proxy + (1 | item) + (1 | model)
 정밀도·노출을 §3.1의 Q·E로 코딩한다. 라벨은 모델–문항 쌍 내부에서 정밀도 간 일정하지만,
 모델 간 같을 필요는 없다. 모델별 대비를 먼저 보고한다. 랜덤 절편은 문항·모델의 기저 수준
 차이와 반복 문항 의존성을 나타낸다. 모델별 양자화 기울기·모델별 교차효과·모든 문항×모델
-의존성을 나타내지는 않는다. 이질성과 난이도 진단을 보고하며, 5개 arm만으로 아키텍처나 크기
+의존성을 나타내지는 않는다. 특히 이 작업 모형에는 **문항별 양자화 기울기가 없다**: 문항×정밀도
+랜덤항을 생략했으므로 양자화 효과의 실제 문항 간 변동이 잔차로 흡수되고, 풀링 적합의 β_QE 구간이
+그 변동에 비해 좁아질 수 있다. 그 과소평가가 얼마나 큰지는 모의실험하지 않았으므로, 수치화하지
+않고 풀링 작업 모형의 한계로 적어 둔다. 이질성과 난이도 진단을 보고하며, 5개 arm만으로 아키텍처나 크기
 전반에 강한 일반화를 하지 않는다. 모델별 적합에서는 모델 랜덤 절편을 제외한다.
 
 **β_QE의 구간은 평균장 변분 Bayes의 사후 SD에서 만들지 않는다.** 평균장 근사는 사후분포를
@@ -827,7 +903,11 @@ correct ~ precision * exposure_proxy + (1 | item) + (1 | model)
 
 - **C1–C3 (Q1a):** 탐지기별(perplexity, Min-k% Prob, CDD) 양측 대응 t-검정 하나씩 수행한다.
   중간 날짜 183문항을 포함한 LCB release_v6 전체 1,055문항을 사용한다. 추정 대상은 문항별
-  nf4−bf16 점수 차이의 평균이며 노출 라벨을 사용하지 않는다.
+  nf4−bf16 점수 차이의 평균이며 노출 라벨을 사용하지 않는다. 각 검정은 완전사례로 돌린다: 여섯
+  점수(탐지기 3종 × 정밀도 2종)가 모두 존재하고 유한한 문항만 들어가며, 하나라도 없는 문항은 세
+  검정에서 함께 제외해 C1–C3가 같은 문항 집합 위에 있도록 한다. 제외된 수는 보고한다. 그 결과
+  완전 대응쌍이 2개 미만이거나 문항 차이의 분산이 0이면, 아래 C4와 같은 규칙으로 추정 불가로
+  보고하고 p=1로 검정군에 남긴다.
 - **C4 (Q1b):** 확률 계열과 CDD의 AUC 순위가 실제로 역전되는지 검정한다. `possible-exposure`
   690문항과 `shared-clean-control` 182문항만 사용한다. 정밀도 p마다
   g_p=[AUC_perplexity,p+AUC_Min-k,p]/2−AUC_CDD,p로 정의한다. 원시 점수를 합친 AUC가
@@ -848,8 +928,7 @@ C4에서는 같은 문항의 AUC 여섯 개에 대한 결합 [DeLong 공분산](
 p_reverse=max(p⁻_b,p⁺_q), **p_C4=min(1,2 min(p_forward,p_reverse))**를 사용한다.
 방향별로 교집합–합집합 검정을 적용하고 계수 2로 두 방향 선택을 보정한다. 이 p값은 AUC의
 점근 근사에 의존한다. 빈 라벨 집단·필수 점수 누락·두 격차 중 어느 하나의 0 또는 미정의 분산은 추정 불가로 보고하고, 검정을
-제거하거나 대체하지 않고 다중성 계산에서 p=1인 자리를 유지한다. CDD AUC가 우연 수준에
-가깝다는 이유만으로 C4를 제거하지 않는다. 전체 6×6 공분산의 특이성만으로 선형 대비가 무효가 되지는 않으며 역행렬도 필요하지 않다. CDD 점수가 상수여도 두 격차 분산이 양수이면 C4를 유지한다.
+제거하거나 대체하지 않고 다중성 계산에서 p=1인 자리를 유지한다. 전체 6×6 공분산의 특이성만으로 선형 대비가 무효가 되지는 않으며 역행렬도 필요하지 않다. CDD 점수가 상수여도 두 격차 분산이 양수이면 C4를 유지한다.
 
 네 p값에 가족별 α=0.05 Holm 보정을 적용한다. 다른 대비·HumanEval/MBPP+·Q2·경계 민감도는
 구간을 동반한 탐색적 분석으로 보고하고 확증적 유의성 주장을 하지 않는다. Q2는 §4.5.5가 지정한
@@ -918,7 +997,7 @@ Holm 첫 단계(가족별 α/4=0.0125, p_C4가 이미 계수 2를 포함하므�
    Olmo Instruct 모델 카드는 모두 `Date cutoff: Dec. 2024`를 명시하므로 첫 post 날짜는
    2025-01-01이다. 공개 사전학습·post-training 코퍼스 직접 검색은 시간 cutoff 라벨이 아니라
    별도의 코퍼스 상태 축을 채운다.
-5. **TRACER(arXiv:2605.24079)와 직접 코퍼스 검색으로 잔여 오염의 양성 근거를 탐색한다 — 공개된
+5. **TRACER(arXiv:2605.24079)로 잔여 오염의 근거를 탐색한다 — 공개된
    Olmo3 사전학습 및 post-training 코퍼스에 대해.** 이 설계에서 전체 모델 학습 파이프라인에 걸쳐 TRACER를 실행할
    수 있을 만큼 열린 코퍼스는 그것뿐이다: TRACER는 (post-training 데이터셋, 평가 벤치마크) 쌍
    위에서 정의되어 후보 과제 쌍을 분류하며, Qwen2.5와 Llama-3.1의 코퍼스는 비공개다(§4.5.2).
@@ -926,7 +1005,7 @@ Holm 첫 단계(가족별 α/4=0.0125, p_C4가 이미 계수 2를 포함하므�
    Evol-CodeAlpaca-V1, Magicoder-OSS-Instruct-75K)과 대조했고, 선별 임계값도 그 주석 벤치마크의
    개발 분할에서 조정했다. **사전학습 코퍼스에 적용하는 것은 원문이 검증한 범위를 넘어선 우리의
    확장**이며 그 범위에서의 정확도는 확립되어 있지 않다: 보고되는 일치는 판정해야 할 후보 양성이지
-   교정된 탐지 결과가 아니다. 이는 Q1b의
+   캘리브레이션된 탐지 결과가 아니다. 이는 Q1b의
    구성 타당도에 관한 기술적 양성 근거이지만 오류율 추정치나 대리 AUC 계산의 전제 조건은
    아니므로 6번과 병렬로 진행할 수 있다. TRACER는
    공개 코드 릴리스가 확인되지 않아 원논문 명세로부터 재구현한다(부록에 세 LLM 단계의 프롬프트
@@ -935,8 +1014,9 @@ Holm 첫 단계(가족별 α/4=0.0125, p_C4가 이미 계수 2를 포함하므�
    대해서는 공개된 학습 데이터로부터 운영적 코퍼스 참조 상태를 유도한다** — 사전학습 코퍼스 *및*
    post-training(instruction-tuning) 셋, Olmo3은 둘 다 공개이며 instruct 체크포인트(§4.1)는
    어느 단계로든 벤치마크 문항을 흡수할 수 있다. arXiv:2404.00699 분류의 open-data 탐지 세 계열을
-   하나만 고르지 않고 **모두** 실행하는데, 이 코퍼스에서는 세 계열의 결과가 크게 어긋날 것으로
-   예상되며 그 어긋남 자체가 측정값이기 때문이다:
+   하나만 고르지 않고 **모두** 실행하는데, 계열마다 인정하는 일치의 종류가 다르고 어느 한 계열의
+   수가 나머지를 대신하지 못하기 때문이다. 계열 간에 어떤 차이가 나오든 기술 결과로 보고하며,
+   차이의 크기를 여기서 예측하지 않는다:
 
    - **(i) Instance-level 문자열 매칭** — 각 벤치마크 문항과 코퍼스 간의 정확·근사 *n*-gram 중복을
      학습 데이터에 대한 suffix-array/FM-index로 검색한다(후보 구현: infini-gram; Olmo3 코퍼스
@@ -946,7 +1026,7 @@ Holm 첫 단계(가족별 α/4=0.0125, p_C4가 이미 계수 2를 포함하므�
      post-training 전 단계는 정확히 HumanEval·MBPP·LiveCodeBench를 대상으로 필터링됐지만(미드트레이닝
      필터가 쓰는 OLMES 스위트와 post-training 평가셋 둘 다 이 세 벤치마크를 명시적으로 포함),
      대량 사전학습 본체(~5.9T 토큰, 전체 토큰 예산의 97% 이상)는 필터링되지 않았다 — 보고서는
-     "암기는 학습 후반부에 가장 강하게 일어난다"는 근거로 decontamination을 학습 후반 단계에
+     암기가 학습 후반부에 가장 강하게 일어난다는 근거로 decontamination을 학습 후반 단계에
      집중시켰다고 밝힌다. **대량 사전학습 본체**를 대상으로 돌리면 family (i)는 사전에 억제되지
      않은, 확인된 어휘 일치의 진짜 하한선을 제공한다. 반대 위험 — 코퍼스 제작자의
      필터가 이미 제거한 것을 다시 재는 것에 불과한 근사-0 결과 — 은 family (i)를 미드트레이닝이나
@@ -958,9 +1038,11 @@ Holm 첫 단계(가족별 α/4=0.0125, p_C4가 이미 계수 2를 포함하므�
      양성 비율을 가정하지 않는다.
 
    - **(iii) 패러프레이즈 탐지** — arXiv:2311.04850의 검색 후 LLM 판정 설계(임베딩으로 top-*k*
-     후보를 검색한 뒤 강한 모델이 의미적 등가성을 판정)를 따르며, 특히 **post-training 셋**에
-     주의를 기울여 적용한다. 재구성된 벤치마크 문항이 나타날 개연성이 가장 높은 곳이고, 그 연구
-     자신이 instruction 데이터에서 양성 사례를 보고한 지점이다.
+     후보를 검색한 뒤 강한 모델이 의미적 등가성을 판정)를 따르며, **사전학습 셋과 post-training 셋
+     모두에** 적용한다. 그 연구는 같은 방법을 사전학습 데이터셋과 파인튜닝 데이터셋에 적용하고,
+     대표 중복 수치는 사전학습 코퍼스 쪽에서 제시한다 — RedPajama-Data-1T와 StarCoder-Data에서
+     HumanEval의 8–18%가 겹친다. 따라서 재구성된 벤치마크 문항이 어느 단계에 몰려 있다고 미리
+     가정하지 않는다.
 
    각 계열의 `confirmed-match`, `no-match-found`, `not-observable` 개수를 따로 보고하며 채택할
    *e* 를 고르지 않는다. (i)과 (ii)–(iii) 사이의 격차는 어휘 매칭을 넘어 추가로 확인된 양성
@@ -1004,10 +1086,12 @@ Holm 첫 단계(가족별 α/4=0.0125, p_C4가 이미 계수 2를 포함하므�
 
 ## 6. 타당성 위협 (Threats to Validity)
 
-- **인과가 아닌 관찰 연구.** 이미 사전학습된 기성 7B–32B 모델에는 오염 상태를 무작위 배정할
-  수 없다; 오염은 처리(treatment)가 아니라 관측된 공변량이다. 결과는 연관으로 보고하며,
-  arXiv:2501.18771의 인과적으로 식별된 설계를 이 모델 규모에서는 재현할 수 없는 지향점적
-  참조로 삼는다 (§2.3).
+- **노출 축은 인과가 아닌 관찰이다.** 이미 사전학습된 기성 7B–32.5B 모델에는 오염 상태를 무작위
+  배정할 수 없다; 오염은 처리(treatment)가 아니라 관측된 공변량이다. 따라서 노출과 관련된 결과는
+  연관으로 보고하며, arXiv:2501.18771의 인과적으로 식별된 설계를 이 모델 규모에서는 재현할 수 없는
+  지향점적 참조로 삼는다 (§2.3). 정밀도 축은 성격이 다르다: 정밀도 대비는 고정된 체크포인트 하나의
+  수치 표현만 바꾸는, 우리가 통제하는 조작이며 다만 아래의 추론 구현 단서가 붙는다. 관찰 연구라는
+  제약은 노출 쪽에 붙고, 두 축을 가로지르는 결과에는 그대로 따라붙는다.
 - **선언된 training cutoff 날짜는 틀릴 수 있고, cutoff 증거의 질도 arm마다 다르다.** 부분적으로만
   대응된다. 구조적 대응은 §4.2의 경계 규칙이다: 의심 라벨은 arm별 경계로 만들고, 공통 대조는 모든
   주 경계 이후로 제한하며, arm별 증거 등급을 결과와 함께 보고한다. 행동 진단 쪽 대응은 그 규칙보다
@@ -1025,11 +1109,13 @@ Holm 첫 단계(가족별 α/4=0.0125, p_C4가 이미 계수 2를 포함하므�
   arXiv:2311.04850은 의미적 중복과 패러프레이즈가 n-gram·문자열 일치 기반 오염 제거를 우회함을
   기록한다; 같은 논리로 공개일 필터도 이들을 배제하지 못한다 — 날짜 필터로의 이 확장은 두 논문이
   보고한 결과가 아니라 우리의 추론이다. 우리는 `shared-clean-control`이 깨끗한 ground truth라고
-  주장하지 않는다; 이는 시간 라벨이다. Olmo3에서는 TRACER와 직접 코퍼스 검색이 §4.5.2에 대한 확인된
-  양성 일치의 기술적 근거를 제공한다. 모든 arm은 시간 대리 라벨과 식별되지 않은 오류율을 유지하며,
+  주장하지 않는다; 이는 시간 라벨이다. Olmo3 arm에서는 직접 코퍼스 검색이 §4.5.2에 대한 확인된 양성
+  일치를 기술적 근거로 제공할 수 있고, TRACER 재구현의 출력은 그 확인된 양성과 대조할 대상이지 그
+  자체가 확인된 양성의 출처가 아니다. 둘 다 §5의 5번에 계획된 것이며 아직 실행하지 않았다. 모든
+  arm은 시간 대리 라벨과 식별되지 않은 오류율을 유지하며,
   그 오류율은 가상 민감도 모형에서만 표현한다.
 - **arXiv:2603.03203으로부터의 외삽 위험 — 서로 독립적인 두 축.** *규모:* 그 논문의 발견은
-  70M–410M에서 확립된 것으로, 이 설계의 7B–32B 범위보다 대략 1.23–2.66자릿수(약 17–457배) 아래이며, 논문 스스로
+  70M–410M에서 확립된 것으로, 이 설계의 7B–32.5B 범위보다 대략 1.23–2.67자릿수(약 17–464배) 아래이며, 논문 스스로
   외삽을 부인한다. *메커니즘:* 규모와 별개로, 그 논문은 **미세조정 데이터 안에서 정해진 횟수만큼
   반복한 오염 집합으로 미세조정해** 오염을 만든다. 방식은 LoRA r=8, LoRA r=256, 전체 미세조정 세
   가지이고, 그중 CDD가 작동하는 조건은 어댑터가 아니라 모든 파라미터를 갱신하는 전체 미세조정이다(§2.4).
@@ -1047,12 +1133,13 @@ Holm 첫 단계(가족별 α/4=0.0125, p_C4가 이미 계수 2를 포함하므�
 - **Olmo3의 코퍼스 참조 상태는 모델 국소적이고 방법 의존적이다.** §5의 5번 코퍼스 검색은
   Olmo3에 대해서만 직접 양성 일치와 검색상 비일치를 제공하며, 비검출은 비노출의 증명이 아니다.
   Qwen2.5와 Llama-3.1의 학습 코퍼스는 여전히 비공개이므로 그 arm들은 대리 라벨과 식별되지 않은
-  오차율을 그대로 유지한다. Olmo3은 공개 일자 분할과 운영적 코퍼스 검색 결과의 관계에 대한
-  양성 일치 증거를 제공하지만 *e* 를 식별하지 않으며 다른 arm의 ground truth로 제시되지 않는다.
+  오차율을 그대로 유지한다. Olmo3은 선언에 근거한 시간 분할과 운영적 코퍼스 검색 결과의 관계에
+  대한 양성 일치 증거를 제공한다 — 이 두 arm의 경계는 출시일이 아니라 모델 카드가 선언한 날짜에서
+  온다(§4.2). 다만 *e* 를 식별하지 않으며 다른 arm의 ground truth로 제시되지 않는다.
 - **BNB-nf4 효과 크기 사전 정보의 규모 불일치.** §2.7에서 인용한 32% BNB-nf4 하락은
   arXiv:2505.20276에서 **Llama-3.1-70B**로 측정된 것이다. 우리 Llama arm인 Llama-3.1-8B는
   같은 계열·데이터 레시피지만 약 9× 작고, 양자화 취약성은 규모에 따라 달라지는 것으로 알려져
-  있다. 이 근거는 규모·태스크가 다른 스트레스 조건의 동기만 제공한다. 해당 수치나 보정 부재가 최대
+  있다. 이 근거는 규모·태스크가 다른 스트레스 조건의 동기만 제공한다. 해당 수치나 캘리브레이션 부재가 최대
   탐지기 효과를 입증하지 않는다. 효과는 고정 본 연구에서 추정하며 결과로 표본 수를 바꾸지 않는다.
 - **Llama-3.1-8B arm의 cutoff 불확실성.** 탐지된 지식 경계는 행동 진단이며 검증된 학습 데이터
   cutoff가 아니다. 민감도 경계 2023-04-01에서는 LCB 노출 가능 문항이 없어 Llama 자체의
@@ -1099,8 +1186,10 @@ Holm 첫 단계(가족별 α/4=0.0125, p_C4가 이미 계수 2를 포함하므�
 
 ## 7. 한계 (Limitations)
 
-- 오염의 무작위 배정 없이는 인과 주장이 불가능하며, 기성 사전학습 모델에서는 무작위 배정을
-  할 수 없다 (§6).
+- **노출**에 대한 인과 주장은 오염의 무작위 배정 없이는 불가능하며, 기성 사전학습 모델에서는
+  무작위 배정을 할 수 없다 (§6). 이 한계는 노출 축에만 해당한다. 정밀도 축은 고정된 체크포인트
+  하나에 대한 통제된 조작이므로, 노출 라벨을 전혀 쓰지 않는 C1–C3는 무작위 배정의 부재가 아니라
+  추론 구현 numerics(§6)의 제약을 받는다. Q1b와 Q2는 노출 대리변수가 들어가므로 연관으로 보고한다.
 - Q1은 동등성 마진을 선언하지 않으므로(§3.2) 비유의한 C1–C4 결과는 결론 불가다: 그대로 결론 불가로
   보고하며, 탐지기 점수가 양자화에서 안정적이라는 증거로 쓰지 않는다. 실제로 확보되는 집단 크기에서
   C4의 검정력도 보장되지 않는다(§4.5.6).
@@ -1127,9 +1216,9 @@ arXiv ID로 표기하고 주제별로 묶었다. arXiv ID가 없는 문헌은 �
 
 **오염 — 서베이**
 - arXiv:2404.00699 — *A Comprehensive Survey of Contamination Detection Methods in Large Language Models* (TMLR 2025)
-- arXiv:2502.14425 — *A Survey on Data Contamination for LLMs*
+- arXiv:2502.14425 — Cheng, Chang, Wu (2025) — *A Survey on Data Contamination for Large Language Models*
 - arXiv:2502.17521 — *Recent Advances in Large Langauge Model Benchmarks against Data Contamination: From Static to Dynamic Evaluation* [sic, 원문 오타 유지]
-- arXiv:2605.26133 — *Pretraining Data Exposure: Survey of Membership Inference*
+- arXiv:2605.26133 — Tong, Sun, Nguyen (2026) — *Pretraining Data Exposure in Large Language Models: A Survey of Membership Inference, Data Contamination, and Security Implications*
 
 **이 설계가 쓰거나 본문에서 이름을 든 탐지 기법**
 - arXiv:2402.15938 — Dong, Jiang, Liu, Jin, Gu, Yang, Li — *Generalization or Memorization: Data Contamination and Trustworthy Evaluation for Large Language Models* (ACL 2024; CDD, 즉 Contamination Detection via output Distribution을 도입)
@@ -1139,29 +1228,29 @@ arXiv ID로 표기하고 주제별로 묶었다. arXiv ID가 없는 문헌은 �
 
 **시간 분할 기반 오염 측정**
 - arXiv:2310.10628 — *Data Contamination Through the Lens of Time*
-- arXiv:2403.07974 — *LiveCodeBench*
+- arXiv:2403.07974 — Jain, Han, Gu, Li, Yan, Zhang, Wang, Solar-Lezama, Sen, Stoica (2024) — *LiveCodeBench: Holistic and Contamination Free Evaluation of Large Language Models for Code*
 - arXiv:2511.12116 — *LLMLagBench: Identifying Temporal Training Boundaries in Large Language Models*
-- arXiv:2504.14655 — *LeetCodeDataset: Temporal Dataset for Robust Evaluation*
+- arXiv:2504.14655 — Xia, Shen, Wang, Liu, Sun, Wu, Hu, Xu (2025) — *LeetCodeDataset: A Temporal Dataset for Robust Evaluation and Efficient Training of Code LLMs*
 
 **오염의 효과 크기**
-- arXiv:2501.18771 — *Overestimation in LLM Evaluation* (통제 실험, 기계번역)
+- arXiv:2501.18771 — Kocyigit, Briakou, Deutsch, Luo, Cherry, Freitag (2025) — *Overestimation in LLM Evaluation: A Controlled Large-Scale Study on Data Contamination's Impact on Machine Translation*
 - arXiv:2403.04811 — *Quantifying Contamination in Evaluating Code Generation Capabilities of Language Models* (ACL 2024)
-- arXiv:2506.02791 — *Rethinking the Effects of Data Contamination in Code Intelligence*
-- arXiv:2507.19219 — *How Much Do LLMs Cheat? One-Time-Pad Framework*
+- arXiv:2506.02791 — Yang, Lin, He, Wang, Sun, Liu, Xu, Wang, Yu, Liang (2025) — *Contamination Means Overestimation? A Fine-Grained Empirical Study in Code Intelligence*
+- arXiv:2507.19219 — Liang, Yu, Zhang, Ye, Hu (2025) — *How Much Do Large Language Model Cheat on Evaluation? Benchmarking Overestimation under the One-Time-Pad-Based Framework*
 
 **오염 탐지의 한계**
 - arXiv:2311.04850 — *Rethinking Benchmark and Contamination for Language Models with Rephrased Samples*
 - arXiv:2602.12413 — *Soft Contamination Means Benchmarks Test Shallow Generalization*
-- arXiv:2402.02823 — *Evading Data Contamination Detection is (too) Easy*
+- arXiv:2402.02823 — Dekoninck, Müller, Baader, Fischer, Vechev (2024) — *Evading Data Contamination Detection for Language Models is (too) Easy*
 - arXiv:2409.09927 — *Towards Data Contamination Detection for Modern Large Language Models: Limitations, Inconsistencies, and Oracle Challenges*
 - arXiv:2603.03203 — *No Memorization, No Detection: Output Distribution-Based Contamination Detection in Small Language Models*
 
 **코드 벤치마크 오염**
 - arXiv:2605.24079 — *TRACER: A Semantic-Aware Framework for Fine-Grained Contamination Detection in Code LLMs*
 - arXiv:2512.13961 — *Olmo 3* (Ai2 기술 보고서; 단계별 학습 데이터 decontamination 방법론을 인용, §5 5번)
-- arXiv:2411.10842 — *CodeCleaner: Contamination Mitigation Toolkit*
-- arXiv:2503.06643 — *Is Your Benchmark Still Useful? Dynamic Benchmarking for Code*
-- arXiv:2503.13572 — *VeriContaminated: LLM-Driven Verilog Coding*
+- arXiv:2411.10842 — Cao, Chen, Zhang, Lo, Cheung (2024) — *CODECLEANER: Elevating Standards with A Robust Data Contamination Mitigation Toolkit*
+- arXiv:2503.06643 — Guan, Wu, Yuan, Li (2025) — *Is Your Benchmark Still Useful? Dynamic Benchmarking for Code Language Models*
+- arXiv:2503.13572 — Wang, Shao, Bhandari, Mankali, Karri, Sinanoglu, Shafique, Knechtel (2025) — *VeriContaminated: Assessing LLM-Driven Verilog Coding for Data Contamination*
 
 **본문에서 이름을 든 벤치마크·모델 모음**
 - arXiv:2107.03374 — Chen et al. — *Evaluating Large Language Models Trained on Code* (HumanEval)
@@ -1170,10 +1259,10 @@ arXiv ID로 표기하고 주제별로 묶었다. arXiv ID가 없는 문헌은 �
 - arXiv:2304.01373 — Biderman et al. — *Pythia: A Suite for Analyzing Large Language Models Across Training and Scaling*
 
 **사후 오염 보정**
-- arXiv:2509.15218 — *LNE-Blocking: Contamination Mitigation Evaluation*
-- arXiv:2601.19334 — *When Benchmarks Leak: Inference-Time Decontamination*
-- arXiv:2506.04142 — *Trustworthy LLM Evaluation via Shortcut Neuron Analysis*
-- arXiv:2605.21543 — *Provable Joint Decontamination for Multiple LLMs*
+- arXiv:2509.15218 — Hou, Jiao, Hu, Li, Lam, Zhang, Lu (2025) — *LNE-Blocking: An Efficient Framework for Contamination Mitigation Evaluation on Large Language Models*
+- arXiv:2601.19334 — Chai, Zhe, Sakuma (2026) — *When Benchmarks Leak: Inference-Time Decontamination for LLMs*
+- arXiv:2506.04142 — Zhu, Tu, Jin, Hou, Li, Zhao (2025) — *Establishing Trustworthy LLM Evaluation via Shortcut Neuron Analysis*
+- arXiv:2605.21543 — Liu, Zeng, Wei (2026) — *Provable Joint Decontamination for Benchmarking Multiple Large Language Models*
 
 **양자화**
 - arXiv:2503.07103 — *Evaluating the Impact of Post-Training Quantization on Large Language Models for Code Generation*
