@@ -1,4 +1,4 @@
-# Does Quantization Erase the Evidence? Contamination-Detection Signals Under Post-Training Quantization in Code LLMs
+# Does Quantization Erase the Evidence? Contamination-Detection Signals Under Post-Training Quantization in LLMs on Code Generation
 
 *[Working title — subject to revision after results are in]*
 

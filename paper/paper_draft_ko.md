@@ -1,6 +1,6 @@
-# 양자화는 증거를 지우는가? 코드 LLM의 학습 후 양자화 하에서의 오염 탐지 신호
+# 양자화는 증거를 지우는가? 코드 생성 LLM의 학습 후 양자화 하에서의 오염 탐지 신호
 
-*(Does Quantization Erase the Evidence? Contamination-Detection Signals Under Post-Training Quantization in Code LLMs)*
+*(Does Quantization Erase the Evidence? Contamination-Detection Signals Under Post-Training Quantization in LLMs on Code Generation)*
 
 *[가제 — 결과 확보 후 수정 예정]*
 
