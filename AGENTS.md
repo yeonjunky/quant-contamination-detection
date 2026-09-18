@@ -55,7 +55,7 @@
 
 - 효과 크기를 **날조**했다 (arXiv:2505.20276을 "1–4%p"로 오인용; 실제는 0.8%/59%, 게다가
   코드 생성이 아니라 **롱컨텍스트** 평가 결과였다).
-- 원문 초록의 **동어반복적 한정 문구**를 강한 주장으로 읽었다
+- 원문 초록의 **조건이 붙은 한정 문구**를 강한 주장으로 읽었다
   ("outperform CDD in all conditions where any method exceeds chance"는 확률 기반 기법이
   항상 우연을 넘는다는 뜻이 아니다).
 - 원문이 "should not be extrapolated to larger scales"라고 쓴 문장을 **인용해 놓고**
@@ -166,7 +166,7 @@
   최대화**로 재선택하며 스스로 *"This gives CDD every advantage"*라고 밝힌다 → 낙관 편향된
   oracle 임계값. **AUC는 임계값 무관이므로 Q1b에는 ξ 재교정이 불필요하다.**
 - 확률 기반 vs CDD — 강도별 문장 3개 (섞지 말 것):
-  - 초록(동어반복): *"outperform CDD in all conditions where any method exceeds chance"*
+  - 초록(조건부 주장 — 동어반복이 아니다. Table 2 기준 우연 초과는 CDD 7/27, perplexity 26/27, Min-k% 25/27): *"outperform CDD in all conditions where any method exceeds chance"*
   - 결론(더 강함): 위 문장 + *"including those where CDD fails entirely"*
   - **정본이 채택한 인용**: *"The gap is largest precisely where it matters most: at low
     contamination levels and under parameter-efficient fine-tuning, where CDD is uniformly at
