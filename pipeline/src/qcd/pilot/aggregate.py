@@ -4,6 +4,18 @@ This module exercises analysis wiring while the final main-study analysis
 command is still being validated. It is not called by dry runs or smoke tests,
 does not make a CDD go/no-go decision, and its outputs are not manuscript
 results or inputs to a data-dependent redesign.
+
+**No sizing from observed effects.** Paper §4.7 ("Fixed study analysis
+without a data-dependent pilot"): observed detector-score shifts, proxy AUCs
+and base rates "do not trigger post-validation resizing or confirmatory
+reclassification", and §4.6 forbids validation outputs from being aggregated
+into "power estimates". An earlier version of this module computed
+`required_items` from the observed d / ΔAUC / difference-in-differences and
+wrote `development_power_diagnostics.json` in the same shape as a main-run
+output (review finding E-F5). That whole path is gone: nothing here calls
+`analysis.power`, and `aggregate_pilot` returns only the descriptive summary.
+Planning numbers come from `analysis/power.py` with the paper's own
+illustrative effect sizes, never from observed ones.
 """
 
 from __future__ import annotations
@@ -14,9 +26,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from qcd.analysis.auc import empirical_auc, items_needed_for_delta_auc
+from qcd.analysis.auc import empirical_auc
+from qcd.analysis.conditional_logit import fit_conditional_logit_by_model
 from qcd.analysis.mixed_effects import fit_precision_exposure_proxy_glmm
-from qcd.analysis.power import items_needed_diff_in_diff, items_needed_paired_t
 from qcd.data.schema import TemporalProxyLabel
 from qcd.pilot.pilot_report import base_rate, cohens_d_paired, pearson_r
 
@@ -174,12 +186,12 @@ def _summarize_q2_cell(
     baseline: str,
     target: str,
     require_difficulty_check: bool,
-) -> tuple[dict, dict]:
+) -> dict:
     if set(cell["exposure_proxy"]) != {False, True}:
-        return ({
+        return {
             "status": "not_estimable_missing_proxy_group",
             "model_group_counts": _label_group_counts(cell),
-        }, {})
+        }
     paired_outcomes = _paired_outcomes(cell, baseline, target)
     complete_keys = set(paired_outcomes.index)
     cell = cell[
@@ -188,6 +200,15 @@ def _summarize_q2_cell(
     q2_data = cell.rename(columns={"quant": "precision", "passed": "correct"})
     q2_data["correct"] = q2_data["correct"].astype(int)
     glmm = fit_precision_exposure_proxy_glmm(q2_data)
+    # §4.5.5: the reported β_QE interval is the item-stratified conditional
+    # logistic Wald interval, fitted separately per model — never the GLMM's
+    # mean-field posterior SD.
+    conditional_logit = {
+        model: result.as_dict()
+        for model, result in fit_conditional_logit_by_model(
+            q2_data, baseline=baseline, target=target
+        ).items()
+    }
     did_pp = _did_percentage_points(cell, baseline, target)
     difficulty_did = {}
     if require_difficulty_check:
@@ -203,8 +224,8 @@ def _summarize_q2_cell(
             )
     result = {
         "status": "computed",
-        "interaction_log_odds": glmm.interaction_log_odds,
-        "interaction_sd": glmm.interaction_sd,
+        "working_model_point_estimate": glmm.as_dict(),
+        "beta_qe_interval_by_model": conditional_logit,
         "difference_in_differences_pp": did_pp,
         "item_level_r": pearson_r(paired_outcomes[baseline], paired_outcomes[target]),
         "n_pairs": len(paired_outcomes),
@@ -215,13 +236,7 @@ def _summarize_q2_cell(
             "computed" if difficulty_did else "unavailable_no_shared_native_strata"
         ),
     }
-    power = {
-        "observed_abs_difference_in_differences_pp": abs(did_pp),
-        "required_items_per_condition": (
-            items_needed_diff_in_diff(abs(did_pp)) if did_pp != 0 else None
-        ),
-    }
-    return result, power
+    return result
 
 
 def aggregate_pilot(
@@ -229,7 +244,7 @@ def aggregate_pilot(
     *,
     baseline: str = "bf16",
     target: str = "bnb_nf4",
-) -> tuple[dict, dict]:
+) -> dict:
     """Read completed development tables and write non-study diagnostics."""
     run_dir = Path(run_dir)
     items, labels, generations, scores = _read_tables(run_dir)
@@ -270,14 +285,11 @@ def aggregate_pilot(
         raise ValueError("model_item_labels.parquet dataset values disagree with items.parquet")
     q1a: dict[str, dict] = {}
     q1b: dict[str, dict] = {}
-    power_q1a: dict[str, dict] = {}
-    power_q1b: dict[str, dict] = {}
 
     for model in models:
         q1a[model], q1b[model] = {}, {}
-        power_q1a[model], power_q1b[model] = {}, {}
         for detector in PRIMARY_DETECTORS:
-            q1a[model][detector], power_q1a[model][detector] = {}, {}
+            q1a[model][detector] = {}
             for dataset, cell_items in items.groupby("dataset"):
                 paired = _paired_scores(
                     scores, model, detector, baseline, target,
@@ -289,10 +301,6 @@ def aggregate_pilot(
                 d = cohens_d_paired(before, after)
                 q1a[model][detector][dataset] = {
                     "cohens_d": d, "n_pairs": len(paired),
-                }
-                power_q1a[model][detector][dataset] = {
-                    "observed_abs_d": abs(d),
-                    "required_items": items_needed_paired_t(abs(d)) if d != 0 else None,
                 }
 
             model_labels = labels[labels["model"] == model].set_index("item_id")
@@ -372,14 +380,6 @@ def aggregate_pilot(
                         "n_possible_exposure": int(sensitivity_binary.sum()),
                         "n_shared_control": int((~sensitivity_binary).sum()),
                     }
-            delta_auc = abs(auc_after - auc_before)
-            power_q1b[model][detector] = {
-                "observed_abs_delta_auc": delta_auc,
-                "required_items_per_label_group": (
-                    items_needed_for_delta_auc(delta_auc, auc_before, r)
-                    if delta_auc > 0 and r < 1 else None
-                ),
-            }
 
     base_rates = {}
     for (model, quant, dataset), cell in greedy.merge(
@@ -398,19 +398,17 @@ def aggregate_pilot(
     )
     q2_source = q2_source[q2_source["quant"].isin((baseline, target))]
     q2_results = {}
-    power_q2 = {}
     for contrast, analysis_role in Q2_CONTRASTS.items():
         cell = _q2_cell(q2_source, contrast, "primary_label")
-        result, contrast_power = _summarize_q2_cell(
+        result = _summarize_q2_cell(
             cell, baseline=baseline, target=target,
             require_difficulty_check=(contrast == "lcb_possible_vs_shared"),
         )
         result["analysis_role"] = analysis_role
         q2_results[contrast] = result
-        power_q2[contrast] = contrast_power
         if contrast == "lcb_possible_vs_shared" and bool(labels["boundary_ambiguous"].any()):
             sensitivity_cell = _q2_cell(q2_source, contrast, "sensitivity_label")
-            sensitivity, _ = _summarize_q2_cell(
+            sensitivity = _summarize_q2_cell(
                 sensitivity_cell, baseline=baseline, target=target,
                 require_difficulty_check=True,
             )
@@ -427,8 +425,9 @@ def aggregate_pilot(
             }
 
     summary = {
-        "schema_version": 4,
+        "schema_version": 5,
         "status": "development_only_not_manuscript_evidence",
+        "sizing_from_observed_effects": "removed_see_paper_4_7",
         "baseline": baseline, "target": target,
         "models": models, "n_items": int(len(items)), "pass_at_1_source": pass_source,
         "q1a": q1a, "q1b": q1b,
@@ -436,17 +435,11 @@ def aggregate_pilot(
         "base_rates": base_rates,
         "timing": timing,
     }
-    power = {
-        "schema_version": 4,
-        "status": "development_only_not_study_resizing_input",
-        "inputs_from": "development_summary.json",
-        "q1a": power_q1a, "q1b": power_q1b,
-        "q2": power_q2,
-    }
-    for name, payload in (
-        ("development_summary.json", summary),
-        ("development_power_diagnostics.json", power),
-    ):
-        with (run_dir / name).open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True, allow_nan=False)
-    return summary, power
+    with (run_dir / "development_summary.json").open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2, sort_keys=True, allow_nan=False)
+    # Remove a stale diagnostics file left by the pre-E-F5 version of this
+    # module so a later reader cannot mistake it for current output.
+    stale = run_dir / "development_power_diagnostics.json"
+    if stale.exists():
+        stale.unlink()
+    return summary

@@ -1,3 +1,11 @@
+"""Development-only aggregation. The post-hoc sizing path that used to live
+here (observed d / ΔAUC / DiD -> `required_items` ->
+`development_power_diagnostics.json`, review finding E-F5) is gone: paper
+§4.7 fixes the analysis without a data-dependent pilot and §4.6 forbids
+turning validation observations into power estimates. The tests below now
+assert its *absence*.
+"""
+
 import json
 
 import pandas as pd
@@ -64,7 +72,7 @@ def test_development_aggregate_writes_non_study_diagnostics(tmp_path):
                     })
     pd.DataFrame(score_rows).to_parquet(raw / "detector_scores.parquet", index=False)
 
-    summary, power = aggregate_pilot(tmp_path)
+    summary = aggregate_pilot(tmp_path)
 
     assert summary["n_items"] == 10
     assert summary["pass_at_1_source"] == "generations.parquet:passed"
@@ -84,19 +92,32 @@ def test_development_aggregate_writes_non_study_diagnostics(tmp_path):
         summary["q2"]["lcb_possible_vs_shared"]["base_rates_by_model"]
         ["Qwen2.5-7B-Instruct"]["bf16"]
     ) == {"possible_exposure", "shared_control"}
-    assert summary["schema_version"] == 4
-    assert power["schema_version"] == 4
+    assert summary["schema_version"] == 5
     assert summary["status"] == "development_only_not_manuscript_evidence"
-    assert power["status"] == "development_only_not_study_resizing_input"
+    assert summary["sizing_from_observed_effects"] == "removed_see_paper_4_7"
     assert "olmo3_proxy_label_error_rate" not in summary
     assert "cdd_gate" not in summary
     assert "c4_confirmatory_status" not in summary
     assert summary["timing"]["generation_seconds"]["total"] == 100.0
-    assert "required_items" in power["q1a"]["Qwen2.5-7B-Instruct"]["cdd"]["lcb_pre"]
+
+    # §4.5.5: the reported β_QE interval comes from the item-stratified
+    # conditional logistic fit, run per model — not from the working model's
+    # mean-field posterior SD.
+    lcb = summary["q2"]["lcb_possible_vs_shared"]
+    assert set(lcb["beta_qe_interval_by_model"]) == set(models)
+    for payload in lcb["beta_qe_interval_by_model"].values():
+        assert payload["interval_method"] == "item_stratified_conditional_logit_wald"
+    assert "interaction_sd" not in lcb
+    assert (
+        "interaction_posterior_sd_not_an_interval" in lcb["working_model_point_estimate"]
+    )
+
+    # E-F5: no observed-effect sizing anywhere in the output, and no
+    # power-diagnostics file.
+    serialized = json.dumps(summary)
+    assert "required_items" not in serialized
+    assert not (tmp_path / "development_power_diagnostics.json").exists()
     assert json.loads((tmp_path / "development_summary.json").read_text()) == summary
-    assert json.loads(
-        (tmp_path / "development_power_diagnostics.json").read_text()
-    ) == power
 
 
 def test_aggregate_rejects_incomplete_manifest_run(tmp_path):

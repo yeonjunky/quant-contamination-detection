@@ -6,13 +6,20 @@ fit isn't exactly reproducible to many decimals against a hand-derived
 target — there is no citation number to match digit-for-digit — so this is
 a recovery-*range* check (does the fit land in the right neighborhood, with
 the right sign), not a tight numerical regression.
+
+Two §4.5.5 rules are also pinned here: per-model fits omit the `(1 | model)`
+random intercept, and this module never yields an interval for β_QE.
 """
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from qcd.analysis.mixed_effects import fit_precision_exposure_proxy_glmm
+from qcd.analysis.mixed_effects import (
+    INTERVAL_SOURCE,
+    VariationalIntervalNotPermitted,
+    fit_precision_exposure_proxy_glmm,
+)
 
 
 def _simulate(
@@ -70,9 +77,15 @@ def test_glmm_recovers_interaction_sign_and_rough_magnitude():
     result = fit_precision_exposure_proxy_glmm(df)
 
     assert result.interaction_log_odds == pytest.approx(true_interaction, abs=0.5)
-    assert result.interaction_sd > 0
-    assert len(result.fixed_effect_names) == len(result.fixed_effect_means) == len(result.fixed_effect_sds) == 4
+    assert result.interaction_posterior_sd > 0
+    assert (
+        len(result.fixed_effect_names)
+        == len(result.fixed_effect_means)
+        == len(result.fixed_effect_posterior_sds)
+        == 4
+    )
     assert any(":" in name for name in result.fixed_effect_names)
+    assert result.random_effect_groups == ("item", "model")
 
 
 def test_glmm_recovers_near_zero_interaction():
@@ -85,3 +98,46 @@ def test_glmm_recovers_near_zero_interaction():
     result = fit_precision_exposure_proxy_glmm(df)
 
     assert abs(result.interaction_log_odds) < 0.5
+
+
+def test_per_model_fit_omits_the_model_random_intercept():
+    """§4.5.5: "Per-model fits omit the model random intercept"."""
+    df = _simulate(
+        n_items=150, n_models=1,
+        true_intercept=0.4, true_precision=-0.5, true_exposure_proxy=0.2,
+        true_interaction=0.6, seed=11,
+    )
+
+    result = fit_precision_exposure_proxy_glmm(df)
+
+    assert result.random_effect_groups == ("item",)
+    assert result.interaction_log_odds == pytest.approx(0.6, abs=0.6)
+
+
+def test_model_random_intercept_cannot_be_forced_on_one_model():
+    df = _simulate(
+        n_items=60, n_models=1,
+        true_intercept=0.0, true_precision=0.0, true_exposure_proxy=0.0,
+        true_interaction=0.0, seed=12,
+    )
+    with pytest.raises(ValueError, match="at least two models"):
+        fit_precision_exposure_proxy_glmm(df, include_model_random_effect=True)
+
+
+def test_module_refuses_to_supply_an_interval():
+    """§4.5.5: "The interval for β_QE is not taken from a mean-field
+    variational Bayes posterior SD"."""
+    df = _simulate(
+        n_items=80, n_models=2,
+        true_intercept=0.2, true_precision=-0.3, true_exposure_proxy=0.1,
+        true_interaction=0.4, seed=13,
+    )
+
+    result = fit_precision_exposure_proxy_glmm(df)
+
+    with pytest.raises(VariationalIntervalNotPermitted, match="conditional_logit"):
+        result.interaction_interval()
+    payload = result.as_dict()
+    assert "interaction_posterior_sd_not_an_interval" in payload
+    assert payload["interval_source"] == INTERVAL_SOURCE
+    assert not any("ci" in key or "interval_low" in key for key in payload)
