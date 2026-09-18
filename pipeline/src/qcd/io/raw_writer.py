@@ -4,7 +4,7 @@ item-level raw data for every condition... Aggregate-only storage would
 foreclose the paired and mixed-effects analyses this design depends on."
 
 - `items.parquet` — one row per item (id, dataset, difficulty, coarse legacy
-  proxy, TRACER evidence, release/version pin).
+  proxy, paper §4.2's per-model corpus-reference axis, release/version pin).
 - `model_item_labels.parquet` — one row per (model, item), carrying primary
   and sensitivity temporal labels plus the frozen boundaries that produced them.
 - `generations.<part>.parquet` — one row per (model, quant, item, sample):
@@ -44,7 +44,7 @@ import tempfile
 
 import pandas as pd
 
-from qcd.data.schema import Item
+from qcd.data.schema import Item, corpus_reference_to_json
 
 
 def _item_to_row(item: Item) -> dict:
@@ -54,7 +54,13 @@ def _item_to_row(item: Item) -> dict:
         "prompt": item.prompt,
         "difficulty": item.difficulty,
         "contamination_proxy": item.contamination_proxy,
-        "tracer_label": item.tracer_label,
+        # Paper §4.2's separate, non-exclusive corpus-evidence axis, as a JSON
+        # string for the same reason `metadata_json` is one: it holds a
+        # variable-length list of (model, method family, stage) cells, not one
+        # value per item. Replaces the single `tracer_label` float column an
+        # older raw tree carries; `data.schema.corpus_reference_from_json`
+        # reads both shapes.
+        "corpus_reference_json": corpus_reference_to_json(item.corpus_reference),
         "release_version": item.release_version,
         "metadata_json": json.dumps(item.metadata, default=str),
     }

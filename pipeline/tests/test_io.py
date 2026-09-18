@@ -1,9 +1,13 @@
+import dataclasses
 import json
 
 import pandas as pd
 import pytest
 
-from qcd.data.schema import Dataset, Item
+from qcd.data.schema import (
+    CorpusEvidenceFamily, CorpusReferenceRecord, CorpusReferenceStatus, Dataset, Item,
+    corpus_reference_from_json,
+)
 from qcd.io.manifest import (
     StudyPhase, build_manifest, config_hash, get_git_commit_hash, read_manifest,
     write_manifest,
@@ -33,6 +37,37 @@ def test_write_items_roundtrip(tmp_path):
     # metadata round-trips as JSON
     meta = json.loads(df[df["item_id"] == "q1"]["metadata_json"].iloc[0])
     assert meta == {"platform": "codeforces"}
+    # unmeasured corpus axis is an empty list, not a null
+    assert json.loads(df["corpus_reference_json"].iloc[0]) == []
+
+
+def test_items_parquet_stores_the_per_model_corpus_axis(tmp_path):
+    """Paper §4.2 stores corpus evidence per model on a separate,
+    non-exclusive axis; §5 step 5 reports each method family separately. The
+    single `tracer_label` float this column replaced could hold neither."""
+    item = dataclasses.replace(
+        _items()[0],
+        corpus_reference=(
+            CorpusReferenceRecord(
+                model="Olmo3-7B-Instruct",
+                method_family=CorpusEvidenceFamily.INSTANCE_STRING.value,
+                status=CorpusReferenceStatus.CONFIRMED_MATCH,
+                corpus="allenai/dolma3_mix-6T-1025-7B",
+                corpus_revision="2ca900fbe14e86c5c83d064d9f0882f1c0b8c05b",
+                stage="pretraining",
+            ),
+            CorpusReferenceRecord(
+                model="Qwen2.5-7B-Instruct",
+                method_family=CorpusEvidenceFamily.INSTANCE_STRING.value,
+                status=CorpusReferenceStatus.NOT_OBSERVABLE,
+            ),
+        ),
+    )
+    path = RawDataWriter(tmp_path).write_items([item])
+    stored = pd.read_parquet(path)["corpus_reference_json"].iloc[0]
+
+    assert corpus_reference_from_json(stored) == item.corpus_reference
+    assert "tracer_label" not in pd.read_parquet(path).columns
 
 
 def test_write_model_item_labels_roundtrip(tmp_path):
@@ -236,3 +271,34 @@ def test_write_and_read_manifest_roundtrip(tmp_path):
     assert loaded["seed"] == 7
     assert loaded["config_hash"] == manifest.config_hash
     assert loaded["config"] == {"x": 1}
+
+
+def test_a_legacy_items_parquet_still_loads_through_the_analysis_reader(tmp_path):
+    """An `items.parquet` written before the corpus axis existed carries a
+    `tracer_label` float and no `corpus_reference_json`. The analysis reader
+    must still open it: this change alters what is written, not what can be
+    read."""
+    from qcd.analysis import study_inputs
+
+    raw = tmp_path / "raw"
+    raw.mkdir(parents=True)
+    pd.DataFrame([{
+        "item_id": "q1", "dataset": "lcb_pre", "prompt": "solve this",
+        "difficulty": "easy", "contamination_proxy": True,
+        "tracer_label": None, "release_version": "release_v6", "metadata_json": "{}",
+    }]).to_parquet(raw / "items.parquet", index=False)
+    pd.DataFrame([{
+        "model": "m", "item_id": "q1", "dataset": "lcb_pre",
+        "primary_label": "possible-exposure",
+    }]).to_parquet(raw / "model_item_labels.parquet", index=False)
+    pd.DataFrame([{
+        "model": "m", "quant": "bf16", "item_id": "q1", "detector": "cdd", "score": 0.5,
+    }]).to_parquet(raw / "detector_scores.parquet", index=False)
+    pd.DataFrame([{
+        "model": "m", "quant": "bf16", "item_id": "q1", "sample_id": 0, "is_greedy": True,
+    }]).to_parquet(raw / "generations.parquet", index=False)
+
+    tables = study_inputs.load_raw_tables(raw)
+    assert list(tables.items["item_id"]) == ["q1"]
+    assert "corpus_reference_json" not in tables.items.columns
+    assert corpus_reference_from_json(tables.items["tracer_label"].iloc[0]) == ()

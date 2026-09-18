@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Stream an Olmo training corpus and emit string-match evidence as JSONL."""
+"""Stream one Olmo checkpoint's training corpus and emit string-match evidence.
+
+`--model` is required: paper §4.2 stores corpus evidence per model, and the
+two Olmo arms do not share a bulk pretraining mix (`OLMO_GROUND_TRUTH.md`), so
+a row that does not say which checkpoint it belongs to cannot be turned into a
+per-model corpus status. The (checkpoint, repository) pair is checked against
+`qcd.ground_truth.olmo_corpora`, which refuses a pairing it records as
+belonging to the other arm and warns when the assignment is unverified.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +23,7 @@ from pathlib import Path
 from qcd.data.humaneval import load_humaneval
 from qcd.data.livecodebench import DEFAULT_RELEASE, load_livecodebench_split
 from qcd.data.mbppplus import load_mbppplus
+from qcd.ground_truth.olmo_corpora import OPEN_CORPUS_MODELS, check_model_corpus, find_corpus
 from qcd.ground_truth.string_match import MatchConfig, extract_text, scan_corpus
 
 
@@ -66,6 +75,10 @@ def _jsonl_documents(path: Path, max_documents: int | None):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--benchmark", choices=(*_BENCHMARKS, "all"), required=True)
+    parser.add_argument(
+        "--model", choices=OPEN_CORPUS_MODELS, required=True,
+        help="Which checkpoint this corpus belongs to; written into every evidence row",
+    )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--hf-repo")
     source.add_argument("--jsonl", type=Path)
@@ -87,9 +100,23 @@ def main() -> None:
         parser.error("--hf-file requires --hf-repo")
 
     if args.hf_repo:
+        try:
+            warning = check_model_corpus(args.model, args.hf_repo)
+        except ValueError as error:
+            parser.error(str(error))
+        if warning:
+            print(f"warning: {warning}", file=sys.stderr)
+
         from huggingface_hub import HfApi
 
-        revision = args.revision or HfApi().dataset_info(args.hf_repo).sha
+        known = find_corpus(args.hf_repo)
+        if args.revision is None and known is not None and known.revision:
+            print(
+                f"using the pinned scan revision for {args.hf_repo}: {known.revision}",
+                file=sys.stderr,
+            )
+        revision = args.revision or (known.revision if known else None) \
+            or HfApi().dataset_info(args.hf_repo).sha
         documents = _hf_documents(
             args.hf_repo, revision, args.split, args.max_documents, args.hf_file,
         )
@@ -111,7 +138,8 @@ def main() -> None:
         )
 
     rows = scan_corpus(
-        _benchmark_items(args.benchmark), documents, corpus_name=corpus_name, stage=args.stage,
+        _benchmark_items(args.benchmark), documents,
+        model=args.model, corpus_name=corpus_name, stage=args.stage,
         config=MatchConfig(args.ngram_size, args.ngram_coverage_threshold),
         progress_every=args.progress_every,
         progress_callback=report_progress,

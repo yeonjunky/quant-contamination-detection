@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Initialize, run, inspect, and finalize a resumable Olmo pretraining scan."""
+"""Initialize, run, inspect, and finalize a resumable Olmo pretraining scan.
+
+One manifest covers one checkpoint's pretraining mix. `--model` is stored in
+the manifest metadata and re-checked on every `run`, because the two Olmo arms
+have different bulk pretraining corpora (`OLMO_GROUND_TRUTH.md`,
+`qcd.ground_truth.olmo_corpora`): mixing their shards into one manifest would
+produce evidence that cannot be attributed to either arm.
+"""
 
 from __future__ import annotations
 
@@ -29,10 +36,18 @@ from qcd.ground_truth.shard_manifest import (
     retry_failed,
     summary,
 )
-from qcd.ground_truth.string_match import MatchConfig, extract_text, scan_corpus, tokenize
+from qcd.ground_truth.olmo_corpora import (
+    OPEN_CORPUS_MODELS, check_model_corpus, find_corpus,
+)
+from qcd.ground_truth.string_match import (
+    METHOD_FAMILY, MatchConfig, extract_text, scan_corpus, tokenize,
+)
 
 
-EVIDENCE_SCHEMA_VERSION = "3"
+#: 3 -> 4: every evidence row and the manifest metadata now carry the `model`
+#: the corpus belongs to. A schema-3 manifest must be reinitialized rather than
+#: mixed with schema-4 shard rows, because its rows are unattributed.
+EVIDENCE_SCHEMA_VERSION = "4"
 
 
 def retrieval_metadata(args) -> dict[str, str]:
@@ -135,6 +150,7 @@ def run(args, connection) -> None:
             completion_count = []
             rows = scan_corpus(
                 items, documents(args.repo, args.revision, path),
+                model=args.model,
                 corpus_name=f"{args.repo}@{args.revision}:{path}", stage="pretraining",
                 config=MatchConfig(args.ngram_size, args.ngram_coverage_threshold),
                 progress_every=args.progress_every, progress_callback=progress,
@@ -215,6 +231,13 @@ def finalize(args, connection) -> None:
                 del candidates[candidates_per_item:]
 
     corpus = f"{metadata['repo']}@{metadata['revision']}"
+    model = metadata.get("model")
+    if not model:
+        raise RuntimeError(
+            "this manifest records no `model` — it was initialized under evidence schema 3, "
+            "whose rows cannot be attributed to an Olmo checkpoint. Reinitialize with --model "
+            "rather than guessing which arm this corpus belongs to."
+        )
     rows = []
     for item in benchmark_items():
         key = (item.dataset.value, item.item_id)
@@ -224,7 +247,7 @@ def finalize(args, connection) -> None:
                 "item_id": item.item_id,
                 "dataset": item.dataset.value,
                 "stage": "pretraining",
-                "method_family": "instance_string",
+                "method_family": METHOD_FAMILY,
                 "normalized_verbatim": False,
                 "ngram_size": ngram_size,
                 "ngram_coverage": 0.0,
@@ -244,6 +267,7 @@ def finalize(args, connection) -> None:
             row["coverage_complete"] = True
             row["candidate_rank"] = candidate_rank
             row["corpus"] = corpus
+            row["model"] = model
             row["documents_scanned"] = stats["documents_scanned"]
             rows.append(row)
     write_atomic(args.output, rows)
@@ -267,6 +291,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_parser = subparsers.add_parser("init")
+    init_parser.add_argument("--model", choices=OPEN_CORPUS_MODELS, required=True)
     init_parser.add_argument("--repo", required=True)
     init_parser.add_argument("--revision")
     init_parser.add_argument("--ngram-size", type=int, default=13)
@@ -274,6 +299,7 @@ def main() -> None:
     init_parser.add_argument("--candidates-per-item", type=int, default=5)
 
     run_parser = subparsers.add_parser("run")
+    run_parser.add_argument("--model", choices=OPEN_CORPUS_MODELS, required=True)
     run_parser.add_argument("--repo", required=True)
     run_parser.add_argument("--revision", required=True)
     run_parser.add_argument("--output-dir", type=Path, required=True)
@@ -294,23 +320,42 @@ def main() -> None:
     connection = connect(args.manifest)
 
     if args.command == "init":
+        try:
+            warning = check_model_corpus(args.model, args.repo)
+        except ValueError as error:
+            parser.error(str(error))
+        if warning:
+            print(f"warning: {warning}", file=sys.stderr)
+
         from huggingface_hub import HfApi
 
-        revision = args.revision or HfApi().dataset_info(args.repo).sha
+        known = find_corpus(args.repo)
+        if args.revision is None and known is not None and known.revision:
+            print(
+                f"using the pinned scan revision for {args.repo}: {known.revision}",
+                file=sys.stderr,
+            )
+        revision = args.revision or (known.revision if known else None) \
+            or HfApi().dataset_info(args.repo).sha
         count = initialize(
             connection,
             metadata={
-                "repo": args.repo, "revision": revision, **retrieval_metadata(args),
+                "model": args.model, "repo": args.repo, "revision": revision,
+                **retrieval_metadata(args),
             },
             shards=list_shards(args.repo, revision),
         )
-        print(f"added {count:,} shard(s); revision={revision}")
+        print(f"added {count:,} shard(s); model={args.model} revision={revision}")
         print_status(connection)
     elif args.command == "run":
         try:
+            check_model_corpus(args.model, args.repo)
             require_metadata(
                 connection,
-                {"repo": args.repo, "revision": args.revision, **retrieval_metadata(args)},
+                {
+                    "model": args.model, "repo": args.repo, "revision": args.revision,
+                    **retrieval_metadata(args),
+                },
             )
         except ValueError as error:
             parser.error(str(error))

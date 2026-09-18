@@ -74,6 +74,11 @@ class TracerPairRecord:
     run_id: str
     benchmark: str
     item_id: str
+    # The `models/registry.py` checkpoint whose corpus this candidate came
+    # from. Required, because the two Olmo arms have different pretraining
+    # mixes (`olmo_corpora.py`): a pair record that names only the corpus
+    # cannot be aggregated per model without re-deriving the mapping.
+    model: str
     corpus: str
     corpus_revision: str
     shard: str
@@ -104,7 +109,7 @@ class TracerPairRecord:
 
     def __post_init__(self) -> None:
         for name in (
-            "run_id", "benchmark", "item_id", "corpus", "corpus_revision", "shard",
+            "run_id", "benchmark", "item_id", "model", "corpus", "corpus_revision", "shard",
             "document_id", "benchmark_description", "training_description",
             "normalized_benchmark_description", "normalized_training_description",
             "retrieval_method", "prompt_version", "run_timestamp",
@@ -151,6 +156,7 @@ class ItemCoverageRecord:
     run_id: str
     benchmark: str
     item_id: str
+    model: str
     corpus: str
     corpus_revision: str
     retrieval_method: str
@@ -164,7 +170,7 @@ class ItemCoverageRecord:
 
     def __post_init__(self) -> None:
         for name in (
-            "run_id", "benchmark", "item_id", "corpus", "corpus_revision",
+            "run_id", "benchmark", "item_id", "model", "corpus", "corpus_revision",
             "retrieval_method", "run_timestamp",
         ):
             _require_text(name, getattr(self, name))

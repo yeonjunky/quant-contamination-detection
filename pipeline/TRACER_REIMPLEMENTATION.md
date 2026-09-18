@@ -62,9 +62,13 @@ Olmo pretraining contains billions of documents, so running Jina over the full
 Cartesian product is not operationally feasible. Candidate retrieval therefore
 precedes TRACER:
 
-1. exact/token n-gram and later BM25 retrieval scan the revision-pinned corpus;
-2. candidate task pairs retain source shard, document ID, retrieval method, and
-   retrieval score;
+1. exact/token n-gram and later BM25 retrieval scan one revision-pinned corpus
+   at a time, and each corpus belongs to one checkpoint: Olmo3-7B and
+   Olmo3.1-32B have different bulk pretraining mixes
+   (`src/qcd/ground_truth/olmo_corpora.py`), so retrieval is run per arm and a
+   candidate never carries over from the other arm's corpus;
+2. candidate task pairs retain the model, source shard, document ID, retrieval
+   method, and retrieval score;
 3. TRACER runs only on those candidate pairs;
 4. a no-candidate item records completed corpus coverage rather than being
    silently treated as a clean ground-truth label.
@@ -76,7 +80,8 @@ surface-form evidence was found at the frozen retrieval setting.
 
 Every routed candidate must retain:
 
-- benchmark, item ID, corpus, revision, shard, and document ID;
+- benchmark, item ID, the checkpoint the corpus belongs to, corpus, revision,
+  shard, and document ID;
 - original and normalized descriptions on both sides;
 - retrieval method and score;
 - embedding model, revision, score, and triage route;
@@ -90,7 +95,30 @@ Every routed candidate must retain:
 Excluded pairs receive a null binary label. `FI`, `NI`, and `SL` map to true;
 `U` maps to false.
 
-## Validation before Q1b
+## What the output is, and is not, used for
+
+TRACER's output is **not** injected back into Q1b's labels. Paper §4.2 keeps
+corpus evidence on a separate, non-exclusive axis (`confirmed-match`,
+`no-match-found`, `not-observable`) rather than collapsing it into the temporal
+proxy label, and §5, step 5 calls this step "descriptive construct-validity
+evidence for Q1b" that "is not an error-rate estimate or a prerequisite for
+computing the proxy AUC". Q1b's labels remain the model–item temporal labels of
+§4.2, whether or not this step has run.
+
+What the output is used for is the descriptive comparison §5, step 5 asks for:
+compare the temporal proxy and this reimplementation's fine-grained labels
+against confirmed positive corpus matches. Searched non-matches stay unlabeled
+for true exposure, so the step yields no *e*, no false-positive rate, and no
+false-negative rate.
+
+The three-state corpus axis is recorded per model, because the two Olmo arms do
+not share a training corpus (`OLMO_GROUND_TRUTH.md`,
+`src/qcd/ground_truth/olmo_corpora.py`). TRACER's own record keeps its
+fine-grained `FI/NI/SL/U` label and exclusion flag
+(`src/qcd/ground_truth/tracer_schema.py`); it is not rewritten into that
+three-state axis, because the paper specifies no mapping between them.
+
+## Validation before the descriptive comparison
 
 - Unit-test exact routing at `0.6` and `0.9`.
 - Strictly reject malformed, multiple-choice, or missing-label LLM outputs.
@@ -103,5 +131,6 @@ Excluded pairs receive a null binary label. `FI`, `NI`, and `SL` map to true;
   modes: core-logic errors, adjacent-category confusion, hallucinated task
   properties, and normalization distortion.
 
-TRACER-derived labels remain unavailable for Q1b until these validation steps
-and the pretraining candidate search are complete.
+Until these validation steps and the pretraining candidate search are complete,
+this reimplementation's output carries no evidential weight at all — not even as
+the descriptive comparison above. It never becomes a Q1b label.

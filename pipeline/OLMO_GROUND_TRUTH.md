@@ -7,15 +7,42 @@ contamination label. Surface/AST matching, semantic/paraphrase matching, and the
 TRACER reimplementation remain separate later stages; their outputs must not be
 averaged into this score.
 
+## One corpus per checkpoint, not one "Olmo3 corpus"
+
+The design has two Olmo arms, and they do **not** share a bulk pretraining mix.
+A result therefore belongs to one checkpoint: a `confirmed-match` in the 7B mix
+says nothing about the 32B arm, and a `no-match-found` in one mix is not a
+`no-match-found` in the other. Paper section 4.2 stores corpus evidence on a
+per-model axis for this reason.
+
+Every scan entry point takes a required `--model`, every evidence row carries
+it, and the checkpoint/repository pairing is checked against
+`src/qcd/ground_truth/olmo_corpora.py`, which refuses a pairing it records as
+belonging to the other arm.
+
 ## Verified public inputs (2026-08-21)
 
-| Model stage | Hugging Face repository | Hub size / rows | Text-bearing schema |
-|---|---|---:|---|
-| 7B bulk pretraining | [`allenai/dolma3_mix-6T-1025-7B`](https://huggingface.co/datasets/allenai/dolma3_mix-6T-1025-7B) | 3.23 TB compressed at the pinned scan revision (47,025 shards); card: 23.7 TB uncompressed, 3.87B documents | `id`, `text`, `metadata`, `source`, `version`, `created`, `added`, `doc`, `attributes` |
-| 32B bulk pretraining | [`allenai/dolma3_mix-6T`](https://huggingface.co/datasets/allenai/dolma3_mix-6T) | 4.41 TB compressed in the current Hub file manifest | same JSONL.Zstandard schema |
-| SFT | [`allenai/Dolci-Instruct-SFT`](https://huggingface.co/datasets/allenai/Dolci-Instruct-SFT) | 3.06 GB download; 2,152,112 rows | `id`, nested `messages`, `source_dataset`, `domain` |
-| DPO | [`allenai/Dolci-Instruct-DPO`](https://huggingface.co/datasets/allenai/Dolci-Instruct-DPO) | 810 MB download; 259,922 rows | nested `chosen` and `rejected`, model IDs, `prompt_id`, `preference_type` |
-| RL/RLVR prompt mixture | [`allenai/Dolci-Instruct-RL`](https://huggingface.co/datasets/allenai/Dolci-Instruct-RL) | 483 MB download; 169,964 rows | `prompt`, `solution`, `ground_truth`, `source_prompt`, outputs and source metadata |
+| Checkpoint | Stage | Hugging Face repository | Pinned scan revision | Hub size / rows | Text-bearing schema |
+|---|---|---|---|---:|---|
+| `Olmo3-7B-Instruct` | bulk pretraining | [`allenai/dolma3_mix-6T-1025-7B`](https://huggingface.co/datasets/allenai/dolma3_mix-6T-1025-7B) | `2ca900fbe14e86c5c83d064d9f0882f1c0b8c05b` | 3.23 TB compressed at the pinned scan revision (47,025 shards); card: 23.7 TB uncompressed, 3.87B documents | `id`, `text`, `metadata`, `source`, `version`, `created`, `added`, `doc`, `attributes` |
+| `Olmo3.1-32B-Instruct` | bulk pretraining | [`allenai/dolma3_mix-6T`](https://huggingface.co/datasets/allenai/dolma3_mix-6T) | **not pinned** | 4.41 TB compressed in the current Hub file manifest | same JSONL.Zstandard schema |
+| **assignment not verified** | SFT | [`allenai/Dolci-Instruct-SFT`](https://huggingface.co/datasets/allenai/Dolci-Instruct-SFT) | not pinned | 3.06 GB download; 2,152,112 rows | `id`, nested `messages`, `source_dataset`, `domain` |
+| **assignment not verified** | DPO | [`allenai/Dolci-Instruct-DPO`](https://huggingface.co/datasets/allenai/Dolci-Instruct-DPO) | not pinned | 810 MB download; 259,922 rows | nested `chosen` and `rejected`, model IDs, `prompt_id`, `preference_type` |
+| **assignment not verified** | RL/RLVR prompt mixture | [`allenai/Dolci-Instruct-RL`](https://huggingface.co/datasets/allenai/Dolci-Instruct-RL) | not pinned | 483 MB download; 169,964 rows | `prompt`, `solution`, `ground_truth`, `source_prompt`, outputs and source metadata |
+
+Two values in that table are deliberately left open rather than filled in:
+
+- **the 32B pretraining scan revision.** Only the 7B mix has a revision pinned
+  in this repository. Resolve one on the Hub and record it before treating a
+  32B scan as a scientific result; `olmo_corpora.require_revision` refuses until
+  then, and the scan scripts fall back to resolving the current Hub commit,
+  which is not a pin.
+- **which checkpoint each `Dolci-Instruct-*` post-training mix belongs to.**
+  Nothing in this repository establishes whether the 7B and 32B Instruct
+  checkpoints are post-trained on the same mixes. The scan scripts still accept
+  a post-training repository with an explicit `--model`, but they print that
+  the attribution is operator-declared, and the registry records the assignment
+  as unverified rather than attributing these repositories to both arms.
 
 Sizes above are availability checks, not experimental results. Compressed sizes
 were summed from Hugging Face Hub API file manifests; row counts and
@@ -43,11 +70,16 @@ only a wiring check and must never be interpreted as a negative corpus label.
 ```bash
 python scripts/search_olmo_corpus.py \
   --benchmark all \
+  --model Olmo3-7B-Instruct \
   --hf-repo allenai/Dolci-Instruct-SFT \
   --stage sft \
   --max-documents 1000 \
   --output ../data/olmo_ground_truth/sft_humaneval_smoke.jsonl
 ```
+
+`--model` is required and is written into every evidence row. For a
+post-training repository it is operator-declared (the table above records no
+verified assignment), and the script says so on stderr.
 
 `--benchmark all` combines HumanEval, MBPP+, LCB-pre, and LCB-post before
 building the benchmark-side index, so each training corpus is transferred and
@@ -59,20 +91,31 @@ Do not use one repository-wide `load_dataset` stream for the multi-terabyte
 pretraining mixes. Initialize a revision-pinned SQLite manifest once, then run
 the resumable worker:
 
+One manifest covers one checkpoint's mix. `--model` is stored in the manifest
+metadata and re-checked on every `run`, so two checkpoints' shards cannot end up
+in the same manifest.
+
 ```bash
 python scripts/manage_olmo_pretraining_scan.py \
   --manifest ../data/olmo_ground_truth/pretraining/olmo3_7b_manifest.sqlite \
   init \
+  --model Olmo3-7B-Instruct \
   --repo allenai/dolma3_mix-6T-1025-7B \
   --revision 2ca900fbe14e86c5c83d064d9f0882f1c0b8c05b
 
 python scripts/manage_olmo_pretraining_scan.py \
   --manifest ../data/olmo_ground_truth/pretraining/olmo3_7b_manifest.sqlite \
   run \
+  --model Olmo3-7B-Instruct \
   --repo allenai/dolma3_mix-6T-1025-7B \
   --revision 2ca900fbe14e86c5c83d064d9f0882f1c0b8c05b \
   --output-dir ../data/olmo_ground_truth/pretraining/olmo3_7b_shards
 ```
+
+The 32B arm uses its own manifest, its own output directory, and
+`--model Olmo3.1-32B-Instruct --repo allenai/dolma3_mix-6T`. Its `--revision`
+has to be supplied explicitly, because no scan revision is pinned for that mix
+here.
 
 `status` prints completed shard, byte, and document counts. Multiple `run`
 processes may share one manifest: each claim records a worker ID, a unique
@@ -104,17 +147,20 @@ failed.
 
 For deterministic local validation, `--jsonl PATH` accepts JSONL rows and
 recursively extracts string fields from plain-text or nested chat schemas. The
-output keeps corpus, stage, document ID, scan count, exact flag, n-gram coverage,
-threshold, `match_detected`, `corpus_status`, and `coverage_complete` in every
-benchmark-item row. `confirmed-match` requires positive evidence;
+output keeps model, corpus, stage, document ID, scan count, exact flag, n-gram
+coverage, threshold, `match_detected`, `corpus_status`, and `coverage_complete`
+in every benchmark-item row. `confirmed-match` requires positive evidence;
 `no-match-found` is emitted only after a complete requested scan; bounded smoke
 or shard scans use `not-observable` until exhaustive finalization. The defaults (`n=13`, coverage
 `0.8`) are provisional retrieval settings and must be frozen or recalibrated
 without looking at Q1 results before a full scientific run.
 
-The resumable manifest records evidence schema version 3 for this tri-state
-output. A schema-2 manifest must be reinitialized rather than mixed with new
-shard rows.
+The resumable manifest records evidence schema version 4: version 3 added the
+tri-state output, version 4 added the `model` on the manifest metadata and on
+every evidence row. A manifest at an older schema version must be reinitialized
+rather than mixed with new shard rows — a schema-3 manifest's rows name no
+checkpoint, and `finalize` refuses one rather than guessing which arm they
+belong to.
 
 ## Not implemented in this first pass
 
