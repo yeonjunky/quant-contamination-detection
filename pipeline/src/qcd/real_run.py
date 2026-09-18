@@ -2,7 +2,9 @@
 
 `scripts/run_main.py` selects the frozen main-analysis models, quantization
 levels, and item scope. Bounded engineering checks use dedicated smoke-test
-drivers and their outputs are never passed to the study analysis.
+drivers and their outputs are never passed to the study analysis: every run
+records `study_phase` in its manifest (paper §4.6), and analysis entry points
+gate on `qcd.io.manifest.require_main_study`.
 
 Structurally mirrors `qcd.dry_run`'s generate -> score -> detect -> write
 loop, but against `load_model(mock=False)` and the real dataset loaders.
@@ -17,13 +19,18 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import gc
+import json
 import re
 import time
 from collections import defaultdict
 from pathlib import Path
 
 from qcd.config import ModelSpec, Quant
-from qcd.constants import CDD_N_SAMPLES, CDD_SAMPLE_TEMPERATURE
+from qcd.constants import (
+    CDD_EDIT_DISTANCE_ALPHA, CDD_GREEDY_TEMPERATURE, CDD_MAX_TOKENS,
+    CDD_N_SAMPLES, CDD_SAMPLE_TEMPERATURE, CDD_SCORE_DEFINITION,
+    GENERATION_MAX_NEW_TOKENS,
+)
 from qcd.data.humaneval import load_humaneval
 from qcd.data.livecodebench import REPO_REVISION as LCB_REPO_REVISION, load_livecodebench_split
 from qcd.data.mbppplus import load_mbppplus
@@ -34,9 +41,12 @@ from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score
 from qcd.generation.cache import GenerationCache
 from qcd.generation.sampler import sample_item
-from qcd.io.manifest import build_manifest, read_manifest, write_manifest
+from qcd.io.manifest import (
+    StudyPhase, build_manifest, read_manifest, resolve_library_defaults,
+    unresolved_library_defaults, write_manifest,
+)
 from qcd.io.raw_writer import RawDataWriter
-from qcd.models.loader import load_model
+from qcd.models.loader import decoding_settings_id, load_model, resolved_decoding_settings
 from qcd.scoring.logprob import score_prompt_logprobs
 from qcd.scoring.pass_rate import partial_pass_rate
 
@@ -102,6 +112,12 @@ class RealRunConfig:
     include_humaneval: bool = True
     include_mbppplus: bool = True
     item_limit_per_condition: int | None = None  # validation/debug cap; main study uses None
+    # Paper §4.6: which namespace this run's output belongs to. `run()` writes
+    # it into the manifest, and the analysis side refuses anything that is not
+    # `main_study` (io/manifest.py's `require_main_study`). Defaulted to the
+    # main study because this driver exists for §5 step 8; a bounded
+    # engineering run must set it explicitly.
+    study_phase: StudyPhase = StudyPhase.MAIN_STUDY
 
 
 def load_all_items(config: RealRunConfig) -> list[Item]:
@@ -172,6 +188,22 @@ def run(config: RealRunConfig) -> None:
     model_item_labels = materialize_model_item_labels(
         items, config.models, shared_control_boundary=config.lcb_cutoff_boundary
     )
+    # Paper §4.4: "Every decoding setting is specified explicitly and the
+    # checkpoint's own `generation_config` is not followed", and "Record ...
+    # decoding settings". These two records carry both halves: the values we
+    # pin, and the resolved value of everything we left to the library's own
+    # documented defaults. They are model-independent precisely because the
+    # adapter neutralizes each checkpoint's generation_config, so they can be
+    # computed here, before any model is loaded.
+    greedy_decoding = resolved_decoding_settings(
+        temperature=CDD_GREEDY_TEMPERATURE, max_new_tokens=GENERATION_MAX_NEW_TOKENS
+    )
+    sample_decoding = resolved_decoding_settings(
+        temperature=CDD_SAMPLE_TEMPERATURE, max_new_tokens=GENERATION_MAX_NEW_TOKENS
+    )
+    greedy_decoding_id = decoding_settings_id(greedy_decoding)
+    sample_decoding_id = decoding_settings_id(sample_decoding)
+    library_defaults = resolve_library_defaults()
     run_config = {
             "models": [m.name for m in config.models],
             "model_revisions": {m.name: m.revision for m in config.models},
@@ -189,13 +221,38 @@ def run(config: RealRunConfig) -> None:
             "lcb_repository_revision": LCB_REPO_REVISION,
             "n_cdd_samples": config.n_cdd_samples,
             "cdd_sample_temperature": CDD_SAMPLE_TEMPERATURE,
+            "cdd_score_definition": CDD_SCORE_DEFINITION,
+            "cdd_edit_distance_alpha": CDD_EDIT_DISTANCE_ALPHA,
+            "cdd_max_tokens": CDD_MAX_TOKENS,
             "include_humaneval": config.include_humaneval,
             "include_mbppplus": config.include_mbppplus,
             "item_limit_per_condition": config.item_limit_per_condition,
-            "generation_max_new_tokens": 512,
+            "generation_max_new_tokens": GENERATION_MAX_NEW_TOKENS,
             "generation_seed_policy": "sha256(item_id,sample_id,temperature)-v1",
+            "decoding_settings": {
+                "greedy": greedy_decoding,
+                "samples": sample_decoding,
+                "greedy_id": greedy_decoding_id,
+                "samples_id": sample_decoding_id,
+            },
         }
-    manifest = build_manifest(run_config)
+    # Paper §4.3: settings we leave at a library default are recorded by their
+    # *resolved* value, "so reproduction reads the record rather than this
+    # sentence". These live in `extra`, not in `config`, so they are recorded
+    # without entering `config_hash` — an environment whose bitsandbytes build
+    # reports a different default must not read as "a different run
+    # configuration" and block a resume; the value is still on disk to compare.
+    # The entries only a loaded model can answer (the BNB skip list, an AWQ
+    # checkpoint's group size) are written per model/precision to
+    # `resolved_library_defaults.json` as the run proceeds.
+    manifest = build_manifest(
+        run_config,
+        study_phase=config.study_phase,
+        extra={
+            "library_default_settings": library_defaults,
+            "library_default_settings_unresolved": unresolved_library_defaults(library_defaults),
+        },
+    )
     manifest_path = config.output_dir / "manifest.json"
     if manifest_path.exists():
         existing = read_manifest(manifest_path)
@@ -211,10 +268,31 @@ def run(config: RealRunConfig) -> None:
     writer.write_model_item_labels(model_item_labels)
 
     cache = GenerationCache(config.output_dir / "cache")
+    chat_template_rows: list[dict] = []
+    seen_chat_templates: set[tuple[str, str, str]] = set()
+    resolved_defaults_path = config.output_dir / "resolved_library_defaults.json"
+    resolved_defaults_rows: list[dict] = []
 
     for model_spec in config.models:
         for quant in config.quant_levels:
             model = load_model(model_spec, quant, mock=False)
+            # §4.3's per-model half of the library-default record: the BNB skip
+            # list and an AWQ checkpoint's group size only exist once a
+            # checkpoint is loaded. Rewritten after every load so a run that
+            # stops early still carries the conditions it did reach.
+            per_model_defaults = resolve_library_defaults(
+                model=getattr(model, "model", model)
+            )
+            resolved_defaults_rows.append({
+                "model": model_spec.name,
+                "quant": quant.value,
+                "resolved": per_model_defaults,
+                "unresolved": unresolved_library_defaults(per_model_defaults),
+            })
+            resolved_defaults_path.parent.mkdir(parents=True, exist_ok=True)
+            resolved_defaults_path.write_text(
+                json.dumps(resolved_defaults_rows, indent=2, default=str), encoding="utf-8"
+            )
             model_revision = getattr(model, "revision", None) or model_spec.revision
             tokenizer_revision = getattr(
                 getattr(model, "tokenizer", None), "init_kwargs", {}
@@ -226,8 +304,13 @@ def run(config: RealRunConfig) -> None:
                     model, cache, model_name=model_spec.name, quant=quant.value,
                     item_id=item.item_id, prompt=_generation_prompt(item), n_samples=config.n_cdd_samples,
                     model_revision=model_revision,
+                    # The decoding-settings ids are part of the cache key, so
+                    # a change to the frozen decoding settings misses the
+                    # cache instead of serving generations produced under the
+                    # older settings.
                     generation_config=(
-                        f"max_new_tokens={getattr(model, 'max_new_tokens', 512)};"
+                        f"max_new_tokens={getattr(model, 'max_new_tokens', GENERATION_MAX_NEW_TOKENS)};"
+                        f"decoding={greedy_decoding_id}/{sample_decoding_id};"
                         "seed_policy=sha256-v1"
                     ),
                 )
@@ -237,10 +320,35 @@ def run(config: RealRunConfig) -> None:
                 pass_rate = partial_pass_rate(item, candidate_code)
                 sandbox_scoring_seconds = time.perf_counter() - started
                 started = time.perf_counter()
-                prompt_logprobs = score_prompt_logprobs(
-                    model, item.item_id, item.prompt
-                )
+                # `score_prompt_detail` is the real adapter's richer entry
+                # point (§4.4's target text / token boundaries / chat
+                # template); backends without it — models/mock.py — keep the
+                # existing shared path, which is unchanged.
+                score_detail = getattr(model, "score_prompt_detail", None)
+                if score_detail is not None:
+                    detail = score_detail(item.item_id, item.prompt)
+                    prompt_logprobs = detail.logprobs
+                else:
+                    detail = None
+                    prompt_logprobs = score_prompt_logprobs(
+                        model, item.item_id, item.prompt
+                    )
                 prompt_scoring_seconds = time.perf_counter() - started
+
+                if detail is not None:
+                    template_key = (model_spec.name, quant.value, detail.chat_template_id)
+                    if template_key not in seen_chat_templates:
+                        seen_chat_templates.add(template_key)
+                        chat_template_rows.append({
+                            "model": model_spec.name,
+                            "quant": quant.value,
+                            "chat_template_id": detail.chat_template_id,
+                            "chat_template_applied": detail.chat_template_applied,
+                            "chat_template": detail.chat_template,
+                            "tokenizer_revision": tokenizer_revision,
+                            "model_revision": model_revision,
+                        })
+                        writer.write_chat_templates(chat_template_rows)
 
                 writer.add_generation(
                     model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=0, is_greedy=True,
@@ -254,6 +362,25 @@ def run(config: RealRunConfig) -> None:
                     sandbox_scoring_seconds=sandbox_scoring_seconds,
                     model_revision=model_revision,
                     tokenizer_revision=tokenizer_revision,
+                    truncated_at_cap=getattr(generations.greedy, "truncated_at_cap", None),
+                    max_new_tokens=GENERATION_MAX_NEW_TOKENS,
+                    decoding_settings_id=greedy_decoding_id,
+                    chat_template_id=detail.chat_template_id if detail is not None else None,
+                    prompt_chat_template_applied=(
+                        detail.chat_template_applied if detail is not None else None
+                    ),
+                    prompt_target_text_sha256=(
+                        detail.target_text_sha256 if detail is not None else None
+                    ),
+                    prompt_target_char_span=(
+                        detail.target_char_span if detail is not None else None
+                    ),
+                    prompt_target_token_indices=(
+                        detail.target_token_indices if detail is not None else None
+                    ),
+                    prompt_rendered_char_length=(
+                        detail.rendered_char_length if detail is not None else None
+                    ),
                 )
                 for sample_id, sample in enumerate(generations.samples, start=1):
                     writer.add_generation(
@@ -262,6 +389,9 @@ def run(config: RealRunConfig) -> None:
                         token_logprobs=sample.token_logprobs, decoding_temperature=CDD_SAMPLE_TEMPERATURE,
                         model_revision=model_revision,
                         tokenizer_revision=tokenizer_revision,
+                        truncated_at_cap=getattr(sample, "truncated_at_cap", None),
+                        max_new_tokens=GENERATION_MAX_NEW_TOKENS,
+                        decoding_settings_id=sample_decoding_id,
                     )
 
                 cdd_score = peakedness(generations.greedy.token_ids, [s.token_ids for s in generations.samples])

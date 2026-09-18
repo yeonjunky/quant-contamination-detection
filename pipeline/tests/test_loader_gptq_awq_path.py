@@ -36,9 +36,9 @@ def test_gptq_awq_error_names_the_expected_checkpoint_path():
 
 
 def test_quantized_checkpoint_dir_has_no_calibration_suffix():
-    # The canonical loader.py path is calibration-agnostic — quantize_model.py
-    # saves calibration-tagged variants (-awq-code/-awq-chat) elsewhere; only
-    # a deliberate copy/re-quantize step ever populates this exact path.
+    # Paper §4.3 freezes one calibration artifact per model, so there is one
+    # path and no calibration tag on it: quantize_model.py writes here directly
+    # with the fixed code calibration.
     path = _quantized_checkpoint_dir(QWEN2_5_7B)
     assert path.name == f"{QWEN2_5_7B.name}-awq"
     assert "code" not in path.name

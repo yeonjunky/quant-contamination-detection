@@ -45,3 +45,9 @@ pytest==9.1.1
 # the same note) — included here for H100 completeness, not because the
 # GPU stack itself needs it.
 statsmodels==0.14.6
+# Imported directly by analysis/confirmatory.py (C1-C4 tail probabilities) and
+# analysis/conditional_logit.py (§4.5.5 Wald interval). It was already present
+# transitively through statsmodels; this pin is the version in that same
+# `pip freeze` snapshot (pipeline/envs/local-smoke-freeze.txt), not a version
+# measured separately on the H100.
+scipy==1.18.0

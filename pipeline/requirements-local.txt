@@ -25,3 +25,11 @@ huggingface_hub
 # CLAUDE.md's "scipy 없음" rule (which is about hand-reproducing the paper's
 # own worked power/AUC tables, not fitting a GLMM on real experimental data).
 statsmodels
+# Same exception, now a direct import rather than a transitive one:
+# analysis/confirmatory.py uses scipy.stats.t / scipy.stats.norm for the C1-C4
+# tail probabilities and analysis/conditional_logit.py uses scipy.stats.norm
+# for the §4.5.5 Wald interval. statsmodels already pulls scipy in, so this
+# line changes nothing about what gets installed — it records a dependency the
+# analysis code imports by name instead of relying on statsmodels to keep
+# providing it.
+scipy

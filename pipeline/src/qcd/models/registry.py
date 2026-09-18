@@ -45,7 +45,16 @@ LLAMA3_1_8B = ModelSpec(
     param_count_b=8,
     hf_repo_id="meta-llama/Llama-3.1-8B-Instruct",
     revision="0e9e39f249a16976918f6564b8830bc894c89659",
-    role="Size axis + externally verified cutoff (LLMLagBench: declared 2023-12, detected 2023-03)",
+    # Paper §4.1 calls this role "Size axis + external knowledge-boundary
+    # diagnostic", and §4.2 uses the model's own *declared* date as the
+    # boundary. LLMLagBench's detected changepoint is an independent behavioral
+    # diagnostic of that declaration, not a verification of it — do not
+    # re-introduce "verified" here (AGENTS.md §5.8).
+    role=(
+        "Size axis + external knowledge-boundary diagnostic "
+        "(LLMLagBench: declared 2023-12, independently detected knowledge-drop "
+        "changepoint 2023-03; the declared date is the boundary used)"
+    ),
     primary_first_post_boundary="2024-01-01",
     sensitivity_first_post_boundary="2023-04-01",
 )

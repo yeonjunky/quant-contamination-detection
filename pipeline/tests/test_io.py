@@ -4,7 +4,10 @@ import pandas as pd
 import pytest
 
 from qcd.data.schema import Dataset, Item
-from qcd.io.manifest import build_manifest, config_hash, get_git_commit_hash, read_manifest, write_manifest
+from qcd.io.manifest import (
+    StudyPhase, build_manifest, config_hash, get_git_commit_hash, read_manifest,
+    write_manifest,
+)
 from qcd.io.raw_writer import RawDataWriter
 
 
@@ -73,6 +76,73 @@ def test_add_generation_and_flush_roundtrip(tmp_path):
     assert bool(df.iloc[0]["passed"]) is True
     assert df.iloc[0]["generation_seconds"] == pytest.approx(2.0)
     assert writer.n_buffered_generations == 0
+
+
+def test_add_generation_roundtrips_decoding_and_prompt_provenance(tmp_path):
+    # Paper §4.4's record list for the probability detectors — "target text,
+    # token boundaries, truncation, chat template, tokenizer/checkpoint
+    # revisions and decoding settings".
+    writer = RawDataWriter(tmp_path)
+    writer.add_generation(
+        model="Qwen2.5-7B-Instruct", quant="bnb_nf4", item_id="x", sample_id=0,
+        is_greedy=True, text="hello", token_ids=[1, 2], token_logprobs=[-0.1, -0.2],
+        prompt_token_logprobs=[-1.1, -1.2],
+        truncated_at_cap=True, max_new_tokens=512,
+        decoding_settings_id="0123456789abcdef",
+        chat_template_id="fedcba9876543210",
+        prompt_chat_template_applied=True,
+        prompt_target_text_sha256="a" * 64,
+        prompt_target_char_span=(31, 47),
+        prompt_target_token_indices=[9, 10, 11],
+        prompt_rendered_char_length=64,
+        model_revision="model-rev", tokenizer_revision="tokenizer-rev",
+    )
+    row = pd.read_parquet(writer.flush()["generations"]).iloc[0]
+
+    assert bool(row["truncated_at_cap"]) is True
+    assert int(row["max_new_tokens"]) == 512
+    assert row["decoding_settings_id"] == "0123456789abcdef"
+    assert row["chat_template_id"] == "fedcba9876543210"
+    assert bool(row["prompt_chat_template_applied"]) is True
+    assert row["prompt_target_text_sha256"] == "a" * 64
+    assert list(row["prompt_target_char_span"]) == [31, 47]
+    assert list(row["prompt_target_token_indices"]) == [9, 10, 11]
+    assert int(row["prompt_rendered_char_length"]) == 64
+    assert row["model_revision"] == "model-rev"
+    assert row["tokenizer_revision"] == "tokenizer-rev"
+
+
+def test_generation_provenance_fields_are_optional(tmp_path):
+    # A sample row (no fixed-prompt scoring pass) omits every prompt_* field,
+    # and a caller that predates them keeps working — they default to None.
+    writer = RawDataWriter(tmp_path)
+    writer.add_generation(
+        model="m", quant="bf16", item_id="x", sample_id=1, is_greedy=False,
+        text="x", token_ids=[1], token_logprobs=[-0.1],
+    )
+    row = pd.read_parquet(writer.flush()["generations"]).iloc[0]
+
+    assert row["truncated_at_cap"] is None
+    assert row["prompt_target_char_span"] is None
+    assert row["chat_template_id"] is None
+
+
+def test_write_chat_templates_roundtrip(tmp_path):
+    writer = RawDataWriter(tmp_path)
+    path = writer.write_chat_templates([{
+        "model": "Qwen2.5-7B-Instruct",
+        "quant": "bf16",
+        "chat_template_id": "fedcba9876543210",
+        "chat_template_applied": True,
+        "chat_template": "{% for message in messages %}...{% endfor %}",
+        "tokenizer_revision": "tokenizer-rev",
+        "model_revision": "model-rev",
+    }])
+
+    assert path.name == "chat_templates.parquet"
+    row = pd.read_parquet(path).iloc[0]
+    assert row["chat_template_id"] == "fedcba9876543210"
+    assert "{% for message in messages %}" in row["chat_template"]
 
 
 def test_flush_can_write_atomic_bounded_parts(tmp_path):
@@ -144,7 +214,10 @@ def test_config_hash_changes_with_content():
 
 
 def test_build_manifest_has_expected_fields():
-    manifest = build_manifest({"model": "Qwen2.5-7B"}, seed=42)
+    manifest = build_manifest(
+        {"model": "Qwen2.5-7B"}, study_phase=StudyPhase.MAIN_STUDY, seed=42
+    )
+    assert manifest.study_phase == "main_study"
     assert manifest.seed == 42
     assert manifest.config_hash == config_hash({"model": "Qwen2.5-7B"})
     assert manifest.config == {"model": "Qwen2.5-7B"}
@@ -155,10 +228,11 @@ def test_build_manifest_has_expected_fields():
 
 
 def test_write_and_read_manifest_roundtrip(tmp_path):
-    manifest = build_manifest({"x": 1}, seed=7)
+    manifest = build_manifest({"x": 1}, study_phase=StudyPhase.MAIN_STUDY, seed=7)
     path = write_manifest(manifest, tmp_path / "manifest.json")
 
     loaded = read_manifest(path)
+    assert loaded["study_phase"] == "main_study"
     assert loaded["seed"] == 7
     assert loaded["config_hash"] == manifest.config_hash
     assert loaded["config"] == {"x": 1}

@@ -112,3 +112,97 @@ def test_score_prompt_logprobs_excludes_chat_wrapper_tokens():
     scores = chat_adapter.score_prompt_logprobs("item", prompt)
     assert len(scores) == len(prompt)
     assert scores == pytest.approx([-torch.log(torch.tensor(128.0)).item()] * 2)
+
+
+# --- paper §4.4's frozen decoding settings, end to end ----------------------
+#
+# The torch-free counterparts live in tests/test_decoding_settings.py; these
+# are the ones that actually call transformers' `generate()`, so they only run
+# where torch is installed (the H100 profile), not on the mock-only profile.
+
+
+def _tiny_model_with_checkpoint_decoding_settings():
+    """A checkpoint that ships the settings paper §4.4 warns about — the
+    Qwen2.5-32B-Instruct example: temperature 0.7, top_p 0.8, top_k 20,
+    repetition_penalty 1.05."""
+    model = AutoModelForCausalLM.from_pretrained(_TINY_MODEL)
+    model.generation_config.do_sample = True
+    model.generation_config.temperature = 0.7
+    model.generation_config.top_p = 0.8
+    model.generation_config.top_k = 20
+    model.generation_config.repetition_penalty = 1.05
+    return model
+
+
+def test_checkpoint_generation_config_does_not_reach_generate():
+    tokenizer = AutoTokenizer.from_pretrained(_TINY_MODEL)
+    prompt = "def add(a, b):\n    return"
+
+    loaded = _RealModelAdapter(
+        _tiny_model_with_checkpoint_decoding_settings(), tokenizer, max_new_tokens=16
+    )
+    clean = _RealModelAdapter(
+        AutoModelForCausalLM.from_pretrained(_TINY_MODEL), tokenizer, max_new_tokens=16
+    )
+
+    from_loaded = loaded.generate("item", prompt, temperature=0.0, sample_id=0)
+    from_clean = clean.generate("item", prompt, temperature=0.0, sample_id=0)
+
+    # Identical greedy output and identical log-probabilities: the shipped
+    # repetition penalty (which applies to greedy decoding too) and the shipped
+    # top-k/top-p had no effect.
+    assert from_loaded.token_ids == from_clean.token_ids
+    assert from_loaded.token_logprobs == pytest.approx(from_clean.token_logprobs)
+
+
+def test_sampling_uses_the_frozen_settings_not_the_checkpoints():
+    tokenizer = AutoTokenizer.from_pretrained(_TINY_MODEL)
+    adapter = _RealModelAdapter(
+        _tiny_model_with_checkpoint_decoding_settings(), tokenizer, max_new_tokens=16
+    )
+
+    config = adapter._generation_config_for(0.8)
+    assert config.temperature == 0.8       # not the checkpoint's 0.7
+    assert config.top_p == 1.0             # not 0.8
+    assert config.top_k == 0               # not 20
+    assert config.repetition_penalty == 1.0  # not 1.05
+    assert adapter.model.generation_config.top_k is None
+
+
+def test_generate_token_logprobs_are_raw_teacher_forced_values(adapter):
+    sample = adapter.generate("raw-logprob", "def add(a, b):\n    return", temperature=0.0, sample_id=0)
+
+    # score_logprobs() is an independent teacher-forced forward pass over the
+    # same tokens with no logits processors at all, so it is the reference for
+    # "raw". outputs.scores would only match it while every processor is a
+    # no-op — which is exactly what we must not depend on.
+    teacher_forced = adapter.score_logprobs("raw-logprob", sample.token_ids)
+    assert sample.token_logprobs == pytest.approx(teacher_forced, abs=1e-4)
+
+
+def test_generation_that_runs_into_the_cap_is_flagged():
+    tokenizer = AutoTokenizer.from_pretrained(_TINY_MODEL)
+    model = AutoModelForCausalLM.from_pretrained(_TINY_MODEL)
+    adapter = _RealModelAdapter(model, tokenizer, max_new_tokens=4)
+
+    sample = adapter.generate("truncation", "def add(a, b):\n    return", temperature=0.0, sample_id=0)
+
+    if len(sample.token_ids) == 4 and sample.token_ids[-1] not in adapter.eos_token_ids:
+        assert sample.truncated_at_cap is True
+    else:  # the random tiny model happened to emit a stop token first
+        assert sample.truncated_at_cap is False
+
+
+def test_score_prompt_detail_reports_boundaries_and_template(adapter):
+    prompt = "def add(a, b):\n    return a + b"
+    detail = adapter.score_prompt_detail("detail", prompt)
+
+    assert detail.logprobs == pytest.approx(adapter.score_prompt_logprobs("detail", prompt))
+    assert len(detail.target_token_indices) == len(detail.logprobs)
+    start, end = detail.target_char_span
+    assert end - start == len(prompt)
+    # The tiny checkpoint has no chat template, so the plain-tokenization
+    # fallback reports that honestly rather than inventing one.
+    assert detail.chat_template_applied is False
+    assert detail.chat_template is None
+    assert detail.target_text == prompt

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import hashlib
 
 
 class Dataset(enum.Enum):
@@ -87,3 +88,56 @@ class CorpusReferenceStatus(enum.Enum):
     CONFIRMED_MATCH = "confirmed-match"
     NO_MATCH_FOUND = "no-match-found"
     NOT_OBSERVABLE = "not-observable"
+
+
+@dataclasses.dataclass
+class PromptScoringDetail:
+    """One fixed-prompt teacher-forced scoring pass, with the provenance
+    paper §4.4 requires alongside the numbers themselves: "Record target text,
+    token boundaries, truncation, chat template, tokenizer/checkpoint
+    revisions and decoding settings so precision comparisons use identical
+    text and scoring rules."
+
+    Produced by `models/loader.py`'s `_RealModelAdapter.score_prompt_detail()`
+    and written out by `real_run.py` through `io/raw_writer.py`. The revisions
+    and decoding settings named in that sentence are recorded separately (on
+    the same generations row, and in the run manifest respectively), because
+    they are properties of the loaded model and of the run, not of one
+    scoring pass.
+
+    - `logprobs` — per-token natural-log probabilities, one per scored token,
+      in order. This is exactly what `score_prompt_logprobs()` returns.
+    - `target_token_indices` — the positions, in the rendered (chat-templated)
+      token sequence, whose log-probability entered `logprobs`. Template,
+      special and generation-marker tokens are absent by construction, as is
+      position 0 (no causal left context).
+    - `target_char_span` — (start, end) character offsets of the benchmark
+      text inside the rendered string.
+    - `rendered_char_length` — length of the rendered string, so a stored span
+      can be interpreted without re-rendering.
+    - `chat_template` — the tokenizer's own chat-template source, or None when
+      the tokenizer has none (the plain-tokenization fallback path).
+    """
+
+    logprobs: list[float]
+    target_token_indices: list[int]
+    target_char_span: tuple[int, int]
+    rendered_char_length: int
+    chat_template_applied: bool
+    chat_template: str | None
+    target_text: str
+
+    @property
+    def target_text_sha256(self) -> str:
+        """Identity of the scored text itself — lets a later check confirm
+        that every precision scored byte-identical text without re-reading
+        items.parquet."""
+        return hashlib.sha256(self.target_text.encode()).hexdigest()
+
+    @property
+    def chat_template_id(self) -> str:
+        """Content address of the rendered chat template. The template is
+        identical for every item of a given tokenizer, so generations rows
+        store this id and the template text itself is stored once per run
+        (`chat_templates.parquet`)."""
+        return hashlib.sha256((self.chat_template or "").encode()).hexdigest()[:16]

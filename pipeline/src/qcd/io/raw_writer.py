@@ -10,9 +10,19 @@ foreclose the paired and mixed-effects analyses this design depends on."
 - `generations.<part>.parquet` — one row per (model, quant, item, sample):
   generated text, full completion per-token logprob array, fixed prompt
   per-token logprob array on the greedy row, partial pass rate, decoding
-  params, model/tokenizer revision hashes.
+  params, model/tokenizer revision hashes, whether the generation stopped at
+  the 512-token cap, and (on the greedy row) the scored-text identity, token
+  boundaries and chat-template id paper §4.4 asks to be recorded with a
+  probability-detector score.
+- `chat_templates.parquet` — one row per (model, quant, chat template): the
+  rendered template text itself, stored once per run rather than repeated on
+  every generations row, keyed by the `chat_template_id` those rows carry.
 - `detector_scores.<part>.parquet` — one row per (model, quant, item, detector):
 score, threshold used, source sample ids.
+
+New columns are added as optional keyword arguments defaulting to None, so a
+parquet file written before they existed still reads — the columns are simply
+absent from it.
 
 Rows are flushed in bounded, atomically replaced part files so an interrupted
 run retains every completed batch without accumulating the entire experiment
@@ -82,6 +92,17 @@ class RawDataWriter:
         _write_parquet_atomic(pd.DataFrame(rows), path)
         return path
 
+    def write_chat_templates(self, rows: list[dict]) -> Path:
+        """One row per (model, quant, chat template). Paper §4.4 requires the
+        chat template to be recorded with the probability-detector scores; the
+        template is identical for every item of a given tokenizer, so it is
+        stored once per run and generations rows carry only its
+        `chat_template_id`. Rewritten in full whenever a new template is seen,
+        which is at most once per model/precision arm."""
+        path = self.output_dir / f"{self.file_prefix}chat_templates.parquet"
+        _write_parquet_atomic(pd.DataFrame(rows), path)
+        return path
+
     def add_generation(
         self,
         *,
@@ -102,7 +123,28 @@ class RawDataWriter:
         sandbox_scoring_seconds: float | None = None,
         model_revision: str | None = None,
         tokenizer_revision: str | None = None,
+        truncated_at_cap: bool | None = None,
+        max_new_tokens: int | None = None,
+        decoding_settings_id: str | None = None,
+        chat_template_id: str | None = None,
+        prompt_chat_template_applied: bool | None = None,
+        prompt_target_text_sha256: str | None = None,
+        prompt_target_char_span: tuple[int, int] | list[int] | None = None,
+        prompt_target_token_indices: list[int] | None = None,
+        prompt_rendered_char_length: int | None = None,
     ) -> None:
+        """`truncated_at_cap` / `max_new_tokens` record paper §4.4's "we record
+        per item whether generation stopped at the cap and report the
+        truncated-generation rate by precision".
+
+        The `prompt_*` fields and `chat_template_id` record §4.4's "Record
+        target text, token boundaries, truncation, chat template,
+        tokenizer/checkpoint revisions and decoding settings" for the
+        probability detectors. They belong on the greedy row, next to
+        `prompt_token_logprobs`, which is the only row that carries the
+        fixed-text scoring pass. `decoding_settings_id` points at the run
+        manifest's full resolved decoding-settings record.
+        """
         self._generation_rows.append(
             {
                 "model": model,
@@ -125,6 +167,21 @@ class RawDataWriter:
                 "sandbox_scoring_seconds": sandbox_scoring_seconds,
                 "model_revision": model_revision,
                 "tokenizer_revision": tokenizer_revision,
+                "truncated_at_cap": truncated_at_cap,
+                "max_new_tokens": max_new_tokens,
+                "decoding_settings_id": decoding_settings_id,
+                "chat_template_id": chat_template_id,
+                "prompt_chat_template_applied": prompt_chat_template_applied,
+                "prompt_target_text_sha256": prompt_target_text_sha256,
+                "prompt_target_char_span": (
+                    list(prompt_target_char_span)
+                    if prompt_target_char_span is not None else None
+                ),
+                "prompt_target_token_indices": (
+                    list(prompt_target_token_indices)
+                    if prompt_target_token_indices is not None else None
+                ),
+                "prompt_rendered_char_length": prompt_rendered_char_length,
             }
         )
 
