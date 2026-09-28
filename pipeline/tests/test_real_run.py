@@ -349,3 +349,66 @@ def test_run_records_decoding_settings_truncation_and_prompt_provenance(tmp_path
     assert len(templates) == 1
     assert templates.iloc[0]["chat_template_id"] == detail.chat_template_id
     assert "message.content" in templates.iloc[0]["chat_template"]
+
+
+def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, monkeypatch):
+    import qcd.real_run as real_run_module
+
+    items = [
+        Item(item_id=f"q{i}", dataset=Dataset.LCB_PRE, prompt=f"prompt {i}",
+             metadata={"contest_date": "2023-06-01"})
+        for i in (1, 2)
+    ]
+
+    class CountingModel:
+        tokenizer = object()
+
+        def __init__(self, fail_after=None):
+            self.calls = 0
+            self.fail_after = fail_after
+
+        def generate(self, item_id, prompt, *, temperature, sample_id):
+            if self.fail_after is not None and self.calls == self.fail_after:
+                raise KeyboardInterrupt("simulated interruption")
+            self.calls += 1
+            token = int(item_id[1:]) * 100 + sample_id
+            return SimpleNamespace(
+                text=f"print({token})", token_ids=[token],
+                token_logprobs=[-0.5], is_greedy=temperature == 0.0,
+            )
+
+        def score_prompt_logprobs(self, item_id, prompt):
+            return [-1.0]
+
+    monkeypatch.setattr(real_run_module, "load_all_items", lambda config: items)
+    monkeypatch.setattr(real_run_module, "_assemble_candidate_code", lambda item, text: text)
+    monkeypatch.setattr(real_run_module, "partial_pass_rate", lambda item, code: 1.0)
+
+    def run_with(model, output_dir):
+        monkeypatch.setattr(real_run_module, "load_model", lambda spec, quant, mock=False: model)
+        run(_small_config(output_dir, n_cdd_samples=2, include_humaneval=False,
+                          include_mbppplus=False))
+
+    def read(output_dir, kind):
+        frame = pd.concat(
+            [pd.read_parquet(p) for p in sorted((output_dir / "raw").glob(f"{kind}*.parquet"))],
+            ignore_index=True,
+        )
+        keys = ["item_id", "sample_id"] if kind == "generations" else ["item_id", "detector"]
+        return frame.drop(columns=[c for c in frame.columns if c.endswith("_seconds")]) \
+            .sort_values(keys).reset_index(drop=True)
+
+    per_item = 1 + 2  # greedy + n_cdd_samples
+    interrupted = tmp_path / "interrupted"
+    with pytest.raises(KeyboardInterrupt):
+        run_with(CountingModel(fail_after=per_item + 1), interrupted)
+
+    resumed = CountingModel()
+    run_with(resumed, interrupted)
+    # Only what the interruption left ungenerated is generated again.
+    assert resumed.calls == 2 * per_item - (per_item + 1)
+
+    uninterrupted = tmp_path / "uninterrupted"
+    run_with(CountingModel(), uninterrupted)
+    for kind in ("generations", "detector_scores"):
+        pd.testing.assert_frame_equal(read(interrupted, kind), read(uninterrupted, kind))
