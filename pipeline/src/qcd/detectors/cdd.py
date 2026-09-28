@@ -7,18 +7,18 @@ here, cross-checked against the source PDF's "Sampling" / "Edit distance
 computation" / "Peakedness" subsections during pipeline construction (not
 re-derived from memory):
 
-    Peak(M;x) = (1/n) * sum_i I(ED(s_i, s_greedy) <= alpha * l_max)
+    Peak(M;x) = (1/n) * sum_i I(ED(s_i, s_greedy) <= alpha * l)
 
 `s_greedy` is the single temperature-0 (greedy) generation; `s_1..s_n` are
 the `n` temperature-`CDD_SAMPLE_TEMPERATURE` samples (star topology: each
 sample compared only against the greedy reference, never pairwise against
 each other). `ED` is token-level edit (Levenshtein) distance; both sequences
 are truncated to `CDD_MAX_TOKENS` (l_max=100) tokens before computing it.
-`alpha=CDD_EDIT_DISTANCE_ALPHA=0.05` — the source PDF's own worked example
-("With l=100 and α=0.05, a sample counts as close if it differs from the
-greedy output by at most 5 token edits") confirms the threshold is
-`alpha * l_max`, not `alpha * (actual truncated length)`, in the
-all-sequences-truncated-to-l_max regime this pipeline always uses.
+`alpha=CDD_EDIT_DISTANCE_ALPHA=0.05`; `l` is the maximum actual length of
+the truncated greedy reference and all truncated samples, as defined in
+arXiv:2603.03203, section 3.1, equation (1). Truncation caps length; it
+does not pad short outputs to 100 tokens. The five-edit example applies
+only when at least one truncated output actually reaches 100 tokens.
 """
 
 from __future__ import annotations
@@ -64,11 +64,12 @@ def peakedness(
         raise ValueError("peakedness needs at least one temperature sample")
 
     greedy_trunc = greedy_token_ids[:max_tokens]
-    threshold = alpha * max_tokens
+    samples_trunc = [sample[:max_tokens] for sample in sample_token_ids_list]
+    actual_max_length = max(len(greedy_trunc), *(len(sample) for sample in samples_trunc))
+    threshold = alpha * actual_max_length
 
     close = 0
-    for sample in sample_token_ids_list:
-        sample_trunc = sample[:max_tokens]
+    for sample_trunc in samples_trunc:
         if token_edit_distance(greedy_trunc, sample_trunc) <= threshold:
             close += 1
     return close / len(sample_token_ids_list)
