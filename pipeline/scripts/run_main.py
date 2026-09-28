@@ -7,7 +7,9 @@ configuration before invoking this study-data driver. Validation outputs must
 not be used to change C1-C4, sample planning, or detector priority.
 
 Writes the run manifest with `study_phase="main_study"` (paper §4.6), which is
-what the analysis side requires before it will read a raw tree.
+what the analysis side requires before it will read a raw tree. Refuses to
+start from a checkout with uncommitted tracked changes, so the manifest's
+commit is the code that produced the data.
 
 Usage: python scripts/run_main.py
 """
@@ -18,7 +20,7 @@ from pathlib import Path
 
 from qcd.config import Quant
 from qcd.constants import CDD_N_SAMPLES, LCB_SHARED_CONTROL_BOUNDARY
-from qcd.io.manifest import StudyPhase
+from qcd.io.manifest import StudyPhase, require_clean_checkout
 from qcd.models.registry import MAIN_ANALYSIS_MODELS
 from qcd.real_run import RealRunConfig, run
 
@@ -46,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    require_clean_checkout()
 
     config = RealRunConfig(
         models=MAIN_ANALYSIS_MODELS,

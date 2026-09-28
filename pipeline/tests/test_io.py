@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import subprocess
 
 import pandas as pd
 import pytest
@@ -10,7 +11,7 @@ from qcd.data.schema import (
 )
 from qcd.io.manifest import (
     StudyPhase, build_manifest, config_hash, get_git_commit_hash, read_manifest,
-    write_manifest,
+    require_clean_checkout, write_manifest,
 )
 from qcd.io.raw_writer import RawDataWriter
 
@@ -302,3 +303,53 @@ def test_a_legacy_items_parquet_still_loads_through_the_analysis_reader(tmp_path
     assert list(tables.items["item_id"]) == ["q1"]
     assert "corpus_reference_json" not in tables.items.columns
     assert corpus_reference_from_json(tables.items["tracer_label"].iloc[0]) == ()
+
+
+def _git_repo_with_one_commit(path):
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=path, check=True, capture_output=True,
+        )
+    git("init", "-q")
+    (path / "code.py").write_text("x = 1\n")
+    git("add", "code.py")
+    git("commit", "-q", "-m", "init")
+    return path
+
+
+def test_manifest_records_a_clean_checkout(tmp_path):
+    repo = _git_repo_with_one_commit(tmp_path)
+    manifest = build_manifest({"x": 1}, study_phase=StudyPhase.MAIN_STUDY, repo_dir=repo)
+    assert len(manifest.git_commit) == 40
+    assert manifest.git_dirty is False
+    assert manifest.git_tracked_diff_sha256 is None
+    assert require_clean_checkout(repo) == manifest.git_commit
+
+
+def test_manifest_records_uncommitted_tracked_changes_outside_the_config_hash(tmp_path):
+    repo = _git_repo_with_one_commit(tmp_path)
+    clean = build_manifest({"x": 1}, study_phase=StudyPhase.MAIN_STUDY, repo_dir=repo)
+    (repo / "code.py").write_text("x = 2\n")
+    first = build_manifest({"x": 1}, study_phase=StudyPhase.MAIN_STUDY, repo_dir=repo)
+    (repo / "code.py").write_text("x = 3\n")
+    second = build_manifest({"x": 1}, study_phase=StudyPhase.MAIN_STUDY, repo_dir=repo)
+
+    assert first.git_dirty is True
+    assert len(first.git_tracked_diff_sha256) == 64
+    assert first.git_tracked_diff_sha256 != second.git_tracked_diff_sha256
+    # A dirty tree is recorded, but must not read as a different run configuration.
+    assert first.config_hash == clean.config_hash
+    with pytest.raises(RuntimeError, match="uncommitted"):
+        require_clean_checkout(repo)
+
+
+def test_untracked_files_do_not_make_the_checkout_dirty(tmp_path):
+    repo = _git_repo_with_one_commit(tmp_path)
+    (repo / "notes.md").write_text("scratch\n")
+    assert build_manifest({}, study_phase=StudyPhase.MAIN_STUDY, repo_dir=repo).git_dirty is False
+
+
+def test_require_clean_checkout_refuses_code_outside_git(tmp_path):
+    with pytest.raises(RuntimeError, match="git"):
+        require_clean_checkout(tmp_path)
