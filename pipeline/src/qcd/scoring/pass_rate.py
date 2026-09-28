@@ -1,6 +1,6 @@
 """Dispatches to the right sandbox harness (scoring/sandbox.py) by dataset
 family and returns a single fractional partial-pass-rate — the shared
-interface the rest of the pipeline (io/raw_writer.py, pilot/pilot_report.py)
+interface the rest of the pipeline (io/raw_writer.py and validation diagnostics)
 scores against, so callers never need to know which harness backs a given
 item's `Dataset`.
 """

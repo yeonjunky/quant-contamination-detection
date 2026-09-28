@@ -22,7 +22,7 @@ def pair(label=ContaminationLabel.FI, *, excluded=False):
     )
     return TracerPairRecord(
         run_id="run-1", benchmark="humaneval", item_id="HumanEval/0",
-        corpus="dolma3", corpus_revision="rev", shard="part-0", document_id="doc-1",
+        model="Olmo3-7B-Instruct", corpus="dolma3", corpus_revision="rev", shard="part-0", document_id="doc-1",
         benchmark_description="original benchmark", training_description="original training",
         normalized_benchmark_description="normalized benchmark",
         normalized_training_description="normalized training", retrieval_method="ngram",
@@ -90,7 +90,8 @@ def test_raw_outputs_must_match_their_parsed_fields():
 
 def test_coverage_distinguishes_unsearched_and_completed_empty():
     common = dict(
-        run_id="run-1", benchmark="mbpp", item_id="1", corpus="dolma3",
+        run_id="run-1", benchmark="mbpp", item_id="1",
+        model="Olmo3-7B-Instruct", corpus="dolma3",
         corpus_revision="rev", retrieval_method="ngram", retrieval_config={"n": 13},
         expected_shards=10, run_timestamp="2026-08-22T00:00:00Z",
     )
@@ -108,7 +109,8 @@ def test_coverage_distinguishes_unsearched_and_completed_empty():
 
 def test_atomic_jsonl_round_trip(tmp_path):
     coverage = ItemCoverageRecord(
-        run_id="run-1", benchmark="humaneval", item_id="0", corpus="dolma3",
+        run_id="run-1", benchmark="humaneval", item_id="0",
+        model="Olmo3.1-32B-Instruct", corpus="dolma3",
         corpus_revision="rev", retrieval_method="ngram", retrieval_config={"n": 13},
         status=CoverageStatus.SEARCH_COMPLETE_WITH_CANDIDATES, candidate_count=1,
         expected_shards=1, searched_shards=1, run_timestamp="2026-08-22T00:00:00Z",
@@ -124,3 +126,20 @@ def test_failed_atomic_write_preserves_existing_file(tmp_path):
     with pytest.raises(TypeError):
         write_jsonl_atomic([pair(), object()], destination)
     assert destination.read_text(encoding="utf-8") == "original\n"
+
+
+def test_pair_and_coverage_records_must_name_their_checkpoint():
+    """E-F14: Olmo3-7B and Olmo3.1-32B have different pretraining corpora, so
+    an unattributed record cannot be aggregated per model."""
+    with pytest.raises(ValueError, match="model must be a non-empty string"):
+        dataclasses.replace(pair(), model="  ")
+    coverage = ItemCoverageRecord(
+        run_id="run-1", benchmark="humaneval", item_id="0",
+        model="Olmo3.1-32B-Instruct", corpus="dolma3",
+        corpus_revision="rev", retrieval_method="ngram", retrieval_config={"n": 13},
+        status=CoverageStatus.NOT_SEARCHED, candidate_count=None,
+        expected_shards=1, searched_shards=0, run_timestamp="2026-08-22T00:00:00Z",
+    )
+    assert coverage.model == "Olmo3.1-32B-Instruct"
+    with pytest.raises(ValueError, match="model must be a non-empty string"):
+        dataclasses.replace(coverage, model="")

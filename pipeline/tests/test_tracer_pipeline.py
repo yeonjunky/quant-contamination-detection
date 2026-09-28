@@ -24,7 +24,8 @@ class FixedScorer:
 
 def candidate(**changes):
     values = dict(
-        benchmark="humaneval", item_id="HumanEval/0", corpus="dolma3",
+        benchmark="humaneval", item_id="HumanEval/0",
+        model="Olmo3-7B-Instruct", corpus="dolma3",
         corpus_revision="corpus-rev", shard="part-0", document_id="doc-1",
         benchmark_description="benchmark original", training_description="training original",
         retrieval_method="ngram", retrieval_score=0.8,

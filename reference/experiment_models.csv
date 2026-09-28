@@ -1,6 +1,6 @@
 모델,크기,기준 정밀도,역할,주의
 Qwen2.5-32B-Instruct,32.5B,bf16,"주력 — dense, QAT 체크포인트 없음",-
-Qwen2.5-7B-Instruct,7B,bf16,"파일럿 + n 확보용, 크기 축 제공",-
+Qwen2.5-7B-Instruct,7B,bf16,"7B 크기 축; 연구 결과는 고정 본 실행에서만 생성",-
 Llama-3.1-8B-Instruct,8B,bf16,"크기 축 + 외부 검증된 cutoff",2505.20276의 양자화 결과는 70B에서 측정되어 규모 불일치
-Olmo3-7B-Instruct,7B,bf16,"파일럿 + 공개 학습 코퍼스 ground truth",사전학습과 post-training 데이터 모두 검색
-Olmo3.1-32B-Instruct,32B,bf16,"공개 학습 코퍼스 ground truth + 크기 축",공식 repo allenai/Olmo-3.1-32B-Instruct
+Olmo3-7B-Instruct,7B,bf16,"크기 축 + 공개 학습 코퍼스의 확인된 양성 근거",사전학습과 post-training 데이터 모두 검색; 비검출은 비노출 증거가 아님
+Olmo3.1-32B-Instruct,32B,bf16,"공개 학습 코퍼스 양성 근거 + 크기 축",공식 repo allenai/Olmo-3.1-32B-Instruct; 비검출에서 오류율을 추정하지 않음

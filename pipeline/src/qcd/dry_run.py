@@ -30,7 +30,6 @@ from qcd.config import Quant
 from qcd.constants import (
     BASE_RATE_HUMANEVAL_ILLUSTRATIVE,
     BASE_RATE_LCB_POST_ILLUSTRATIVE,
-    CDD_GATE_AUC,
     CDD_N_SAMPLES,
     CDD_SAMPLE_TEMPERATURE,
 )
@@ -42,8 +41,12 @@ from qcd.generation.cache import GenerationCache
 from qcd.generation.sampler import sample_item
 from qcd.io.raw_writer import RawDataWriter
 from qcd.models.mock import MockModel
-from qcd.pilot.cdd_gate import check_cdd_gate
-from qcd.pilot.pilot_report import PilotReport, base_rate, cohens_d_paired, pearson_r, proxy_label_error_rate
+from qcd.pilot.pilot_report import (
+    ValidationDiagnostics,
+    base_rate,
+    cohens_d_paired,
+    pearson_r,
+)
 
 _MOCK_MODEL_NAME = "MockModel"
 _PRECISIONS = (Quant.BF16.value, Quant.BNB_NF4.value)
@@ -54,7 +57,6 @@ _DETECTOR_NAMES = ("cdd", "perplexity", "mink_prob")
 class InvariantChecks:
     logodds_matches_paper_table: bool
     pooling_guard_fires: bool
-    cdd_gate_threshold_is_constant: bool
     contaminated_scores_higher_than_clean: dict[str, bool]  # per detector
     contaminated_has_higher_partial_pass: bool
 
@@ -62,9 +64,7 @@ class InvariantChecks:
 @dataclasses.dataclass
 class DryRunSummary:
     n_items: int
-    pilot_report: PilotReport
-    cdd_gate_passed: bool
-    cdd_gate_reason: str
+    diagnostics: ValidationDiagnostics
     invariants: InvariantChecks
     output_dir: Path
 
@@ -109,7 +109,7 @@ def run_dry_run(
 
     # detector_scores[(precision, detector)][item_id] = score
     detector_scores: dict[tuple[str, str], dict[str, float]] = {(p, d): {} for p in _PRECISIONS for d in _DETECTOR_NAMES}
-    partial_pass_by_item: dict[str, float] = {}
+    partial_pass_by_precision: dict[tuple[str, str], float] = {}
 
     for precision in _PRECISIONS:
         for item in items:
@@ -118,7 +118,7 @@ def run_dry_run(
                 item_id=item.item_id, prompt=item.prompt, n_samples=n_cdd_samples,
             )
             partial_pass = model.partial_pass_rate(item.item_id)
-            partial_pass_by_item[item.item_id] = partial_pass
+            partial_pass_by_precision[(precision, item.item_id)] = partial_pass
             prompt_logprobs = model.score_prompt_logprobs(item.item_id, item.prompt)
 
             writer.add_generation(
@@ -156,8 +156,8 @@ def run_dry_run(
 
     writer.flush()
 
-    # --- pilot report: the five §4.7 quantities ---
-    report = PilotReport()
+    # --- synthetic diagnostics: shape checks only, never study estimates ---
+    report = ValidationDiagnostics()
     bf16, quant = _PRECISIONS
     item_ids = [item.item_id for item in items]
     labels = np.array([item.contamination_proxy for item in items])
@@ -170,22 +170,22 @@ def run_dry_run(
         report.q1b_cross_precision_r[detector] = pearson_r(before, after)
 
     for dataset in Dataset:
-        outcomes = [partial_pass_by_item[item.item_id] for item in items if item.dataset is dataset]
+        outcomes = [
+            partial_pass_by_precision[(bf16, item.item_id)]
+            for item in items if item.dataset is dataset
+        ]
         if outcomes:
             report.base_rates[(_MOCK_MODEL_NAME, dataset.value)] = base_rate(outcomes)
 
-    # Simulated Olmo3-style ground-truth check: flip ~10% of proxy labels to
-    # exercise proxy_label_error_rate() against a non-trivial e, since the
-    # dry run has no real corpus-search ground truth to compare against.
-    proxy_labels = [item.contamination_proxy for item in items]
-    ground_truth_labels = list(proxy_labels)
-    n_flip = max(1, len(ground_truth_labels) // 10)
-    for idx in rng.sample(range(len(ground_truth_labels)), n_flip):
-        ground_truth_labels[idx] = not ground_truth_labels[idx]
-    report.olmo3_proxy_label_error_rate = proxy_label_error_rate(proxy_labels, ground_truth_labels)
-
-    # --- CDD pilot gate ---
-    gate_result = check_cdd_gate(report.q1b_baseline_auc["cdd"])
+    # The synthetic mock's pass-rate process is intentionally precision
+    # invariant, so its known Q2 interaction is zero and its paired outcomes
+    # are perfectly correlated. These fields ensure the dry run exercises all
+    # synthetic implementation diagnostics without fabricating a corpus-error estimate.
+    report.q2_log_odds_effect = 0.0
+    report.q2_item_level_r = pearson_r(
+        [partial_pass_by_precision[(bf16, item_id)] for item_id in item_ids],
+        [partial_pass_by_precision[(quant, item_id)] for item_id in item_ids],
+    )
 
     # --- named invariants ---
     logodds_row = spurious_pp_interaction(
@@ -212,22 +212,23 @@ def run_dry_run(
         mean_clean = float(np.mean([bf16_scores[i] for i in clean_ids]))
         contaminated_higher[detector] = mean_contaminated > mean_clean
 
-    mean_pass_contaminated = float(np.mean([partial_pass_by_item[i] for i in contaminated_ids]))
-    mean_pass_clean = float(np.mean([partial_pass_by_item[i] for i in clean_ids]))
+    mean_pass_contaminated = float(np.mean([
+        partial_pass_by_precision[(bf16, i)] for i in contaminated_ids
+    ]))
+    mean_pass_clean = float(np.mean([
+        partial_pass_by_precision[(bf16, i)] for i in clean_ids
+    ]))
 
     invariants = InvariantChecks(
         logodds_matches_paper_table=logodds_ok,
         pooling_guard_fires=pooling_guard_fired,
-        cdd_gate_threshold_is_constant=(gate_result.threshold == CDD_GATE_AUC),
         contaminated_scores_higher_than_clean=contaminated_higher,
         contaminated_has_higher_partial_pass=(mean_pass_contaminated > mean_pass_clean),
     )
 
     return DryRunSummary(
         n_items=len(items),
-        pilot_report=report,
-        cdd_gate_passed=gate_result.passed,
-        cdd_gate_reason=gate_result.reason,
+        diagnostics=report,
         invariants=invariants,
         output_dir=output_dir,
     )
@@ -240,14 +241,13 @@ def main() -> None:
         summary = run_dry_run(tmp)
 
         print(f"Dry run: {summary.n_items} synthetic items, output written to {tmp}\n")
-        print("Pilot report:")
-        print(f"  (a) Q1a effect size d:        {summary.pilot_report.q1a_effect_size_d}")
-        print(f"  (b) Q1b baseline AUC:         {summary.pilot_report.q1b_baseline_auc}")
-        print(f"      Q1b cross-precision r:    {summary.pilot_report.q1b_cross_precision_r}")
-        print(f"  (d) base rates:               {summary.pilot_report.base_rates}")
-        print(f"  (e) Olmo3-style proxy error e: {summary.pilot_report.olmo3_proxy_label_error_rate:.3f}")
-        print()
-        print(f"CDD gate: {'PASS' if summary.cdd_gate_passed else 'FAIL'} — {summary.cdd_gate_reason}")
+        print("Synthetic validation diagnostics (not study estimates):")
+        print(f"  Q1a-shaped effect size d:     {summary.diagnostics.q1a_effect_size_d}")
+        print(f"  Q1b-shaped baseline AUC:      {summary.diagnostics.q1b_baseline_auc}")
+        print(f"  score-path correlation r:    {summary.diagnostics.q1b_cross_precision_r}")
+        print(f"  Q2-shaped log-odds effect:    {summary.diagnostics.q2_log_odds_effect}")
+        print(f"  item-level correlation r:    {summary.diagnostics.q2_item_level_r}")
+        print(f"  synthetic base rates:        {summary.diagnostics.base_rates}")
         print()
         print("Invariant checks:")
         for field in dataclasses.fields(summary.invariants):
@@ -258,8 +258,6 @@ def main() -> None:
             failures.append("log-odds transform did not match paper's worked table")
         if not summary.invariants.pooling_guard_fires:
             failures.append("pooling guard did not fire on HumanEval+MBPP+ combination")
-        if not summary.invariants.cdd_gate_threshold_is_constant:
-            failures.append("CDD gate threshold drifted from constants.CDD_GATE_AUC")
         if not all(summary.invariants.contaminated_scores_higher_than_clean.values()):
             failures.append(f"some detector did not score contaminated > clean: {summary.invariants.contaminated_scores_higher_than_clean}")
         if not summary.invariants.contaminated_has_higher_partial_pass:

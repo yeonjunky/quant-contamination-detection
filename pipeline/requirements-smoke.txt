@@ -1,5 +1,20 @@
 # Real-smoke profile: local RTX 4060 (8GB VRAM) nf4 smoke test only.
 # Layer on top of requirements-local.txt.
+#
+# No scipy/statsmodels line here, deliberately. Two reasons, both checked
+# rather than assumed:
+#   1. This file is an overlay, not a standalone profile. requirements-local.txt
+#      already pins statsmodels and scipy, so a smoke profile installed as
+#      documented (local first, then this file) has them — including for the
+#      GPU-free pytest suite, whose analysis tests import both by name
+#      (tests/test_confirmatory.py, tests/test_conditional_logit.py).
+#   2. Nothing this profile adds needs them. scripts/run_smoke_test.py and
+#      scripts/run_lcb_smoke_test.py import qcd.{config,data,detectors,
+#      generation,io,models,scoring,real_run} and no qcd.analysis module;
+#      importing both scripts loads neither scipy nor statsmodels (verified by
+#      importing them and inspecting sys.modules).
+# Adding the pins here would therefore duplicate requirements-local.txt without
+# changing what gets installed.
 # Install torch from the CUDA 12.4/12.6 wheel index (most battle-tested
 # tier with bitsandbytes as of this writing), e.g.:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu124

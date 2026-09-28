@@ -8,6 +8,7 @@ from qcd.analysis.power import (
     items_needed_diff_in_diff,
     items_needed_paired_t,
     items_needed_with_label_noise,
+    minimum_detectable_diff_in_diff_unequal,
     power_diff_in_diff,
 )
 
@@ -40,6 +41,20 @@ def test_items_needed_diff_in_diff_matches_paper():
     assert items_needed_diff_in_diff(20) == pytest.approx(196, abs=1)
     assert items_needed_diff_in_diff(10) == pytest.approx(785, abs=1)
     assert items_needed_diff_in_diff(5) == pytest.approx(3140, abs=1)
+
+
+def test_primary_q2_lcb_ceiling_mde_matches_revised_design():
+    assert minimum_detectable_diff_in_diff_unequal(float("inf"), 182) == pytest.approx(14.684, abs=0.001)
+    assert minimum_detectable_diff_in_diff_unequal(873, 182) == pytest.approx(16.143, abs=0.001)
+    assert minimum_detectable_diff_in_diff_unequal(164, float("inf")) == pytest.approx(15.469, abs=0.001)
+
+
+def test_unequal_auc_se_reduces_to_equal_group_formula():
+    from qcd.analysis.auc import hanley_mcneil_se, hanley_mcneil_se_unequal
+
+    assert hanley_mcneil_se_unequal(0.70, 164, 164) == pytest.approx(
+        hanley_mcneil_se(0.70, 164)
+    )
 
 
 def test_items_needed_with_label_noise_matches_paper():

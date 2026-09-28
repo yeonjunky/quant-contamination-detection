@@ -1,8 +1,7 @@
 """Turns analysis/auc.py's and analysis/_stats.py's primitives into the
 specific power/sample-size tables paper §4.5 reports, parametrized by
-pilot-measured effect sizes/correlations rather than the paper's own
-illustrative constants — this is what pilot/pilot_report.py calls to do the
-real §5-step-7 power recompute. Every function reproduces a specific worked
+explicit effect sizes/correlations rather than silently substituting observed
+validation values. Every function reproduces a specific worked
 table in the paper when called with the paper's own illustrative values
 (tests/test_power.py).
 """
@@ -49,6 +48,26 @@ def items_needed_diff_in_diff(
 
     n = bisect(f, 2, 10_000_000, iters=60)
     return int(np.ceil(n))
+
+
+def minimum_detectable_diff_in_diff_unequal(
+    n_suspect: int | float,
+    n_control: int | float,
+    *,
+    p: float = 0.5,
+    alpha: float = ALPHA,
+    power: float = POWER_TARGET,
+) -> float:
+    """Q2's unpaired MDE in percentage points for unequal condition sizes.
+
+    Each condition contributes one full-precision and one quantized cell, so
+    ``SE² = 2p(1-p)/n_suspect + 2p(1-p)/n_control``. ``np.inf`` is accepted
+    for the best-case bound where one condition is unlimited.
+    """
+    if n_suspect <= 0 or n_control <= 0:
+        raise ValueError("Q2 condition sizes must be positive")
+    variance = 2 * p * (1 - p) * (1 / n_suspect + 1 / n_control)
+    return float(z_for_two_sided_test(alpha, power) * np.sqrt(variance) * 100)
 
 
 def items_needed_with_label_noise(

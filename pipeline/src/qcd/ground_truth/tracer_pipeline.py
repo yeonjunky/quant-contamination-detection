@@ -34,6 +34,8 @@ class EmbeddingScorer(Protocol):
 class CandidatePair:
     benchmark: str
     item_id: str
+    #: Registry model name whose corpus this candidate came from.
+    model: str
     corpus: str
     corpus_revision: str
     shard: str
@@ -139,6 +141,7 @@ class TracerPipeline:
             run_id=self.config.run_id,
             benchmark=candidate.benchmark,
             item_id=candidate.item_id,
+            model=candidate.model,
             corpus=candidate.corpus,
             corpus_revision=candidate.corpus_revision,
             shard=candidate.shard,

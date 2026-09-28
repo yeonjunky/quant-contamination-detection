@@ -584,3 +584,41 @@ Qwen2.5-7B-Instruct BNB-NF4로 LCB pre/post와 stdin/functional 조합 4개를
 수정 후 코드 블록·산문 제거, stdin 프로그램, `Solution` 메서드, 공개·비공개 테스트 디코딩,
 부분 통과율, pass@1, Parquet 왕복 검사가 모두 통과했다. 문항별 pass rate는 1.000, 0.061,
 0.024, 1.000이었다. 전용 재현 스크립트는 `scripts/run_lcb_smoke_test.py`다.
+
+# 모델–문항 시간 라벨 및 관문 정합화 (2026-08-27)
+
+위의 초기 구현 기록 중 전역 `contaminated` 변수, Olmo3 이진 오류율 *e*, 고정
+`CDD_GATE_AUC=0.7936` 관문은 현재 설계에서 대체되었다.
+
+- `model_item_labels.parquet`을 추가해 모델별 주·민감도 첫 post 날짜와
+  `possible-exposure` / `clean-by-model-cutoff` / `shared-clean-control`을 문항별로 저장한다.
+- Q1b는 LCB의 모델별 possible-exposure 대 공통 control만 사용하고, Q2는 같은 LCB 대비를
+  주 분석으로 사용한다. HumanEval과 MBPP+ Q2는 서로 분리된 탐색적 대비다.
+- 코퍼스 검색은 `confirmed-match` / `no-match-found` / `not-observable` 및
+  `coverage_complete`를 저장한다. 부분 스캔 비검출은 기본적으로 `not-observable`이다.
+- Olmo 코퍼스 비검출에서 *e*, 위양성률, 위음성률을 계산하지 않으며 파일럿 사이징 수치에서도
+  제거했다.
+- CDD 관문은 고정 AUC가 아니라 두 7B 파일럿 arm 각각의 가정 ΔAUC와 실제 n+/n−·실측 r의
+  검출 한계를 비교한다. 실패 범위는 C4 Q1b로 제한되며 C1 Q1a는 유지한다.
+
+이 절은 위의 날짜별 구현 기록을 삭제하지 않고 현재 상태에서 무엇이 대체되었는지 명시하는
+후속 기록이다. 로컬 전체 검증 결과는 **235 passed, 2 skipped**이며, skip 2건은 torch가 없는
+로컬 프로필의 GPU 의존 테스트다. 새 실험 결과는 추가하지 않았다.
+
+# 과학적 파일럿 폐기와 검증 출력 격리 (2026-08-28)
+
+H100 대여 전 소규모 실행의 원래 목적에 맞춰 드라이런과 스모크 테스트를 구현 검증 전용으로
+되돌렸다. 위의 `Parquet 파일럿 집계기`와 `모델–문항 시간 라벨 및 관문 정합화` 절에 기록된
+파일럿 사이징·CDD 관문 경로는 현재 설계에서 폐기되었다.
+
+- `run_pilot.py`와 `aggregate_pilot.py`는 실행을 거부하는 폐기 호환 진입점이다.
+- CDD 관문 모듈과 관문 기반 C4 자격 판정을 삭제했다.
+- 드라이런은 합성 `ValidationDiagnostics`만 생성하고 CDD 관문을 계산하지 않는다.
+- 남아 있는 합성 집계 보조 코드는 회귀 테스트용 개발 경로이며, 출력 파일과 상태를
+  `development_summary.json`, `development_power_diagnostics.json`,
+  `development_only_not_manuscript_evidence`로 변경했다.
+- 구현 검증 출력은 효과 크기, AUC, pass rate, 상관, 검정력 재산정, 탐지기 순위, C1–C4 또는
+  논문 결과에 사용하지 않는다. `run_main.py`만 연구 데이터 생성기로 사용한다.
+
+이 변경은 기존 스모크 출력의 지위를 구현 검증 부산물로 명확히 한 것이며, 새 실험 결과를
+추가하거나 기존 스모크 수치를 논문 결과로 승격하지 않는다.
