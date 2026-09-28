@@ -221,6 +221,12 @@
   bash는 `/sessions/<session>/mnt/knowlodge-rot-by-quantization/`.
 - **scipy 없음.** 수치 계산은 numpy + 직접 구현(이분법 등)으로. Hanley–McNeil SE 공식과
   이분 탐색이면 위 표는 전부 재현된다.
+- **대용량 데이터는 `~/project/dataset`에 둔다.** 실제 저장 위치는 Hugging Face 주 캐시
+  `~/project/dataset/huggingface`, 기본 캐시 호환본 `~/project/dataset/huggingface-legacy`,
+  실험 원자료·Olmo 검색 결과·AWQ 체크포인트 `~/project/dataset/experiment-data`다. 기존 접근
+  경로 `/root/hf_cache`, `/root/.cache/huggingface`, 저장소 루트의 `data`가 존재하지 않을 때만
+  각각 위 세 위치를 가리키는 심볼릭 링크를 만든다. 기존 경로에 실제 파일·디렉터리 또는
+  심볼릭 링크가 있으면 삭제하거나 덮어쓰지 말고 먼저 내용을 확인한다.
 - 폴더명 `knowlodge-rot-by-quantization`의 오타는 의도된 것이 아닐 수 있으나 그대로 둔다.
 
 ---
