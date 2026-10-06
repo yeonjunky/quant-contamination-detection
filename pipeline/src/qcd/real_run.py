@@ -43,7 +43,7 @@ from qcd.detectors.cdd import peakedness, threshold_length
 from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score
 from qcd.generation.cache import GenerationCache
-from qcd.generation.sampler import sample_item
+from qcd.generation.sampler import GREEDY_SAMPLE_ID, sample_ids, sample_item
 from qcd.io.manifest import (
     RunManifest, StudyPhase, build_manifest, read_manifest, resolve_library_defaults,
     unresolved_library_defaults, write_manifest,
@@ -253,7 +253,7 @@ def run(config: RealRunConfig) -> None:
             "include_mbppplus": config.include_mbppplus,
             "item_limit_per_condition": config.item_limit_per_condition,
             "generation_max_new_tokens": GENERATION_MAX_NEW_TOKENS,
-            "generation_seed_policy": "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v3",
+            "generation_seed_policy": "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v4",
             "sample_batch_sizes": {m.name: m.sample_batch_size for m in config.models},
             "decoding_settings": {
                 "greedy": greedy_decoding,
@@ -481,7 +481,7 @@ def _score_batches(
                 generation_config=(
                     f"max_new_tokens={getattr(model, 'max_new_tokens', GENERATION_MAX_NEW_TOKENS)};"
                     f"decoding={greedy_decoding_id}/{sample_decoding_id};"
-                    "seed_policy=sha256-per-row-fixed-batch-v3;"
+                    "seed_policy=sha256-per-row-fixed-batch-v4;"
                     f"sample_batch_size={model_spec.sample_batch_size}"
                 ),
             )
@@ -521,7 +521,7 @@ def _score_batches(
                 writer.write_chat_templates(chat_template_rows, part=cell_dir.name)
 
             writer.add_generation(
-                model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=0, is_greedy=True,
+                model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=GREEDY_SAMPLE_ID, is_greedy=True,
                 text=generations.greedy.text, token_ids=generations.greedy.token_ids,
                 token_logprobs=generations.greedy.token_logprobs, partial_pass_rate=pass_rate,
                 passed=bool(pass_rate == 1.0),
@@ -552,7 +552,7 @@ def _score_batches(
                     detail.rendered_char_length if detail is not None else None
                 ),
             )
-            for sample_id, sample in enumerate(generations.samples, start=1):
+            for sample_id, sample in zip(sample_ids(len(generations.samples)), generations.samples):
                 writer.add_generation(
                     model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=sample_id,
                     is_greedy=False, text=sample.text, token_ids=sample.token_ids,
@@ -579,7 +579,7 @@ def _score_batches(
             writer.add_detector_score(
                 model=model_spec.name, quant=quant.value, item_id=item.item_id,
                 detector="cdd", score=cdd_score,
-                source_sample_ids=list(range(config.n_cdd_samples + 1)),
+                source_sample_ids=[GREEDY_SAMPLE_ID, *sample_ids(config.n_cdd_samples)],
                 cdd_threshold_length=threshold_length(
                     generations.greedy.token_ids, sample_token_ids
                 ),

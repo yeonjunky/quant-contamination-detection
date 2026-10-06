@@ -457,7 +457,7 @@ def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, run_
     resumed = _CountingModel()
     run_with(resumed, interrupted)
     # Only q2's sample set is generated again, whole, in the same chunks.
-    assert resumed.calls == [("q2", "samples", (0, 1)), ("q2", "samples", (2,))]
+    assert resumed.calls == [("q2", "samples", (1, 2)), ("q2", "samples", (3,))]
 
     uninterrupted = tmp_path / "uninterrupted"
     run_with(_CountingModel(), uninterrupted)
@@ -477,12 +477,12 @@ def test_a_cache_made_at_another_batch_size_is_not_served(tmp_path, run_with):
     run_with(model, second, batch_size=1)
 
     assert [call for call in model.calls if call[1] == "samples"] == [
-        (item, "samples", (s,)) for item in ("q1", "q2") for s in range(3)
+        (item, "samples", (s,)) for item in ("q1", "q2") for s in range(1, 4)
     ]
     manifest = json.loads((second / "manifest.json").read_text())
     assert manifest["config"]["sample_batch_sizes"] == {QWEN2_5_7B.name: 1}
     assert manifest["config"]["generation_seed_policy"] == (
-        "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v3"
+        "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v4"
     )
 
 
@@ -523,7 +523,7 @@ def test_a_validation_run_proceeds_with_an_explicit_batch_size(tmp_path, run_wit
         spec=dataclasses.replace(QWEN2_5_32B, primary_first_post_boundary="2023-11-01"),
     )
 
-    assert ("q1", "samples", (0, 1)) in model.calls
+    assert ("q1", "samples", (1, 2)) in model.calls
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["study_phase"] == "engineering_validation"
     assert manifest["config"]["sample_batch_sizes"] == {QWEN2_5_32B.name: 2}
@@ -628,7 +628,7 @@ def test_an_interrupted_cell_resumes_at_its_first_unwritten_part(tmp_path, run_w
     resumed = _CountingModel()
     run_with(resumed, interrupted)
     # q1 is neither generated, sandboxed nor rewritten; only q2 runs.
-    assert resumed.calls == [("q2", "greedy", (0,)), ("q2", "samples", (0, 1)), ("q2", "samples", (2,))]
+    assert resumed.calls == [("q2", "greedy", (0,)), ("q2", "samples", (1, 2)), ("q2", "samples", (3,))]
     assert sandboxed == ["q2"]
     after = _part_bytes(interrupted)
     for name, content in first_part.items():
@@ -652,8 +652,7 @@ class _FixedOutputModel(_CountingModel):
 
     @classmethod
     def _sample(cls, item_id, sample_id, temperature):
-        row = sample_id if temperature == 0.0 else sample_id + 1
-        n = cls._LENGTHS[item_id][row]
+        n =cls._LENGTHS[item_id][sample_id]
         return SimpleNamespace(
             text="x" * n, token_ids=[7] * n, token_logprobs=[-0.5] * n,
             is_greedy=temperature == 0.0,
@@ -678,6 +677,27 @@ def test_cdd_rows_record_threshold_length_and_empty_outputs(tmp_path, run_with):
 
     others = scores[scores["detector"] != "cdd"]
     assert others[["cdd_threshold_length", "cdd_n_empty_samples", "cdd_greedy_empty"]].isna().all().all()
+
+
+def test_a_stored_sample_row_is_regenerated_from_its_sample_id(tmp_path, run_with):
+    """A raw row's `sample_id` is the id its seed came from: generating that
+    id again gives the stored tokens. `_CountingModel` puts the id it was
+    asked for into the token, so a row stored under a shifted id fails."""
+    model = _CountingModel()
+    run_with(model, tmp_path)
+
+    generations = _read_raw(tmp_path, "generations")
+    samples = generations[~generations["is_greedy"]]
+    assert sorted(set(samples["sample_id"])) == [1, 2, 3]
+    for row in samples.itertuples():
+        [regenerated] = model.generate_samples(
+            row.item_id, "", temperature=row.decoding_temperature, sample_ids=[row.sample_id],
+        )
+        assert list(row.token_ids) == regenerated.token_ids, (row.item_id, row.sample_id)
+
+    cdd = _read_raw(tmp_path, "detector_scores").query("detector == 'cdd'")
+    for source in cdd["source_sample_ids"]:
+        assert list(source) == [0, 1, 2, 3]
 
 
 # --- one frozen commit and environment per main study ------------------------

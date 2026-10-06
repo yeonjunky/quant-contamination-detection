@@ -79,7 +79,7 @@ class FakeModel:
         self.calls += 1
         drift = 0.0 if self.deterministic else self.calls * 1e-6
         return [
-            FakeSample([sample_id, 7], [-0.5 - drift, -0.25], truncated_at_cap=sample_id == 0)
+            FakeSample([sample_id, 7], [-0.5 - drift, -0.25], truncated_at_cap=sample_id == 1)
             for sample_id in sample_ids
         ]
 
@@ -161,7 +161,7 @@ def test_generated_length_summary_counts_greedy_and_samples(tmp_path):
     record = _run(tmp_path, FakeModel(device, max_rows=50), device, 50)
 
     lengths = _candidate(record, 50)["generated_tokens"]
-    # 2 items x (1 greedy of 3 tokens + 50 samples of 2 tokens); sample 0 of
+    # 2 items x (1 greedy of 3 tokens + 50 samples of 2 tokens); sample 1 of
     # each item is flagged as stopped at the cap.
     assert lengths["n_generations"] == 102
     assert lengths["max"] == 3 and lengths["median"] == 2

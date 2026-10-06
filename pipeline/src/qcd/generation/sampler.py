@@ -26,6 +26,17 @@ class ItemGenerations:
     samples: list  # list of GenerationSample, length n_samples, all at sample_temperature
 
 
+GREEDY_SAMPLE_ID = 0
+
+
+def sample_ids(n_samples: int) -> tuple[int, ...]:
+    """The ids of an item's `n_samples` temperature samples, in the order of
+    `ItemGenerations.samples`. A sample's id is both the `sample_id` its raw
+    row carries and the id its generator seed is derived from; the greedy
+    output is id 0."""
+    return tuple(range(GREEDY_SAMPLE_ID + 1, GREEDY_SAMPLE_ID + 1 + n_samples))
+
+
 def sample_item(
     model,
     cache: GenerationCache,
@@ -57,21 +68,23 @@ def sample_item(
         )
 
     greedy = _get_or_generate(
-        cache, key(is_greedy=True, sample_ids=(0,), temperature=greedy_temperature),
-        lambda: model.generate(item_id, prompt, temperature=greedy_temperature, sample_id=0),
+        cache, key(is_greedy=True, sample_ids=(GREEDY_SAMPLE_ID,), temperature=greedy_temperature),
+        lambda: model.generate(
+            item_id, prompt, temperature=greedy_temperature, sample_id=GREEDY_SAMPLE_ID,
+        ),
     )
     # A real backend's logits depend slightly on which rows share a batch, so
     # the chunks are fixed by (n_samples, batch_size) alone, and the item's
     # whole sample set is one cache entry that is always regenerated whole.
-    sample_ids = tuple(range(n_samples))
+    ids = sample_ids(n_samples)
     samples = _get_or_generate(
-        cache, key(is_greedy=False, sample_ids=sample_ids, temperature=sample_temperature),
+        cache, key(is_greedy=False, sample_ids=ids, temperature=sample_temperature),
         lambda: [
             sample
             for start in range(0, n_samples, batch_size)
             for sample in model.generate_samples(
                 item_id, prompt, temperature=sample_temperature,
-                sample_ids=list(sample_ids[start:start + batch_size]),
+                sample_ids=list(ids[start:start + batch_size]),
             )
         ],
     )
