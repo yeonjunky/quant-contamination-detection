@@ -1,6 +1,8 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from qcd.generation.cache import CacheKey, GenerationCache
 from qcd.generation.sampler import sample_item
 from qcd.models.mock import MockModel
@@ -57,7 +59,7 @@ def test_sample_item_shape(tmp_path):
     model.register_item("x", contaminated=False, quality=0.5)
     cache = _cache(tmp_path)
 
-    result = sample_item(model, cache, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=5)
+    result = sample_item(model, cache, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=5, batch_size=5)
 
     assert result.greedy.is_greedy is True
     assert len(result.samples) == 5
@@ -69,12 +71,12 @@ def test_sample_item_uses_cache_on_second_call(tmp_path):
     model.register_item("x", contaminated=False, quality=0.5)
     cache = _cache(tmp_path)
 
-    first = sample_item(model, cache, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=3)
+    first = sample_item(model, cache, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=3, batch_size=3)
     # Second call must be servable purely from cache — deregister the item so
     # a cache-miss fallback to model.generate() would raise KeyError instead
     # of silently regenerating and masking a caching bug.
     model_after = MockModel()
-    second = sample_item(model_after, cache, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=3)
+    second = sample_item(model_after, cache, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=3, batch_size=3)
 
     assert first.greedy.token_ids == second.greedy.token_ids
     assert [s.token_ids for s in first.samples] == [s.token_ids for s in second.samples]
@@ -86,8 +88,8 @@ def test_greedy_generation_is_deterministic_across_runs(tmp_path):
     cache1 = _cache(Path(tempfile.mkdtemp()))
     cache2 = _cache(Path(tempfile.mkdtemp()))
 
-    r1 = sample_item(model, cache1, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=2)
-    r2 = sample_item(model, cache2, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=2)
+    r1 = sample_item(model, cache1, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=2, batch_size=2)
+    r2 = sample_item(model, cache2, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=2, batch_size=2)
 
     assert r1.greedy.token_ids == r2.greedy.token_ids
 
@@ -109,25 +111,49 @@ class _RecordingMock(MockModel):
         ]
 
 
-def test_a_missing_sample_batch_is_generated_whole_in_one_call(tmp_path):
+def test_samples_are_generated_in_fixed_consecutive_chunks_of_the_batch_size(tmp_path):
+    cache = _cache(tmp_path)
     model = _RecordingMock()
     model.register_item("x", contaminated=False, quality=0.5)
 
-    result = sample_item(model, _cache(tmp_path), model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=4)
+    result = sample_item(model, cache, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=7, batch_size=3)
 
-    assert model.calls == [("generate", 0.0, 0), ("generate_samples", 0.8, [0, 1, 2, 3])]
-    assert len(result.samples) == 4
+    assert model.calls == [
+        ("generate", 0.0, 0),
+        ("generate_samples", 0.8, [0, 1, 2]),
+        ("generate_samples", 0.8, [3, 4, 5]),
+        ("generate_samples", 0.8, [6]),
+    ]
+    expected = [
+        MockModel.generate(model, "x", "p", temperature=0.8, sample_id=s).token_ids for s in range(7)
+    ]
+    assert [s.token_ids for s in result.samples] == expected
+    # One entry for the greedy output and one for the item's whole sample set.
+    assert len(list(cache.cache_dir.rglob("*.pkl"))) == 2
+    whole = CacheKey(
+        model_name="mock", quant="bf16", item_id="x", is_greedy=False,
+        sample_ids=tuple(range(7)), prompt="p", temperature=0.8,
+    )
+    assert [s.token_ids for s in cache.get(whole)] == expected
 
 
-def test_a_cached_sample_batch_is_served_without_calling_the_model(tmp_path):
+def test_a_batch_size_below_one_is_refused(tmp_path):
+    model = _RecordingMock()
+    model.register_item("x", contaminated=False, quality=0.5)
+    with pytest.raises(ValueError, match="batch_size must be >= 1"):
+        sample_item(model, _cache(tmp_path), model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=2, batch_size=0)
+    assert model.calls == []
+
+
+def test_a_cached_sample_set_is_served_without_calling_the_model(tmp_path):
     cache = _cache(tmp_path)
     first_model = _RecordingMock()
     first_model.register_item("x", contaminated=False, quality=0.5)
-    first = sample_item(first_model, cache, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=4)
+    first = sample_item(first_model, cache, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=7, batch_size=3)
 
     second_model = _RecordingMock()
     second_model.register_item("x", contaminated=False, quality=0.5)
-    second = sample_item(second_model, cache, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=4)
+    second = sample_item(second_model, cache, model_name="mock", quant="bf16", item_id="x", prompt="p", n_samples=7, batch_size=3)
 
     assert second_model.calls == []
     assert [s.token_ids for s in second.samples] == [s.token_ids for s in first.samples]

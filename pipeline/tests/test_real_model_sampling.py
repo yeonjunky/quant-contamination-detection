@@ -11,6 +11,8 @@ torch = pytest.importorskip("torch")
 
 from transformers import LlamaConfig, LlamaForCausalLM  # noqa: E402
 
+from qcd.generation.cache import GenerationCache  # noqa: E402
+from qcd.generation.sampler import sample_item  # noqa: E402
 from qcd.models.loader import _RealModelAdapter, _seed_from  # noqa: E402
 
 _EOS = 2
@@ -83,6 +85,21 @@ def test_a_sample_id_keeps_its_tokens_when_the_row_order_changes(adapter):
     forward = _samples(adapter, range(8))
     backward = _samples(adapter, reversed(range(8)))
     assert [row.token_ids for row in forward] == [row.token_ids for row in reversed(backward)]
+
+
+def test_chunked_sampling_gives_each_sample_id_the_same_tokens_as_one_batch(adapter, tmp_path):
+    def sampled(batch_size):
+        return sample_item(
+            adapter, GenerationCache(tmp_path / f"cache{batch_size}"), model_name="tiny",
+            quant="fp32", item_id="item", prompt=_PROMPT, n_samples=8,
+            sample_temperature=_TEMPERATURE, batch_size=batch_size,
+        ).samples
+
+    chunked, whole = sampled(3), sampled(8)
+    assert [row.token_ids for row in chunked] == [row.token_ids for row in whole]
+    for chunk_row, whole_row in zip(chunked, whole):
+        assert chunk_row.token_logprobs == pytest.approx(whole_row.token_logprobs, abs=1e-4)
+    assert len({tuple(row.token_ids) for row in whole}) > 1
 
 
 def test_seeds_depend_on_the_item(adapter):

@@ -363,7 +363,42 @@ def test_run_records_decoding_settings_truncation_and_prompt_provenance(tmp_path
     assert "message.content" in templates.iloc[0]["chat_template"]
 
 
-def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, monkeypatch):
+class _CountingModel:
+    tokenizer = object()
+
+    def __init__(self, fail_after=None):
+        self.calls = []
+        self.fail_after = fail_after
+
+    def _record(self, call):
+        if self.fail_after is not None and len(self.calls) == self.fail_after:
+            raise KeyboardInterrupt("simulated interruption")
+        self.calls.append(call)
+
+    @staticmethod
+    def _sample(item_id, sample_id, temperature):
+        token = int(item_id[1:]) * 100 + sample_id
+        return SimpleNamespace(
+            text=f"print({token})", token_ids=[token],
+            token_logprobs=[-0.5], is_greedy=temperature == 0.0,
+        )
+
+    def generate(self, item_id, prompt, *, temperature, sample_id):
+        self._record((item_id, "greedy", (sample_id,)))
+        return self._sample(item_id, sample_id, temperature)
+
+    def generate_samples(self, item_id, prompt, *, temperature, sample_ids):
+        self._record((item_id, "samples", tuple(sample_ids)))
+        return [self._sample(item_id, s, temperature) for s in sample_ids]
+
+    def score_prompt_logprobs(self, item_id, prompt):
+        return [-1.0]
+
+
+@pytest.fixture
+def run_with(monkeypatch):
+    """Runs `run()` on two fixed LCB items against the given model, with
+    n=3 samples drawn at the given batch size."""
     import qcd.real_run as real_run_module
 
     items = [
@@ -371,47 +406,22 @@ def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, monk
              metadata={"contest_date": "2023-06-01"})
         for i in (1, 2)
     ]
-
-    class CountingModel:
-        tokenizer = object()
-
-        def __init__(self, fail_after=None):
-            self.calls = []
-            self.fail_after = fail_after
-
-        def _record(self, call):
-            if self.fail_after is not None and len(self.calls) == self.fail_after:
-                raise KeyboardInterrupt("simulated interruption")
-            self.calls.append(call)
-
-        @staticmethod
-        def _sample(item_id, sample_id, temperature):
-            token = int(item_id[1:]) * 100 + sample_id
-            return SimpleNamespace(
-                text=f"print({token})", token_ids=[token],
-                token_logprobs=[-0.5], is_greedy=temperature == 0.0,
-            )
-
-        def generate(self, item_id, prompt, *, temperature, sample_id):
-            self._record((item_id, "greedy", (sample_id,)))
-            return self._sample(item_id, sample_id, temperature)
-
-        def generate_samples(self, item_id, prompt, *, temperature, sample_ids):
-            self._record((item_id, "samples", tuple(sample_ids)))
-            return [self._sample(item_id, s, temperature) for s in sample_ids]
-
-        def score_prompt_logprobs(self, item_id, prompt):
-            return [-1.0]
-
     monkeypatch.setattr(real_run_module, "load_all_items", lambda config: items)
     monkeypatch.setattr(real_run_module, "_assemble_candidate_code", lambda item, text: text)
     monkeypatch.setattr(real_run_module, "partial_pass_rate", lambda item, code: 1.0)
 
-    def run_with(model, output_dir):
+    def _run(model, output_dir, *, batch_size=2, spec=_TEST_QWEN, **overrides):
         monkeypatch.setattr(real_run_module, "load_model", lambda spec, quant, mock=False: model)
-        run(_small_config(output_dir, n_cdd_samples=2, include_humaneval=False,
-                          include_mbppplus=False))
+        run(_small_config(
+            output_dir, n_cdd_samples=3, include_humaneval=False, include_mbppplus=False,
+            models=(dataclasses.replace(spec, sample_batch_size=batch_size),),
+            **overrides,
+        ))
 
+    return _run
+
+
+def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, run_with):
     def read(output_dir, kind):
         frame = pd.concat(
             [pd.read_parquet(p) for p in sorted((output_dir / "raw").glob(f"{kind}*.parquet"))],
@@ -421,19 +431,56 @@ def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, monk
         return frame.drop(columns=[c for c in frame.columns if c.endswith("_seconds")]) \
             .sort_values(keys).reset_index(drop=True)
 
-    # Interrupted while generating q2's sample batch: q1 is complete and q2's
-    # greedy output is cached, but none of q2's samples are.
+    # Interrupted between q2's two sample chunks: q1 is complete, q2's greedy
+    # output is cached, and q2's first chunk was generated but not cached.
     interrupted = tmp_path / "interrupted"
     with pytest.raises(KeyboardInterrupt):
-        run_with(CountingModel(fail_after=3), interrupted)
+        run_with(_CountingModel(fail_after=5), interrupted)
 
-    resumed = CountingModel()
+    resumed = _CountingModel()
     run_with(resumed, interrupted)
-    # Only the missing unit is generated again, and the sample batch comes
-    # back whole, in one call.
-    assert resumed.calls == [("q2", "samples", (0, 1))]
+    # Only q2's sample set is generated again, whole, in the same chunks.
+    assert resumed.calls == [("q2", "samples", (0, 1)), ("q2", "samples", (2,))]
 
     uninterrupted = tmp_path / "uninterrupted"
-    run_with(CountingModel(), uninterrupted)
+    run_with(_CountingModel(), uninterrupted)
     for kind in ("generations", "detector_scores"):
         pd.testing.assert_frame_equal(read(interrupted, kind), read(uninterrupted, kind))
+
+
+def test_a_cache_made_at_another_batch_size_is_not_served(tmp_path, run_with):
+    import shutil
+
+    first = tmp_path / "batch2"
+    run_with(_CountingModel(), first, batch_size=2)
+    second = tmp_path / "batch1"
+    shutil.copytree(first / "cache", second / "cache")
+
+    model = _CountingModel()
+    run_with(model, second, batch_size=1)
+
+    assert [call for call in model.calls if call[1] == "samples"] == [
+        (item, "samples", (s,)) for item in ("q1", "q2") for s in range(3)
+    ]
+    manifest = json.loads((second / "manifest.json").read_text())
+    assert manifest["config"]["sample_batch_sizes"] == {QWEN2_5_7B.name: 1}
+    assert manifest["config"]["generation_seed_policy"] == (
+        "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v3"
+    )
+
+
+def test_a_validation_run_proceeds_with_an_explicit_batch_size(tmp_path, run_with):
+    from qcd.io.manifest import StudyPhase
+    from qcd.models.registry import QWEN2_5_32B
+
+    assert QWEN2_5_32B.sample_batch_size is None
+    model = _CountingModel()
+    run_with(
+        model, tmp_path, batch_size=2, study_phase=StudyPhase.ENGINEERING_VALIDATION,
+        spec=dataclasses.replace(QWEN2_5_32B, primary_first_post_boundary="2023-11-01"),
+    )
+
+    assert ("q1", "samples", (0, 1)) in model.calls
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["study_phase"] == "engineering_validation"
+    assert manifest["config"]["sample_batch_sizes"] == {QWEN2_5_32B.name: 2}

@@ -116,6 +116,7 @@ def run_dry_run(
             generations = sample_item(
                 model, cache, model_name=_MOCK_MODEL_NAME, quant=precision,
                 item_id=item.item_id, prompt=item.prompt, n_samples=n_cdd_samples,
+                batch_size=n_cdd_samples,
             )
             partial_pass = model.partial_pass_rate(item.item_id)
             partial_pass_by_precision[(precision, item.item_id)] = partial_pass

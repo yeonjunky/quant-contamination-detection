@@ -228,7 +228,8 @@ def run(config: RealRunConfig) -> None:
             "include_mbppplus": config.include_mbppplus,
             "item_limit_per_condition": config.item_limit_per_condition,
             "generation_max_new_tokens": GENERATION_MAX_NEW_TOKENS,
-            "generation_seed_policy": "sha256(item_id,sample_id,temperature)-per-row-generator-full-batch-v2",
+            "generation_seed_policy": "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v3",
+            "sample_batch_sizes": {m.name: m.sample_batch_size for m in config.models},
             "decoding_settings": {
                 "greedy": greedy_decoding,
                 "samples": sample_decoding,
@@ -303,15 +304,17 @@ def run(config: RealRunConfig) -> None:
                 generations = sample_item(
                     model, cache, model_name=model_spec.name, quant=quant.value,
                     item_id=item.item_id, prompt=_generation_prompt(item), n_samples=config.n_cdd_samples,
+                    batch_size=model_spec.sample_batch_size,
                     model_revision=model_revision,
-                    # The decoding-settings ids are part of the cache key, so
-                    # a change to the frozen decoding settings misses the
+                    # The decoding-settings ids and the sample batch size are
+                    # part of the cache key, so a change to either misses the
                     # cache instead of serving generations produced under the
                     # older settings.
                     generation_config=(
                         f"max_new_tokens={getattr(model, 'max_new_tokens', GENERATION_MAX_NEW_TOKENS)};"
                         f"decoding={greedy_decoding_id}/{sample_decoding_id};"
-                        "seed_policy=sha256-per-row-full-batch-v2"
+                        "seed_policy=sha256-per-row-fixed-batch-v3;"
+                        f"sample_batch_size={model_spec.sample_batch_size}"
                     ),
                 )
                 generation_seconds = time.perf_counter() - started

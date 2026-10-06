@@ -60,3 +60,20 @@ def test_band_is_model_specific_not_precision_only():
     small = SMOKE.plausible_peak_gb(QWEN2_5_7B, Quant.BNB_NF4)
     large = SMOKE.plausible_peak_gb(QWEN2_5_32B, Quant.BNB_NF4)
     assert large[1] > small[1]
+
+
+def _batch_size_from_cli(argv):
+    args = SMOKE.build_parser().parse_args(argv)
+    return SMOKE._sample_batch_size(args.sample_batch_size, SMOKE.get_model(args.model))
+
+
+def test_sample_batch_size_defaults_to_the_registry_value():
+    assert _batch_size_from_cli([]) == QWEN2_5_7B.sample_batch_size == 50
+
+
+def test_an_unmeasured_32b_model_can_try_an_explicit_sample_batch_size():
+    assert _batch_size_from_cli(["--model", QWEN2_5_32B.name, "--sample-batch-size", "16"]) == 16
+    with pytest.raises(SystemExit, match="pass --sample-batch-size"):
+        _batch_size_from_cli(["--model", QWEN2_5_32B.name])
+    with pytest.raises(SystemExit, match="must be >= 1"):
+        _batch_size_from_cli(["--sample-batch-size", "0"])

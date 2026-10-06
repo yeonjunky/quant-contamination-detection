@@ -141,7 +141,7 @@ def _load_model_for_smoke_test(spec, quant: Quant, checkpoint_path: Path | None)
     return _RealModelAdapter(model, tokenizer)
 
 
-def _parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", default=QWEN2_5_7B.name, help="ModelSpec.name from models/registry.py (default: %(default)s)")
     parser.add_argument("--quant", choices=_QUANT_CHOICES, default=Quant.BNB_NF4.value)
@@ -150,15 +150,33 @@ def _parse_args() -> argparse.Namespace:
         help="Load directly from this local checkpoint dir instead of load_model()'s canonical-path "
              "resolution (see module docstring's --checkpoint-path example).",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--sample-batch-size", type=int, default=None,
+        help="Rows per batched sample generate call, to try a value before it is fixed in "
+             "models/registry.py. Default: the model's registry value.",
+    )
+    return parser
+
+
+def _sample_batch_size(override: int | None, spec: ModelSpec) -> int:
+    batch_size = override if override is not None else spec.sample_batch_size
+    if batch_size is None:
+        raise SystemExit(
+            f"{spec.name} has no sample_batch_size in models/registry.py; "
+            "pass --sample-batch-size to try one"
+        )
+    if batch_size < 1:
+        raise SystemExit(f"--sample-batch-size must be >= 1, got {batch_size}")
+    return batch_size
 
 
 def main() -> None:
     import torch  # noqa: PLC0415
 
-    args = _parse_args()
+    args = build_parser().parse_args()
     model_spec = get_model(args.model)
     quant = Quant(args.quant)
+    sample_batch_size = _sample_batch_size(args.sample_batch_size, model_spec)
     # Distinguishes cache entries/written rows by checkpoint, not just Quant
     # level — without this, two different --checkpoint-path runs sharing the
     # same (model, quant) collide in GenerationCache and silently serve each
@@ -212,6 +230,7 @@ def main() -> None:
         generations = sample_item(
             model, cache, model_name=model_spec.name, quant=quant_label,
             item_id=item.item_id, prompt=item.prompt, n_samples=N_SAMPLES, sample_temperature=SAMPLE_TEMPERATURE,
+            batch_size=sample_batch_size,
         )
         print(f"  {item.item_id}: {time.time() - t0:.1f}s, greedy {len(generations.greedy.token_ids)} tokens")
 
@@ -275,7 +294,7 @@ def main() -> None:
     freeze_path = _save_pip_freeze()
     manifest_path = _write_validation_manifest(
         run_dir, model_spec=model_spec, quant=quant, quant_label=quant_label,
-        model=model, n_items=len(items),
+        model=model, n_items=len(items), sample_batch_size=sample_batch_size,
     )
     print(f"Validation manifest: {manifest_path}")
 
@@ -306,7 +325,8 @@ def main() -> None:
 
 
 def _write_validation_manifest(
-    run_dir: Path, *, model_spec, quant: Quant, quant_label: str, model, n_items: int
+    run_dir: Path, *, model_spec, quant: Quant, quant_label: str, model, n_items: int,
+    sample_batch_size: int,
 ) -> Path:
     """Paper §4.6: validation output is recorded as validation output.
 
@@ -324,6 +344,7 @@ def _write_validation_manifest(
             "quant_label": quant_label,
             "n_items": n_items,
             "n_samples": N_SAMPLES,
+            "sample_batch_size": sample_batch_size,
             "sample_temperature": SAMPLE_TEMPERATURE,
             "dataset": "humaneval",
             "stores_outcome_values": False,

@@ -110,6 +110,8 @@ def main() -> None:
         generations = sample_item(
             model, cache, model_name=model_spec.name, quant=quant.value,
             item_id=item.item_id, prompt=_generation_prompt(item), n_samples=0,
+            # No samples are drawn, so the batch size is never used.
+            batch_size=1,
         )
         generation_seconds = time.perf_counter() - started
         candidate = _assemble_candidate_code(item, generations.greedy.text)

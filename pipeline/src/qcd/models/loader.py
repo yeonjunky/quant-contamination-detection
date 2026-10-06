@@ -586,14 +586,15 @@ class _RealModelAdapter:
     def generate_samples(
         self, item_id: str, prompt: str, *, temperature: float, sample_ids: list[int]
     ) -> list[_RealGenerationSample]:
-        """All of an item's temperature samples in one batched generate call,
-        one row per sample id, in the order given.
+        """One batched generate call for the given temperature samples, one
+        row per sample id, in the order given.
 
         Each row draws its tokens from its own `torch.Generator` seeded with
         `_seed_from(item_id, sample_id, temperature)`, so a sample's tokens
         do not depend on which other rows share the batch, or on precision.
         The logits themselves do depend slightly on batch size, which is why
-        the caller always passes an item's full set of sample ids."""
+        the caller (`generation/sampler.py`) always splits an item's sample
+        ids into the same chunks of the model's fixed batch size."""
         import torch  # noqa: PLC0415
         from transformers import LogitsProcessorList  # noqa: PLC0415
 
