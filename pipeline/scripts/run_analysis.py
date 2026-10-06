@@ -23,11 +23,14 @@ What this driver runs, and nothing else:
    outputs and cap hits per model and precision. It reads the same tables
    but feeds no test; C1-C4 do not depend on it.
 
-Two gates run before any of that:
+Three gates run before any of that:
 
 - `require_main_study()` on the input tree (paper §4.6 — engineering
   validation output is never manuscript evidence). This is the first thing
   the script does, before it opens a single parquet file.
+- `require_complete_study()`: every model x precision cell the manifest
+  names has a completion record with the manifest's `config_hash`, and every
+  part that record lists is on disk.
 - the §4.5.5 interval-coverage record must exist and be complete, because the
   analysis manifest has to carry its generating parameters, replication count
   and achieved coverage. The check "fixes which method supplies the reported
@@ -77,6 +80,7 @@ from qcd.analysis.coverage import (  # noqa: E402
 )
 from qcd.config import Quant  # noqa: E402
 from qcd.constants import ALPHA  # noqa: E402
+from qcd.io.cells import require_complete_study  # noqa: E402
 from qcd.io.manifest import (  # noqa: E402
     StudyPhase,
     build_manifest,
@@ -380,6 +384,9 @@ def run_analysis(
     # Paper §4.6 first, before anything is read: validation output is never
     # manuscript evidence.
     input_manifest = require_main_study(run_dir, consumer="scripts/run_analysis.py")
+    # Every model x precision cell must have finished, or the paired tests
+    # would silently run on whatever items happen to be on disk.
+    require_complete_study(run_dir, input_manifest, consumer="scripts/run_analysis.py")
     # §4.5.5: the coverage check fixes which method supplies the reported
     # interval, and the analysis manifest has to carry it.
     coverage_record = load_interval_coverage_record(coverage_record_path)

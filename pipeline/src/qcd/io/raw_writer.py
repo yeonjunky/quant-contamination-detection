@@ -82,6 +82,16 @@ def _write_parquet_atomic(frame: pd.DataFrame, path: Path) -> None:
         raise
 
 
+def part_is_written(raw_dir: Path, part: str, *, file_prefix: str = "") -> bool:
+    """Whether `RawDataWriter.flush(part=part)` completed: it writes
+    generations first and detector scores second, each atomically, so a part
+    is complete only when both files exist."""
+    return all(
+        (Path(raw_dir) / f"{file_prefix}{stem}.{part}.parquet").exists()
+        for stem in ("generations", "detector_scores")
+    )
+
+
 class RawDataWriter:
     def __init__(self, output_dir: str | Path, *, file_prefix: str = "") -> None:
         self.output_dir = Path(output_dir)
@@ -243,13 +253,7 @@ class RawDataWriter:
         return written
 
     def has_part(self, part: str) -> bool:
-        """Whether `flush(part=part)` completed: it writes generations first
-        and detector scores second, each atomically, so a part is complete
-        only when both files exist."""
-        return all(
-            (self.output_dir / f"{self.file_prefix}{stem}.{part}.parquet").exists()
-            for stem in ("generations", "detector_scores")
-        )
+        return part_is_written(self.output_dir, part, file_prefix=self.file_prefix)
 
     @property
     def n_buffered_generations(self) -> int:

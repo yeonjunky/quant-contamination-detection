@@ -48,6 +48,7 @@ from qcd.io.manifest import (
     StudyPhase, build_manifest, read_manifest, resolve_library_defaults,
     unresolved_library_defaults, write_manifest,
 )
+from qcd.io.cells import cell_id, completion_marker_path
 from qcd.io.raw_writer import RawDataWriter
 from qcd.models.loader import decoding_settings_id, load_model, resolved_decoding_settings
 from qcd.scoring.logprob import score_prompt_logprobs
@@ -315,10 +316,6 @@ def selected_cells(config: RealRunConfig) -> list[tuple[ModelSpec, Quant]]:
     ]
 
 
-def cell_id(model_spec: ModelSpec, quant: Quant) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", f"{model_spec.name}-{quant.value}")
-
-
 def _write_json_atomic(payload: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -351,9 +348,9 @@ def _run_cell(
     part on disk is final: a rerun skips it and regenerates only the batches
     that never reached disk. `complete.json` is written after the last part,
     and a cell carrying it is skipped without loading the model."""
-    this_cell = cell_id(model_spec, quant)
-    cell_dir = config.output_dir / "cells" / this_cell
-    completion_marker = cell_dir / "complete.json"
+    this_cell = cell_id(model_spec.name, quant.value)
+    completion_marker = completion_marker_path(config.output_dir, this_cell)
+    cell_dir = completion_marker.parent
     if completion_marker.exists():
         return
     parts = [f"{this_cell}-{index:05d}" for index in range(len(batches))]
