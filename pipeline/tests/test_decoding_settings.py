@@ -247,7 +247,9 @@ def test_greedy_differs_from_the_samples_only_in_sampling():
     samples = frozen_decoding_settings(temperature=0.8)
 
     differing = {key for key in samples if greedy[key] != samples[key]}
-    assert differing == {"do_sample", "temperature"}
+    # output_logits only says where the stored log-probabilities are read
+    # from; it changes no generated token.
+    assert differing == {"do_sample", "temperature", "output_logits"}
     assert greedy["do_sample"] is False
     # Sampling off, so the recorded temperature is a true no-op rather than a
     # value transformers silently ignores.
@@ -363,10 +365,16 @@ def test_generate_stores_raw_logprobs_from_outputs_logits(monkeypatch):
 
 
 def test_frozen_settings_request_logits_and_not_scores():
-    settings = frozen_decoding_settings(temperature=0.8)
+    settings = frozen_decoding_settings(temperature=0.0)
     assert settings["output_logits"] is True
     assert settings["output_scores"] is False
     assert settings["return_dict_in_generate"] is True
+
+
+def test_sample_settings_keep_no_per_step_logits():
+    settings = frozen_decoding_settings(temperature=0.8)
+    assert settings["output_logits"] is False
+    assert settings["output_scores"] is False
 
 
 # --- (c) truncation record ---------------------------------------------------
@@ -412,7 +420,7 @@ def test_resolved_record_carries_our_values_and_the_library_defaults():
     assert resolved["top_k"] == 0
     assert resolved["repetition_penalty"] == 1.0
     assert resolved["max_new_tokens"] == GENERATION_MAX_NEW_TOKENS
-    assert resolved["output_logits"] is True
+    assert resolved["output_logits"] is False
     # Left to the library, and recorded at its resolved value rather than as a
     # blank — this is the half §4.4's "record ... decoding settings" would
     # otherwise miss.

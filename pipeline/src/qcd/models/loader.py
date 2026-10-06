@@ -64,8 +64,9 @@ class _RealGenerationSample:
     separate class, not imported from models.mock (see _seed_from's
     docstring).
 
-    `token_logprobs` holds **raw** per-token log-probabilities (see
-    `_RealModelAdapter.generate`), and `truncated_at_cap` records whether this
+    `token_logprobs` holds **raw** per-token log-probabilities (from
+    `outputs.logits` for the greedy output, from `_PerRowSampler` for
+    samples), and `truncated_at_cap` records whether this
     generation stopped because it hit the 512-token cap rather than because
     the model emitted a stop token (paper §4.4: "we record per item whether
     generation stopped at the cap and report the truncated-generation rate by
@@ -179,9 +180,13 @@ def frozen_decoding_settings(
         "renormalize_logits": False,
         "use_mtp": False,
         "use_cache": True,
-        # Raw (pre-logits-processor) logits, needed for the stored token
-        # log-probabilities — see `_RealModelAdapter.generate`.
-        "output_logits": True,
+        # Raw (pre-logits-processor) logits, needed for the greedy output's
+        # stored token log-probabilities — see `_RealModelAdapter.generate`.
+        # Samples record theirs inside `_PerRowSampler` instead: keeping every
+        # step's full-vocabulary logits for a 50-row batch would cost about
+        # 15.6 GB of GPU memory per item at Qwen's vocabulary and the
+        # 512-token cap (50 x 512 x 152,064 x 4 bytes).
+        "output_logits": is_greedy,
         "output_scores": False,
         "output_attentions": False,
         "output_hidden_states": False,
@@ -292,12 +297,18 @@ class _PerRowSampler:
     sample settings that warper is the only one transformers appends, so the
     warper and the final multinomial both leave the one-hot unchanged.
 
+    Being the first processor, it receives the raw float32 logits, so it also
+    records each row's raw log-probability of the token it drew
+    (`drawn_logprobs`, one tensor of shape [n_rows] per step, before the
+    temperature is applied).
+
     Duck-typed rather than subclassing `transformers.LogitsProcessor`, which
     needs torch at import time; `LogitsProcessorList` only calls it."""
 
     def __init__(self, generators: list, temperature: float) -> None:
         self.generators = generators
         self.temperature = temperature
+        self.drawn_logprobs: list = []
 
     def __call__(self, input_ids, scores):
         import torch  # noqa: PLC0415
@@ -307,6 +318,9 @@ class _PerRowSampler:
             torch.multinomial(probs[row], 1, generator=generator)
             for row, generator in enumerate(self.generators)
         ])
+        self.drawn_logprobs.append(
+            torch.log_softmax(scores, dim=-1).gather(1, drawn[:, None]).squeeze(1)
+        )
         one_hot = torch.full_like(scores, float("-inf"))
         return one_hot.scatter_(1, drawn[:, None], 0.0)
 
@@ -554,9 +568,20 @@ class _RealModelAdapter:
                 attention_mask=attention_mask,
                 generation_config=self._generation_config_for(temperature),
             )
-        return self._sample_from_row(
-            outputs, 0, prompt_len=input_ids.shape[-1], is_greedy=True
-        )
+        import torch.nn.functional as F  # noqa: PLC0415
+
+        new_token_ids = outputs.sequences[0][input_ids.shape[-1]:].tolist()
+        # outputs.logits[i] is the **raw**, unprocessed logits for generation
+        # step i (one entry per new token, in order), captured before the
+        # logits processors run (transformers 5.14.1 generation/utils.py:2907
+        # and :2917); outputs.scores would be the post-processor values.
+        # §4.4's probability quantities are raw model log-probabilities, so
+        # this path uses the raw logits.
+        token_logprobs = [
+            F.log_softmax(step_logits[0].float(), dim=-1)[token_id].item()
+            for step_logits, token_id in zip(outputs.logits, new_token_ids)
+        ]
+        return self._sample(new_token_ids, token_logprobs, is_greedy=True)
 
     def generate_samples(
         self, item_id: str, prompt: str, *, temperature: float, sample_ids: list[int]
@@ -581,54 +606,40 @@ class _RealModelAdapter:
             )
             for sample_id in sample_ids
         ]
+        sampler = _PerRowSampler(generators, temperature)
         with torch.no_grad():
             outputs = self.model.generate(
                 input_ids.repeat(n_rows, 1),
                 attention_mask=attention_mask.repeat(n_rows, 1),
                 generation_config=self._generation_config_for(temperature),
-                logits_processor=LogitsProcessorList(
-                    [_PerRowSampler(generators, temperature)]
-                ),
+                logits_processor=LogitsProcessorList([sampler]),
             )
         prompt_len = input_ids.shape[-1]
-        return [
-            self._sample_from_row(outputs, row, prompt_len=prompt_len, is_greedy=False)
-            for row in range(n_rows)
-        ]
+        # [n_rows][steps], moved off the device once.
+        drawn_logprobs = torch.stack(sampler.drawn_logprobs, dim=1).tolist()
+        samples = []
+        for row in range(n_rows):
+            new_token_ids = outputs.sequences[row][prompt_len:].tolist()
+            # A batched generate keeps appending pad ids to a row that already
+            # stopped. Cutting right after the row's first stop token gives
+            # exactly what a batch of one would have returned.
+            for position, token_id in enumerate(new_token_ids):
+                if token_id in self._stop_token_ids:
+                    new_token_ids = new_token_ids[: position + 1]
+                    break
+            samples.append(self._sample(
+                new_token_ids, drawn_logprobs[row][: len(new_token_ids)], is_greedy=False
+            ))
+        return samples
 
-    def _sample_from_row(
-        self, outputs, row: int, *, prompt_len: int, is_greedy: bool
+    def _sample(
+        self, new_token_ids: list[int], token_logprobs: list[float], *, is_greedy: bool
     ) -> _RealGenerationSample:
-        import torch.nn.functional as F  # noqa: PLC0415
-
-        new_token_ids = outputs.sequences[row][prompt_len:].tolist()
-        # A batched generate keeps appending pad ids to a row that already
-        # stopped. Cutting right after the row's first stop token gives
-        # exactly what a batch of one would have returned.
-        for position, token_id in enumerate(new_token_ids):
-            if token_id in self._stop_token_ids:
-                new_token_ids = new_token_ids[: position + 1]
-                break
-
-        # outputs.logits[i] is the **raw**, unprocessed logits for generation
-        # step i (one entry per new token, in order), captured before the
-        # logits processors run (transformers 5.14.1 generation/utils.py:2907
-        # and :2917); outputs.scores would be the post-processor values.
-        # §4.4's probability quantities are raw model log-probabilities, so
-        # this path uses the raw logits. For samples that difference is not
-        # just the temperature: `_PerRowSampler` turns the processed scores
-        # into a one-hot of the drawn token.
-        #
-        # These values are stored as `token_logprobs` in generations.parquet
-        # and feed real_run.py's `completion_perplexity` /
-        # `completion_mink_prob` diagnostic scores. The Q1 perplexity and
-        # Min-k% scores do NOT come from here — they come from
-        # score_prompt_detail()'s fixed-benchmark-text pass.
-        token_logprobs = [
-            F.log_softmax(step_logits[row].float(), dim=-1)[token_id].item()
-            for step_logits, token_id in zip(outputs.logits, new_token_ids)
-        ]
-
+        """`token_logprobs` are raw model log-probabilities of the generated
+        tokens. They are stored in generations.parquet and feed real_run.py's
+        `completion_perplexity` / `completion_mink_prob` diagnostic scores.
+        The Q1 perplexity and Min-k% scores do NOT come from here — they come
+        from score_prompt_detail()'s fixed-benchmark-text pass."""
         text = self.tokenizer.decode(new_token_ids, skip_special_tokens=True)
         return _RealGenerationSample(
             text=text, token_ids=new_token_ids, token_logprobs=token_logprobs,

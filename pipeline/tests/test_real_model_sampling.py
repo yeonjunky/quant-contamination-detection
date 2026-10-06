@@ -123,6 +123,8 @@ def test_samples_use_the_frozen_sample_config_and_add_only_the_sampler(adapter, 
     assert (config.do_sample, config.temperature, config.top_p, config.top_k) == (
         True, _TEMPERATURE, 1.0, 0,
     )
+    # No per-step full-vocabulary logits are kept for the batch.
+    assert config.output_logits is False
     assert received["rows"] == 3
     assert set(received) - {"rows"} == {
         "attention_mask", "generation_config", "logits_processor",
@@ -134,6 +136,22 @@ def test_stored_logprobs_are_the_raw_model_logprobs(adapter):
     for row in _samples(adapter, range(4)):
         teacher_forced = adapter.score_logprobs("item", row.token_ids)
         assert row.token_logprobs == pytest.approx(teacher_forced, abs=1e-4)
+
+
+def test_stored_logprobs_are_taken_before_the_temperature(adapter):
+    input_ids, attention_mask = adapter._build_input_ids(_PROMPT)
+    prompt_len = input_ids.shape[-1]
+    for row in _samples(adapter, range(4)):
+        completion = torch.tensor([row.token_ids])
+        full_ids = torch.cat([input_ids, completion], dim=-1)
+        with torch.no_grad():
+            logits = adapter.model(full_ids, attention_mask=torch.ones_like(full_ids)).logits[0]
+        step_logits = logits[prompt_len - 1 : -1]
+        drawn = completion[0][:, None]
+        raw = torch.log_softmax(step_logits, dim=-1).gather(1, drawn).squeeze(1).tolist()
+        tempered = torch.log_softmax(step_logits / _TEMPERATURE, dim=-1).gather(1, drawn).squeeze(1).tolist()
+        assert row.token_logprobs == pytest.approx(raw, abs=1e-4)
+        assert max(abs(a - b) for a, b in zip(raw, tempered)) > 1e-2
 
 
 def test_a_first_token_is_drawn_from_its_own_seeded_generator_at_the_temperature(adapter):
