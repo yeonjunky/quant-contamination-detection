@@ -7,6 +7,7 @@ single band per precision could not hold both size classes, so the band is
 derived per model.
 """
 
+import dataclasses
 import importlib.util
 from pathlib import Path
 
@@ -87,8 +88,10 @@ def test_sample_batch_size_defaults_to_the_registry_value():
 
 
 def test_an_unmeasured_32b_model_can_try_an_explicit_sample_batch_size():
-    assert _batch_size_from_cli(["--model", QWEN2_5_32B.name, "--sample-batch-size", "16"]) == 16
+    unmeasured = dataclasses.replace(QWEN2_5_32B, sample_batch_size=None)
+    assert SMOKE._sample_batch_size(16, unmeasured) == 16
     with pytest.raises(SystemExit, match="pass --sample-batch-size"):
-        _batch_size_from_cli(["--model", QWEN2_5_32B.name])
+        SMOKE._sample_batch_size(None, unmeasured)
+    assert _batch_size_from_cli(["--model", QWEN2_5_32B.name, "--sample-batch-size", "16"]) == 16
     with pytest.raises(SystemExit, match="must be >= 1"):
         _batch_size_from_cli(["--sample-batch-size", "0"])

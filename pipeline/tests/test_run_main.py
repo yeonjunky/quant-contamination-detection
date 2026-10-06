@@ -48,11 +48,16 @@ def test_an_unmeasured_sample_batch_size_stops_before_any_run(monkeypatch):
     monkeypatch.setattr(RUN_MAIN, "require_clean_checkout", lambda: "0" * 40)
     monkeypatch.setattr(RUN_MAIN, "run", lambda config: started.append(config))
     monkeypatch.setattr("sys.argv", ["run_main.py"])
+    measured, *rest = RUN_MAIN.MAIN_ANALYSIS_MODELS
+    roster = (dataclasses.replace(measured, sample_batch_size=None), *(
+        dataclasses.replace(model, sample_batch_size=model.sample_batch_size or 16) for model in rest
+    ))
+    monkeypatch.setattr(RUN_MAIN, "MAIN_ANALYSIS_MODELS", roster)
 
-    # The registry leaves both 32B models unmeasured until the H100 smoke test.
-    with pytest.raises(ValueError, match="Measure it on the H100"):
+    with pytest.raises(ValueError, match="Measure it on the H100") as refused:
         RUN_MAIN.main()
     assert started == []
+    assert str(refused.value).startswith(f"['{measured.name}'] have no sample_batch_size")
 
 
 @pytest.fixture

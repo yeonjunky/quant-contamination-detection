@@ -499,13 +499,15 @@ def test_a_model_without_a_measured_batch_size_refuses_before_loading(tmp_path, 
         real_run_module, "load_all_items", lambda config: loaded.append("items")
     )
 
-    # What scripts/run_main.py builds: the registry roster, main study.
+    # What scripts/run_main.py builds before the H100 measurement: the registry
+    # roster with both 32B models unset, main study.
+    roster = tuple(
+        dataclasses.replace(m, sample_batch_size=None) if "32B" in m.name else m
+        for m in MAIN_ANALYSIS_MODELS
+    )
     with pytest.raises(ValueError, match="Measure it on the H100") as refused:
-        run(_small_config(
-            tmp_path, models=MAIN_ANALYSIS_MODELS, study_phase=StudyPhase.MAIN_STUDY,
-        ))
-    assert "Qwen2.5-32B-Instruct" in str(refused.value)
-    assert "Olmo3.1-32B-Instruct" in str(refused.value)
+        run(_small_config(tmp_path, models=roster, study_phase=StudyPhase.MAIN_STUDY))
+    assert str(refused.value).startswith("['Qwen2.5-32B-Instruct', 'Olmo3.1-32B-Instruct'] have no")
     assert "scripts/measure_sample_batch.py" in str(refused.value)
     assert "models/registry.py" in str(refused.value)
     assert loaded == []
@@ -516,11 +518,12 @@ def test_a_validation_run_proceeds_with_an_explicit_batch_size(tmp_path, run_wit
     from qcd.io.manifest import StudyPhase
     from qcd.models.registry import QWEN2_5_32B
 
-    assert QWEN2_5_32B.sample_batch_size is None
     model = _CountingModel()
     run_with(
         model, tmp_path, batch_size=2, study_phase=StudyPhase.ENGINEERING_VALIDATION,
-        spec=dataclasses.replace(QWEN2_5_32B, primary_first_post_boundary="2023-11-01"),
+        spec=dataclasses.replace(
+            QWEN2_5_32B, sample_batch_size=None, primary_first_post_boundary="2023-11-01",
+        ),
     )
 
     assert ("q1", "samples", (0, 1)) in model.calls
