@@ -162,14 +162,16 @@ python scripts/run_main.py --cell <MODEL>:<QUANT>
   쓰지 않은 25문항 단위 묶음부터 이어 간다. 이미 쓴 문항 묶음 파일은 건드리지 않는다. 다만 공용
   파일인 `items.parquet`, `model_item_labels.parquet`와 그 셀의 채팅 템플릿 파일
   (`chat_templates.<셀>.parquet`)은 다시 쓰이며, 내용은 이전과 같다.
-- 셀이 시작하면 `data/raw/main/cells/<cell>/started.json`, 끝나면 `complete.json`이 생긴다. 둘 다
+- 셀이 처음 시작하면 `data/raw/main/cells/<cell>/started.json`, 이어서 돌릴 때마다 `resumed-<시각>.json`,
+  끝나면 `complete.json`이 생긴다. 모두
   커밋, 패키지 버전, 호스트, GPU 이름을 기록한다. 셀마다 시작할 때 약 1분이 더 걸린다(LCB 문항
   읽기와 숨은 테스트 수 세기).
 - **본 실행은 첫 셀을 시작한 커밋과 패키지 버전에 묶인다.** 다른 커밋, 커밋 안 된 변경, 다른 패키지
   버전, 다른 채점 환경 변수로 셀을 시작하면 거부된다. `git pull`이나 `pip install`을 하지 않는다.
 - **시간 다시 계산.** 첫 셀의 첫 두 묶음(50문항)이 쓰이면, 그 생성 파일의 `generation_seconds`,
   `prompt_scoring_seconds`, `sandbox_scoring_seconds` 열의 문항당 합계 평균 × 1,597 × 20으로 전체 시간을
-  추정한다. 시간 열만 보고, 점수나 통과 여부 열은 보지 않는다.
+  추정한다. 시간 열만 보고, 점수나 통과 여부 열은 보지 않는다. 참고로 Mac에서 가짜 모델로 잰
+  HumanEval+/MBPP+ 채점은 문항당 3–4초였다(정답 코드를 매번 다시 실행). H100 값은 재지 않았다.
 - **설정을 바꿔야 할 때** (메모리 부족 같은 운영 실패): 결과를 보기 전에 원인과 바꿀 내용을 기록한다.
   그다음 `data/raw/main`을 `data/raw/main_aborted_<날짜>`로 옮기고, 코드를 고쳐 커밋하고, 6단계부터
   다시 한다. 새 본 실행은 20개 셀을 처음부터 돈다. 옮긴 폴더의 데이터는 분석에 쓰지 않는다(§4.6).

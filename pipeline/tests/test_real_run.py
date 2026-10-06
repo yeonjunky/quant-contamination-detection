@@ -766,6 +766,21 @@ def test_each_cell_records_the_commit_and_environment_that_produced_it(tmp_path,
         assert record["config_hash"] == manifest["config_hash"], record_name
 
 
+def test_a_resumed_cell_keeps_its_first_start_record(tmp_path, run_with):
+    interrupted = _CountingModel(fail_after=1)
+    with pytest.raises(KeyboardInterrupt):
+        run_with(interrupted, tmp_path)
+    cell_dir = tmp_path / "cells" / "Qwen2.5-7B-Instruct-bf16"
+    first_start = (cell_dir / "started.json").read_text()
+
+    run_with(_CountingModel(), tmp_path)
+
+    assert (cell_dir / "started.json").read_text() == first_start
+    resumes = sorted(cell_dir.glob("resumed-*.json"))
+    assert len(resumes) == 1
+    assert json.loads(resumes[0].read_text())["started_at_utc"] > json.loads(first_start)["started_at_utc"]
+
+
 def test_a_cell_with_other_scoring_environment_variables_is_refused(tmp_path, run_with, monkeypatch):
     """evalplus's memory cap and per-task timeout come from the environment
     and change pass/fail, so they are part of the study's configuration."""

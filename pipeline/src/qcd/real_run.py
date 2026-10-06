@@ -414,15 +414,21 @@ def _run_cell(
     cell_dir = completion_marker.parent
     if completion_marker.exists():
         return
+    started_at = dt.datetime.now(dt.timezone.utc)
+    # The first start keeps `started.json`; each resume gets its own record,
+    # so an interrupted cell's history is not overwritten.
+    start_record = cell_dir / "started.json"
+    if start_record.exists():
+        start_record = cell_dir / f"resumed-{started_at.strftime('%Y%m%dT%H%M%S%fZ')}.json"
     _write_json_atomic(
         {
             "model": model_spec.name,
             "quant": quant.value,
             "config_hash": config_hash,
             **environment,
-            "started_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "started_at_utc": started_at.isoformat(),
         },
-        cell_dir / "started.json",
+        start_record,
     )
     parts = [f"{this_cell}-{index:05d}" for index in range(len(batches))]
     pending = [(part, batch) for part, batch in zip(parts, batches) if not writer.has_part(part)]
