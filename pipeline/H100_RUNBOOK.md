@@ -20,6 +20,10 @@ pip install -r requirements-h100.txt
 pip install -e .
 ```
 
+- torch는 `requirements-h100.txt`의 `torch==2.13.0`이 PyPI에서 설치된다. 별도 wheel 주소
+  (`--index-url`)는 쓰지 않는다. 2026-08-15 H100 기록(`envs/local-smoke-freeze.txt`)과 같은 버전이며,
+  그 기록에는 CUDA 13.0 패키지가 함께 있다. torch가 스스로 붙이는 `+cu130` 같은 꼬리표는 2단계
+  점검이 무시하고, torch가 어떤 CUDA 버전으로 빌드됐는지는 `cuda` 행에 따로 보여 준다.
 - Llama-3.1-8B-Instruct는 접근 승인이 필요한 모델이다. H100 계정의 Hugging Face 토큰으로 접근이
   되는지 2단계가 확인한다. 토큰 설정은 직접 한다.
 
@@ -62,8 +66,16 @@ python scripts/run_lcb_smoke_test.py --model <MODEL> --quant <QUANT>
 
 - 32B 모델은 아직 묶음 크기가 없으므로 `run_smoke_test.py`에 `--sample-batch-size 2`를 붙인다
   (이 테스트는 샘플을 2개만 뽑는다).
-- 출력은 `data/raw/validation/` 아래에만 쌓인다.
-- **통과 조건**: 40번 모두 exit 0. 메모리 상한은 카드 용량(80GB)으로 잘린다.
+- 출력은 `data/raw/validation/` 아래에만 쌓인다. `pip freeze` 기록도 그 실행의 폴더
+  (`data/raw/validation/smoke_test/<QUANT>/pip-freeze.txt`)에 쓰이고, 그 경로가 manifest에 남는다.
+  추적 파일 `envs/local-smoke-freeze.txt`는 건드리지 않으므로 스모크 테스트 뒤에도 작업 트리가
+  깨끗하다.
+- `run_smoke_test.py`는 5개 문항의 greedy 출력이 모두 512토큰 상한까지 갔으면
+  `greedy_outputs_not_all_at_512_cap` 항목을 실패로 표시한다. 가장 짧은 HumanEval 문항에서 한 번도
+  멈추지 않았다면 모델의 종료 토큰 설정이 틀렸을 가능성이 크다. 점수가 아니라 실행의 성질을 보는
+  점검이다.
+- **통과 조건**: 40번 모두 exit 0(종료 토큰 점검 포함). 메모리 상한은 카드 용량(80GB)으로 잘린다.
+  `git status --short --untracked-files=no` 출력이 여전히 비어 있다.
 
 ## 5. 샘플 묶음 크기 측정
 
@@ -80,22 +92,45 @@ python scripts/measure_sample_batch.py --model Olmo3.1-32B-Instruct --quant <QUA
 python scripts/measure_sample_batch.py --model <7B/8B MODEL> --quant <QUANT> --batch-sizes 50 --n-items 1
 ```
 
-- 스크립트는 가장 긴 LCB 문항으로 샘플 50개를 뽑는다. 크기마다 GPU 메모리 최고치, 문항당 시간,
-  생성 길이, 512토큰 상한 도달률을 기록한다. 같은 문항을 두 번 생성해 토큰과 로그확률이 완전히
-  같은지(`reproducible`)도 기록한다.
-- 추천값은 "메모리 부족 없음 + 재현성 통과 + 최고 예약 메모리 ≤ 카드의 90%"를 만족하는 가장 큰
-  크기다. 90%는 경험값이 아니라 여유분으로 정한 값이다.
+- 스크립트는 가장 긴 LCB 문항으로 본 실행이 문항마다 하는 일을 그대로 한다. 샘플 50개를 뽑고,
+  이어서 문항 프롬프트의 로그확률을 계산하는 순전파를 한 번 한다(그 값은 읽지 않고 버린다).
+  크기마다 두 번 돈다.
+  - `normal_decoding`: 본 실행과 같은 디코딩. 같은 문항을 두 번 생성해 토큰과 로그확률이 완전히
+    같은지(`reproducible`)를 기록하고, 모든 생성의 토큰과 로그확률로 만든 SHA-256 값
+    (`generations_sha256`)을 남긴다. 점수가 아니라 생성 결과의 지문이다.
+  - `forced_length`: 종료 토큰을 막아 모든 줄이 512토큰까지 생성되게 한다. 이 메모리 최고치가 그
+    길이의 문항에서 나올 수 있는 최악의 값이다. 종료 토큰을 막는 장치는 이 스크립트에서만 쓰고 본
+    실행에서는 쓰지 않는다.
+- 기록의 숫자마다 어느 쪽에서 나왔는지 적혀 있다.
+- 추천값은 "메모리 부족 없음 + 재현성 통과 + `forced_length`의 모든 줄이 512토큰 도달 +
+  `forced_length` 최고 예약 메모리 ≤ 카드의 90%"를 만족하는 가장 큰 크기다. 90%는 경험값이 아니라
+  여유분으로 정한 값이다.
+- 어떤 크기도 이 조건을 못 맞추면 스크립트가 exit 1로 끝나며 더 작은 크기로 다시 재라고 알려 준다.
+  그때는 `--batch-sizes 4 3 2 1`로 다시 잰다.
 - **모델의 묶음 크기 = 네 정밀도 추천값 중 가장 작은 값.** 같은 모델은 모든 정밀도에서 같은 크기를
   쓴다(논문 §4.4).
-- **통과 조건**: 20개 셀 모두 `reproducible: true`. 하나라도 false면 본 실행 전에 원인을 찾는다.
-  같은 입력에서 결과가 달라지면 중단 후 재개한 결과도 달라지기 때문이다.
-- **시간 추정**: 기록된 문항당 시간 × 1,597문항 × 셀 수로 전체 GPU 시간을 계산한다. 가장 긴
-  문항으로 잰 값이라 실제보다 크게 나온다. 감당할 수 없으면 본 실행 전에 계획을 다시 정한다.
+- **다른 프로세스에서 다시 재기.** 재개는 새 프로세스에서 일어나므로, 32B 셀 하나와 7B 셀 하나를
+  골라 처음과 같은 인자로 새 프로세스에서 한 번 더 잰다. 결과는 다른 폴더에 쓰고 첫 기록과 비교한다.
+
+```bash
+python scripts/measure_sample_batch.py --model <MODEL> --quant <QUANT> <처음과 같은 --batch-sizes, --n-items> \
+    --output-dir ../data/raw/validation/sample_batch_measurement/<MODEL>-<QUANT>-repeat \
+    --compare-to ../data/raw/validation/sample_batch_measurement/<MODEL>-<QUANT>/batch_measurement.json
+```
+
+- **통과 조건**: 20개 셀 모두 `reproducible: true`, 그리고 다시 잰 두 셀의 비교가 "all digests match"로
+  끝난다(exit 0). 하나라도 어긋나면 본 실행 전에 원인을 찾는다. 같은 입력에서 결과가 달라지면 중단
+  후 재개한 결과도 달라지기 때문이다.
+- **시간 추정**: `normal_decoding`에 기록된 문항당 시간 × 1,597문항 × 셀 수로 전체 GPU 시간을
+  계산한다. 가장 긴 문항으로 잰 값이라 실제보다 크게 나온다. 감당할 수 없으면 본 실행 전에 계획을
+  다시 정한다.
 
 ## 6. 묶음 크기 고정과 사전 점검 (최종)
 
 - `src/qcd/models/registry.py`에서 두 32B 모델의 `sample_batch_size`를 5단계 값으로 채운다.
-  7B/8B가 50에서 통과하지 못했다면 그 값도 고친다.
+- 7B/8B 세 모델의 50은 논문(§4.4)이 정한 값이다. 5단계에서 7B/8B 모델이 50을 통과하지 못했으면
+  여기서 멈춘다. 그 값을 바꾸는 것은 registry 수정만으로 끝나지 않는 실험 절차 변경이고, 논문을
+  먼저 고쳐야 한다.
 - 테스트를 돌리고 커밋한다. 이 커밋이 본 실행 코드다.
 
 ```bash
@@ -116,7 +151,9 @@ python scripts/run_main.py --cell <MODEL>:<QUANT>
 
 - 20개 셀을 모두 끝낼 때까지 반복한다. 출력은 `data/raw/main/`이다.
 - 끊기면 **같은 명령을 다시 실행**한다. 끝난 셀은 모델을 불러오지 않고 건너뛰고, 쓰다 만 셀은
-  쓰지 않은 25문항 단위 묶음부터 이어 간다. 이미 쓴 파일은 바뀌지 않는다.
+  쓰지 않은 25문항 단위 묶음부터 이어 간다. 이미 쓴 문항 묶음 파일은 건드리지 않는다. 다만 공용
+  파일인 `items.parquet`, `model_item_labels.parquet`와 그 셀의 채팅 템플릿 파일
+  (`chat_templates.<셀>.parquet`)은 다시 쓰이며, 내용은 이전과 같다.
 - 셀이 끝나면 `data/raw/main/cells/<cell>/complete.json`이 생긴다.
 - 메모리 부족 같은 운영 실패로 설정을 바꿔야 하면, 결과를 보기 전에 기록하고 다시 고정한다(§4.6).
   이미 쓴 셀의 데이터와 섞지 않는다.
@@ -132,4 +169,9 @@ scripts/sync_from_h100.sh <ssh-alias>
 python scripts/run_analysis.py --help
 ```
 
+- 첫 줄은 미리 보기다(rsync `--dry-run`). `--` 다음 인자는 rsync에 그대로 넘어가고, H100 쪽 저장소
+  경로는 기본값 `~/quant-contamination-detection`을 쓴다. 저장소가 다른 곳에 있으면
+  `scripts/sync_from_h100.sh <ssh-alias> <원격 저장소 경로> -- --dry-run`처럼 별칭 바로 뒤에 경로를 쓴다.
+- 기본은 `data/raw/main/`만 받는다. 검증용 출력은 `--with-validation`(둘 다) 또는
+  `--validation-only`를 별칭 앞에 붙여서 따로 받는다.
 - 분석은 20개 셀이 모두 끝난 본 실행 데이터만 받는다. 검증용 출력이나 일부만 끝난 데이터는 거부한다.
