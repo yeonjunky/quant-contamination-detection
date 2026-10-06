@@ -472,6 +472,11 @@ class _RealModelAdapter:
         # current call site (generation/sampler.py), so stash it here on
         # first generate() and look it up when needed.
         self._prompts: dict[str, str] = {}
+        # Logits processors run ahead of everything else in generate() and
+        # generate_samples(). Only scripts/measure_sample_batch.py sets it, to
+        # force rows to the token cap while it measures memory; the main run
+        # leaves it empty (tests/test_measure_sample_batch.py checks both).
+        self.extra_logits_processors: tuple = ()
 
     def _neutralize_checkpoint_generation_config(self) -> None:
         """Replace the checkpoint's `generation_config` with one that carries
@@ -562,11 +567,17 @@ class _RealModelAdapter:
         # generation_config from filling them in (paper §4.4; see the
         # module-level resolution-order note). `attention_mask` stays a kwarg
         # because it is a model input, not a decoding setting.
+        extra = {}
+        if self.extra_logits_processors:
+            from transformers import LogitsProcessorList  # noqa: PLC0415
+
+            extra["logits_processor"] = LogitsProcessorList(self.extra_logits_processors)
         with torch.no_grad():
             outputs = self.model.generate(
                 input_ids,
                 attention_mask=attention_mask,
                 generation_config=self._generation_config_for(temperature),
+                **extra,
             )
         import torch.nn.functional as F  # noqa: PLC0415
 
@@ -613,7 +624,7 @@ class _RealModelAdapter:
                 input_ids.repeat(n_rows, 1),
                 attention_mask=attention_mask.repeat(n_rows, 1),
                 generation_config=self._generation_config_for(temperature),
-                logits_processor=LogitsProcessorList([sampler]),
+                logits_processor=LogitsProcessorList([*self.extra_logits_processors, sampler]),
             )
         prompt_len = input_ids.shape[-1]
         # [n_rows][steps], moved off the device once.

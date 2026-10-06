@@ -5,6 +5,10 @@ downloaded. Skipped when torch is not installed.
 CPU fp32 only. Whether the same holds for bf16/quantized kernels on a GPU is
 not covered here."""
 
+import importlib.util
+import sys
+from pathlib import Path
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -188,3 +192,51 @@ def test_a_first_token_is_drawn_from_its_own_seeded_generator_at_the_temperature
         for s in sample_ids
     ]
     assert [row.token_ids[0] for row in _samples(adapter, sample_ids)] == expected
+
+
+def _measure_script():
+    path = Path(__file__).parents[1] / "scripts" / "measure_sample_batch.py"
+    spec = importlib.util.spec_from_file_location("measure_sample_batch", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_main_run_path_adds_no_extra_logits_processor(adapter, monkeypatch):
+    received = []
+    original = adapter.model.generate
+
+    def recording_generate(input_ids, **kwargs):
+        received.append(kwargs.get("logits_processor"))
+        return original(input_ids, **kwargs)
+
+    monkeypatch.setattr(adapter.model, "generate", recording_generate)
+    adapter.generate("item", _PROMPT, temperature=0.0, sample_id=0)
+    _samples(adapter, range(3))
+
+    assert adapter.extra_logits_processors == ()
+    greedy, sampled = received
+    assert greedy is None
+    assert [type(processor).__name__ for processor in sampled] == ["_PerRowSampler"]
+
+
+def test_forced_full_length_runs_every_row_to_the_cap_and_then_restores_decoding(adapter):
+    measure = _measure_script()
+    before = _samples(adapter, range(8))
+    greedy_before = adapter.generate("item", _PROMPT, temperature=0.0, sample_id=0)
+    assert any(len(row.token_ids) < _MAX_NEW_TOKENS for row in before)
+
+    with measure.forced_full_length(adapter):
+        forced = _samples(adapter, range(8))
+        greedy_forced = adapter.generate("item", _PROMPT, temperature=0.0, sample_id=0)
+    for row in [*forced, greedy_forced]:
+        assert len(row.token_ids) == len(row.token_logprobs) == _MAX_NEW_TOKENS
+        assert _EOS not in row.token_ids
+        assert row.truncated_at_cap is True
+
+    assert adapter.extra_logits_processors == ()
+    after = _samples(adapter, range(8))
+    assert [row.token_ids for row in after] == [row.token_ids for row in before]
+    greedy_after = adapter.generate("item", _PROMPT, temperature=0.0, sample_id=0)
+    assert greedy_after.token_ids == greedy_before.token_ids
