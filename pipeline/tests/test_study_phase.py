@@ -116,7 +116,9 @@ def test_smoke_test_writes_the_validation_namespace_and_phase():
 def test_lcb_smoke_test_writes_the_validation_namespace():
     lcb = _load_script("run_lcb_smoke_test")
     repo_root = Path(__file__).resolve().parents[2]
-    assert lcb._DEFAULT_OUTPUT == repo_root / "data" / "raw" / "validation" / "lcb_smoke_test"
+    assert lcb._parse_args([]).output_dir == (
+        repo_root / "data" / "raw" / "validation" / "lcb_smoke_test" / "Qwen2.5-7B-Instruct-bnb_nf4"
+    )
 
 
 # --- E-F11 / E-F12 fixed strings -------------------------------------------
