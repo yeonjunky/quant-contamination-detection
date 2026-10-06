@@ -107,7 +107,7 @@ class FakeModel:
         drift = 0.0 if self.deterministic else self.calls * 1e-6
         return [
             FakeSample([sample_id, 7], [-0.5 - drift - self.logprob_offset, -0.25],
-                       truncated_at_cap=sample_id == 0)
+                       truncated_at_cap=sample_id == 1)
             for sample_id in sample_ids
         ]
 
@@ -263,7 +263,7 @@ def test_generated_length_summary_counts_greedy_and_samples(tmp_path):
 
     candidate = _candidate(record, 50)
     lengths = candidate["normal_decoding"]["generated_tokens"]
-    # 2 items x (1 greedy of 3 tokens + 50 samples of 2 tokens); sample 0 of
+    # 2 items x (1 greedy of 3 tokens + 50 samples of 2 tokens); sample 1 of
     # each item is flagged as stopped at the cap.
     assert lengths["n_generations"] == 102
     assert lengths["max"] == 3 and lengths["median"] == 2

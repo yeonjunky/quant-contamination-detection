@@ -457,7 +457,7 @@ def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, run_
     resumed = _CountingModel()
     run_with(resumed, interrupted)
     # Only q2's sample set is generated again, whole, in the same chunks.
-    assert resumed.calls == [("q2", "samples", (0, 1)), ("q2", "samples", (2,))]
+    assert resumed.calls == [("q2", "samples", (1, 2)), ("q2", "samples", (3,))]
 
     uninterrupted = tmp_path / "uninterrupted"
     run_with(_CountingModel(), uninterrupted)
@@ -477,12 +477,12 @@ def test_a_cache_made_at_another_batch_size_is_not_served(tmp_path, run_with):
     run_with(model, second, batch_size=1)
 
     assert [call for call in model.calls if call[1] == "samples"] == [
-        (item, "samples", (s,)) for item in ("q1", "q2") for s in range(3)
+        (item, "samples", (s,)) for item in ("q1", "q2") for s in range(1, 4)
     ]
     manifest = json.loads((second / "manifest.json").read_text())
     assert manifest["config"]["sample_batch_sizes"] == {QWEN2_5_7B.name: 1}
     assert manifest["config"]["generation_seed_policy"] == (
-        "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v3"
+        "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v4"
     )
 
 
@@ -526,7 +526,7 @@ def test_a_validation_run_proceeds_with_an_explicit_batch_size(tmp_path, run_wit
         ),
     )
 
-    assert ("q1", "samples", (0, 1)) in model.calls
+    assert ("q1", "samples", (1, 2)) in model.calls
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["study_phase"] == "engineering_validation"
     assert manifest["config"]["sample_batch_sizes"] == {QWEN2_5_32B.name: 2}
@@ -631,7 +631,7 @@ def test_an_interrupted_cell_resumes_at_its_first_unwritten_part(tmp_path, run_w
     resumed = _CountingModel()
     run_with(resumed, interrupted)
     # q1 is neither generated, sandboxed nor rewritten; only q2 runs.
-    assert resumed.calls == [("q2", "greedy", (0,)), ("q2", "samples", (0, 1)), ("q2", "samples", (2,))]
+    assert resumed.calls == [("q2", "greedy", (0,)), ("q2", "samples", (1, 2)), ("q2", "samples", (3,))]
     assert sandboxed == ["q2"]
     after = _part_bytes(interrupted)
     for name, content in first_part.items():
@@ -655,8 +655,7 @@ class _FixedOutputModel(_CountingModel):
 
     @classmethod
     def _sample(cls, item_id, sample_id, temperature):
-        row = sample_id if temperature == 0.0 else sample_id + 1
-        n = cls._LENGTHS[item_id][row]
+        n =cls._LENGTHS[item_id][sample_id]
         return SimpleNamespace(
             text="x" * n, token_ids=[7] * n, token_logprobs=[-0.5] * n,
             is_greedy=temperature == 0.0,
@@ -681,3 +680,103 @@ def test_cdd_rows_record_threshold_length_and_empty_outputs(tmp_path, run_with):
 
     others = scores[scores["detector"] != "cdd"]
     assert others[["cdd_threshold_length", "cdd_n_empty_samples", "cdd_greedy_empty"]].isna().all().all()
+
+
+def test_a_stored_sample_row_is_regenerated_from_its_sample_id(tmp_path, run_with):
+    """A raw row's `sample_id` is the id its seed came from: generating that
+    id again gives the stored tokens. `_CountingModel` puts the id it was
+    asked for into the token, so a row stored under a shifted id fails."""
+    model = _CountingModel()
+    run_with(model, tmp_path)
+
+    generations = _read_raw(tmp_path, "generations")
+    samples = generations[~generations["is_greedy"]]
+    assert sorted(set(samples["sample_id"])) == [1, 2, 3]
+    for row in samples.itertuples():
+        [regenerated] = model.generate_samples(
+            row.item_id, "", temperature=row.decoding_temperature, sample_ids=[row.sample_id],
+        )
+        assert list(row.token_ids) == regenerated.token_ids, (row.item_id, row.sample_id)
+
+    cdd = _read_raw(tmp_path, "detector_scores").query("detector == 'cdd'")
+    for source in cdd["source_sample_ids"]:
+        assert list(source) == [0, 1, 2, 3]
+
+
+# --- one frozen commit and environment per main study ------------------------
+
+
+def test_a_main_study_cell_from_another_commit_is_refused(tmp_path, run_with, monkeypatch):
+    import qcd.io.manifest as manifest_module
+
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BF16)}))
+    frozen = _manifest(tmp_path)["git_commit"]
+
+    monkeypatch.setattr(manifest_module, "get_git_commit_hash", lambda repo_dir=None: "f" * 40)
+    model = _CountingModel()
+    with pytest.raises(RuntimeError, match=f"frozen at commit {frozen}") as refused:
+        run_with(model, tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert "move the directory aside" in str(refused.value)
+    assert model.calls == []
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+
+
+def test_a_main_study_cell_with_other_package_versions_is_refused(tmp_path, run_with, monkeypatch):
+    import qcd.io.manifest as manifest_module
+
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BF16)}))
+
+    installed = manifest_module.get_installed_package_versions
+    monkeypatch.setattr(
+        manifest_module, "get_installed_package_versions",
+        lambda packages=manifest_module.DEFAULT_TRACKED_PACKAGES: {
+            **installed(packages), "transformers": "0.0.0-other",
+        },
+    )
+    with pytest.raises(RuntimeError, match="transformers"):
+        run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+
+
+def test_a_validation_run_is_not_frozen_to_one_commit(tmp_path, run_with, monkeypatch):
+    import qcd.io.manifest as manifest_module
+    from qcd.io.manifest import StudyPhase
+
+    phase = StudyPhase.ENGINEERING_VALIDATION
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, study_phase=phase,
+             cells=frozenset({(_QWEN, Quant.BF16)}))
+    monkeypatch.setattr(manifest_module, "get_git_commit_hash", lambda repo_dir=None: "f" * 40)
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, study_phase=phase,
+             cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert run_with.loads == [(_QWEN, Quant.BF16), (_QWEN, Quant.BNB_NF4)]
+
+
+def test_each_cell_records_the_commit_and_environment_that_produced_it(tmp_path, run_with):
+    run_with(_CountingModel(), tmp_path)
+
+    manifest = _manifest(tmp_path)
+    cell_dir = tmp_path / "cells" / "Qwen2.5-7B-Instruct-bf16"
+    for record_name in ("started.json", "complete.json"):
+        record = json.loads((cell_dir / record_name).read_text())
+        assert record["git_commit"] == manifest["git_commit"], record_name
+        assert record["git_tracked_diff_sha256"] == manifest["git_tracked_diff_sha256"], record_name
+        assert record["package_versions"] == manifest["package_versions"], record_name
+        assert record["hostname"] == manifest["hostname"], record_name
+        assert "gpu_name" in record, record_name
+        assert record["config_hash"] == manifest["config_hash"], record_name
+
+
+def test_a_cell_with_other_scoring_environment_variables_is_refused(tmp_path, run_with, monkeypatch):
+    """evalplus's memory cap and per-task timeout come from the environment
+    and change pass/fail, so they are part of the study's configuration."""
+    monkeypatch.setenv("EVALPLUS_MAX_MEMORY_BYTES", "4294967296")
+    monkeypatch.delenv("EVALPLUS_TIMEOUT_PER_TASK", raising=False)
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BF16)}))
+    recorded = _manifest(tmp_path)["config"]["scoring_environment"]
+    assert recorded["EVALPLUS_MAX_MEMORY_BYTES"] == "4294967296"
+    assert recorded["EVALPLUS_TIMEOUT_PER_TASK"] is None
+
+    monkeypatch.setenv("EVALPLUS_MAX_MEMORY_BYTES", "-1")
+    with pytest.raises(RuntimeError, match="EVALPLUS_MAX_MEMORY_BYTES"):
+        run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert run_with.loads == [(_QWEN, Quant.BF16)]

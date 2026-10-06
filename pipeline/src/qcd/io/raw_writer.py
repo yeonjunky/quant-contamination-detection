@@ -33,12 +33,16 @@ in memory.
 `Item.metadata` (a heterogeneous dict — LCB items and HumanEval+/MBPP+ items
 carry different keys) is stored as a JSON string column rather than a
 pyarrow struct column, since a struct column would need one consistent
-schema across every row and this dict's shape varies by dataset.
+schema across every row and this dict's shape varies by dataset. Test
+payloads are not stored: each one is replaced by its sha256 and test count
+(`stored_metadata`). LiveCodeBench release_v6's private tests alone are about
+4.5 GB, past pyarrow's 2 GiB limit for one string column; the run scores
+against the in-memory item and the pinned dataset revision holds the tests.
 """
 
 from __future__ import annotations
 
-import dataclasses
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -47,6 +51,41 @@ import tempfile
 import pandas as pd
 
 from qcd.data.schema import Item, corpus_reference_to_json
+from qcd.scoring.sandbox import decode_private_test_cases
+
+# Metadata keys holding test payloads, each with the function that counts its
+# tests: LiveCodeBench's raw fields, and the evalplus problem's input lists.
+_LCB_TEST_PAYLOADS = {
+    "public_test_cases": lambda raw: len(json.loads(raw)),
+    "private_test_cases": lambda raw: len(decode_private_test_cases(raw)),
+}
+_EVALPLUS_TEST_PAYLOADS = {"base_input": len, "plus_input": len}
+
+
+def _payload_digest(value, count) -> dict | None:
+    if not value:
+        return None
+    encoded = value if isinstance(value, str) else json.dumps(value, default=str)
+    return {
+        "sha256": hashlib.sha256(encoded.encode()).hexdigest(),
+        "n_tests": count(value),
+    }
+
+
+def stored_metadata(metadata: dict) -> dict:
+    """`metadata` with every test payload replaced by its sha256 and count."""
+    stored = {
+        key: _payload_digest(value, _LCB_TEST_PAYLOADS[key]) if key in _LCB_TEST_PAYLOADS else value
+        for key, value in metadata.items()
+    }
+    problem = metadata.get("evalplus_problem")
+    if problem is not None:
+        stored["evalplus_problem"] = {
+            key: _payload_digest(value, _EVALPLUS_TEST_PAYLOADS[key])
+            if key in _EVALPLUS_TEST_PAYLOADS else value
+            for key, value in problem.items()
+        }
+    return stored
 
 
 def _item_to_row(item: Item) -> dict:
@@ -64,7 +103,7 @@ def _item_to_row(item: Item) -> dict:
         # reads both shapes.
         "corpus_reference_json": corpus_reference_to_json(item.corpus_reference),
         "release_version": item.release_version,
-        "metadata_json": json.dumps(item.metadata, default=str),
+        "metadata_json": json.dumps(stored_metadata(item.metadata), default=str),
     }
 
 
@@ -80,6 +119,16 @@ def _write_parquet_atomic(frame: pd.DataFrame, path: Path) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _write_parquet_if_changed(frame: pd.DataFrame, path: Path) -> None:
+    """Every cell process writes the study's shared item tables. Leave the
+    file alone when its bytes would not change, so a cell never replaces a
+    file another process may be reading."""
+    encoded = frame.to_parquet(index=False)
+    if path.exists() and path.read_bytes() == encoded:
+        return
+    _write_parquet_atomic(frame, path)
 
 
 def part_is_written(raw_dir: Path, part: str, *, file_prefix: str = "") -> bool:
@@ -102,12 +151,12 @@ class RawDataWriter:
 
     def write_items(self, items: list[Item]) -> Path:
         path = self.output_dir / f"{self.file_prefix}items.parquet"
-        _write_parquet_atomic(pd.DataFrame([_item_to_row(item) for item in items]), path)
+        _write_parquet_if_changed(pd.DataFrame([_item_to_row(item) for item in items]), path)
         return path
 
     def write_model_item_labels(self, rows: list[dict]) -> Path:
         path = self.output_dir / f"{self.file_prefix}model_item_labels.parquet"
-        _write_parquet_atomic(pd.DataFrame(rows), path)
+        _write_parquet_if_changed(pd.DataFrame(rows), path)
         return path
 
     def write_chat_templates(self, rows: list[dict], *, part: str) -> Path:

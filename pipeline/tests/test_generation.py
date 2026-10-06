@@ -120,19 +120,19 @@ def test_samples_are_generated_in_fixed_consecutive_chunks_of_the_batch_size(tmp
 
     assert model.calls == [
         ("generate", 0.0, 0),
-        ("generate_samples", 0.8, [0, 1, 2]),
-        ("generate_samples", 0.8, [3, 4, 5]),
-        ("generate_samples", 0.8, [6]),
+        ("generate_samples", 0.8, [1, 2, 3]),
+        ("generate_samples", 0.8, [4, 5, 6]),
+        ("generate_samples", 0.8, [7]),
     ]
     expected = [
-        MockModel.generate(model, "x", "p", temperature=0.8, sample_id=s).token_ids for s in range(7)
+        MockModel.generate(model, "x", "p", temperature=0.8, sample_id=s).token_ids for s in range(1, 8)
     ]
     assert [s.token_ids for s in result.samples] == expected
     # One entry for the greedy output and one for the item's whole sample set.
     assert len(list(cache.cache_dir.rglob("*.pkl"))) == 2
     whole = CacheKey(
         model_name="mock", quant="bf16", item_id="x", is_greedy=False,
-        sample_ids=tuple(range(7)), prompt="p", temperature=0.8,
+        sample_ids=tuple(range(1, 8)), prompt="p", temperature=0.8,
     )
     assert [s.token_ids for s in cache.get(whole)] == expected
 

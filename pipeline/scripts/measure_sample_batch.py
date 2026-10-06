@@ -223,7 +223,7 @@ def compare_runs(first, second) -> tuple[bool, str]:
     """Exact equality of token ids and log-probabilities, row by row."""
     rows = zip(_all_generations(first), _all_generations(second), strict=True)
     for index, (a, b) in enumerate(rows):
-        label = "greedy" if index == 0 else f"sample {index - 1}"
+        label = "greedy" if index == 0 else f"sample_id {index}"
         if a.token_ids != b.token_ids:
             return False, f"{label}: token ids differ"
         if a.token_logprobs != b.token_logprobs:

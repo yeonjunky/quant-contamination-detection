@@ -106,6 +106,21 @@ def test_chunked_sampling_gives_each_sample_id_the_same_tokens_as_one_batch(adap
     assert len({tuple(row.token_ids) for row in whole}) > 1
 
 
+def test_a_sample_regenerated_from_its_stored_sample_id_is_the_same_sample(adapter, tmp_path):
+    """The run writes `ItemGenerations.samples[i]` under `sample_ids(n)[i]`.
+    Generating that id alone, with the seed derived from it, reproduces it."""
+    from qcd.generation.sampler import sample_ids
+
+    stored = sample_item(
+        adapter, GenerationCache(tmp_path), model_name="tiny", quant="fp32", item_id="item",
+        prompt=_PROMPT, n_samples=6, sample_temperature=_TEMPERATURE, batch_size=4,
+    ).samples
+    for sample_id, row in zip(sample_ids(6), stored, strict=True):
+        [regenerated] = _samples(adapter, [sample_id])
+        assert regenerated.token_ids == row.token_ids, sample_id
+    assert len({tuple(row.token_ids) for row in stored}) > 1
+
+
 def test_seeds_depend_on_the_item(adapter):
     assert [row.token_ids for row in _samples(adapter, range(8), item_id="a")] != [
         row.token_ids for row in _samples(adapter, range(8), item_id="b")

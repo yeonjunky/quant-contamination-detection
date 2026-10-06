@@ -43,9 +43,9 @@ from qcd.detectors.cdd import peakedness, threshold_length
 from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score
 from qcd.generation.cache import GenerationCache
-from qcd.generation.sampler import sample_item
+from qcd.generation.sampler import GREEDY_SAMPLE_ID, sample_ids, sample_item
 from qcd.io.manifest import (
-    StudyPhase, build_manifest, read_manifest, resolve_library_defaults,
+    RunManifest, StudyPhase, build_manifest, read_manifest, resolve_library_defaults,
     unresolved_library_defaults, write_manifest,
 )
 from qcd.io.cells import cell_id, completion_marker_path
@@ -53,6 +53,7 @@ from qcd.io.raw_writer import RawDataWriter
 from qcd.models.loader import decoding_settings_id, load_model, resolved_decoding_settings
 from qcd.scoring.logprob import score_prompt_logprobs
 from qcd.scoring.pass_rate import partial_pass_rate
+from qcd.scoring.sandbox import scoring_environment
 
 _EVALPLUS_DATASETS = (Dataset.HUMANEVAL, Dataset.MBPPPLUS)
 
@@ -253,8 +254,9 @@ def run(config: RealRunConfig) -> None:
             "include_mbppplus": config.include_mbppplus,
             "item_limit_per_condition": config.item_limit_per_condition,
             "generation_max_new_tokens": GENERATION_MAX_NEW_TOKENS,
-            "generation_seed_policy": "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v3",
+            "generation_seed_policy": "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v4",
             "sample_batch_sizes": {m.name: m.sample_batch_size for m in config.models},
+            "scoring_environment": scoring_environment(),
             "decoding_settings": {
                 "greedy": greedy_decoding,
                 "samples": sample_decoding,
@@ -282,12 +284,28 @@ def run(config: RealRunConfig) -> None:
     manifest_path = config.output_dir / "manifest.json"
     if manifest_path.exists():
         existing = read_manifest(manifest_path)
+        frozen_scoring = existing.get("config", {}).get("scoring_environment")
+        if frozen_scoring != run_config["scoring_environment"]:
+            raise RuntimeError(
+                f"cell refused: the scoring environment variables differ from the study in "
+                f"{config.output_dir}: frozen {frozen_scoring}, now "
+                f"{run_config['scoring_environment']}. Set them as the manifest records."
+            )
         if existing.get("config_hash") != manifest.config_hash:
             raise RuntimeError(
                 f"output directory already contains a different run configuration: {manifest_path}"
             )
+        if config.study_phase is StudyPhase.MAIN_STUDY:
+            _require_frozen_code_and_packages(existing, manifest, config.output_dir)
     else:
         write_manifest(manifest, manifest_path)
+    environment = {
+        "git_commit": manifest.git_commit,
+        "git_tracked_diff_sha256": manifest.git_tracked_diff_sha256,
+        "package_versions": manifest.package_versions,
+        "hostname": manifest.hostname,
+        "gpu_name": _gpu_name(),
+    }
 
     writer = RawDataWriter(config.output_dir / "raw")
     writer.write_items(items)
@@ -303,7 +321,47 @@ def run(config: RealRunConfig) -> None:
             greedy_decoding_id=greedy_decoding_id,
             sample_decoding_id=sample_decoding_id,
             config_hash=manifest.config_hash,
+            environment=environment,
         )
+
+
+def _require_frozen_code_and_packages(existing: dict, current: RunManifest, output_dir: Path) -> None:
+    """Every cell of one main study runs the code and packages its manifest
+    recorded, so no two cells of one study differ in what produced them."""
+    frozen_commit = existing.get("git_commit")
+    if (frozen_commit, existing.get("git_tracked_diff_sha256")) != (
+        current.git_commit, current.git_tracked_diff_sha256,
+    ):
+        raise RuntimeError(
+            f"main-study cell refused: the study in {output_dir} is frozen at commit "
+            f"{frozen_commit}, and this process runs {current.git_commit}. Run the cell from "
+            "the frozen commit, or move the directory aside to start a new frozen study."
+        )
+    recorded = existing.get("package_versions")
+    if not recorded:
+        raise RuntimeError(
+            f"main-study cell refused: the manifest in {output_dir} records no package "
+            "versions, so this process cannot show it runs the study's packages."
+        )
+    changed = {
+        package: {"frozen": frozen, "now": current.package_versions.get(package)}
+        for package, frozen in recorded.items()
+        if current.package_versions.get(package) != frozen
+    }
+    if changed:
+        raise RuntimeError(
+            f"main-study cell refused: installed package versions differ from the study "
+            f"frozen in {output_dir}: {changed}. Install the frozen versions, or move the "
+            "directory aside to start a new frozen study."
+        )
+
+
+def _gpu_name() -> str | None:
+    try:
+        import torch  # noqa: PLC0415
+    except ImportError:
+        return None
+    return torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
 
 
 def selected_cells(config: RealRunConfig) -> list[tuple[ModelSpec, Quant]]:
@@ -341,18 +399,31 @@ def _run_cell(
     greedy_decoding_id: str,
     sample_decoding_id: str,
     config_hash: str,
+    environment: dict,
 ) -> None:
     """Score one (model, precision) cell, resuming from its written parts.
 
     Each batch of items is flushed to its own atomically written part, so a
     part on disk is final: a rerun skips it and regenerates only the batches
     that never reached disk. `complete.json` is written after the last part,
-    and a cell carrying it is skipped without loading the model."""
+    and a cell carrying it is skipped without loading the model. Both it and
+    `started.json` record the commit, package versions, host and GPU of the
+    process that wrote them."""
     this_cell = cell_id(model_spec.name, quant.value)
     completion_marker = completion_marker_path(config.output_dir, this_cell)
     cell_dir = completion_marker.parent
     if completion_marker.exists():
         return
+    _write_json_atomic(
+        {
+            "model": model_spec.name,
+            "quant": quant.value,
+            "config_hash": config_hash,
+            **environment,
+            "started_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        },
+        cell_dir / "started.json",
+    )
     parts = [f"{this_cell}-{index:05d}" for index in range(len(batches))]
     pending = [(part, batch) for part, batch in zip(parts, batches) if not writer.has_part(part)]
     if pending:
@@ -367,7 +438,8 @@ def _run_cell(
             "n_items": sum(len(batch) for batch in batches),
             "parts": parts,
             "config_hash": config_hash,
-            "completed_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+            **environment,
+            "completed_at_utc":dt.datetime.now(dt.timezone.utc).isoformat(),
         },
         completion_marker,
     )
@@ -418,7 +490,7 @@ def _score_batches(
                 generation_config=(
                     f"max_new_tokens={getattr(model, 'max_new_tokens', GENERATION_MAX_NEW_TOKENS)};"
                     f"decoding={greedy_decoding_id}/{sample_decoding_id};"
-                    "seed_policy=sha256-per-row-fixed-batch-v3;"
+                    "seed_policy=sha256-per-row-fixed-batch-v4;"
                     f"sample_batch_size={model_spec.sample_batch_size}"
                 ),
             )
@@ -458,7 +530,7 @@ def _score_batches(
                 writer.write_chat_templates(chat_template_rows, part=cell_dir.name)
 
             writer.add_generation(
-                model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=0, is_greedy=True,
+                model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=GREEDY_SAMPLE_ID, is_greedy=True,
                 text=generations.greedy.text, token_ids=generations.greedy.token_ids,
                 token_logprobs=generations.greedy.token_logprobs, partial_pass_rate=pass_rate,
                 passed=bool(pass_rate == 1.0),
@@ -489,7 +561,7 @@ def _score_batches(
                     detail.rendered_char_length if detail is not None else None
                 ),
             )
-            for sample_id, sample in enumerate(generations.samples, start=1):
+            for sample_id, sample in zip(sample_ids(len(generations.samples)), generations.samples):
                 writer.add_generation(
                     model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=sample_id,
                     is_greedy=False, text=sample.text, token_ids=sample.token_ids,
@@ -516,7 +588,7 @@ def _score_batches(
             writer.add_detector_score(
                 model=model_spec.name, quant=quant.value, item_id=item.item_id,
                 detector="cdd", score=cdd_score,
-                source_sample_ids=list(range(config.n_cdd_samples + 1)),
+                source_sample_ids=[GREEDY_SAMPLE_ID, *sample_ids(config.n_cdd_samples)],
                 cdd_threshold_length=threshold_length(
                     generations.greedy.token_ids, sample_token_ids
                 ),

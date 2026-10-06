@@ -71,6 +71,112 @@ def test_items_parquet_stores_the_per_model_corpus_axis(tmp_path):
     assert "tracer_label" not in pd.read_parquet(path).columns
 
 
+def _encode_private_tests(cases: list[dict]) -> str:
+    import base64
+    import pickle
+    import zlib
+    return base64.b64encode(zlib.compress(pickle.dumps(json.dumps(cases)))).decode()
+
+
+def test_items_parquet_stores_test_payloads_as_hash_and_count(tmp_path):
+    import hashlib
+
+    public = json.dumps([{"input": "PUBLIC-IN", "output": "1", "testtype": "stdin"}])
+    private = _encode_private_tests([
+        {"input": f"PRIVATE-IN-{i}", "output": "2", "testtype": "stdin"} for i in range(3)
+    ])
+    lcb = Item(
+        item_id="q1", dataset=Dataset.LCB_PRE, prompt="solve",
+        metadata={
+            "platform": "atcoder", "func_name": None,
+            "public_test_cases": public, "private_test_cases": private,
+        },
+    )
+    evalplus = Item(
+        item_id="HumanEval/0", dataset=Dataset.HUMANEVAL, prompt="def f(x):",
+        metadata={
+            "evalplus_dataset_name": "humaneval",
+            "evalplus_problem": {
+                "entry_point": "f", "canonical_solution": "    return x",
+                "base_input": [["BASE-IN"]], "plus_input": [["PLUS-IN"], ["PLUS-IN-2"]],
+            },
+        },
+    )
+    path = RawDataWriter(tmp_path).write_items([lcb, evalplus])
+
+    stored = pd.read_parquet(path).set_index("item_id")["metadata_json"]
+    assert "-IN" not in "".join(stored)
+    lcb_meta = json.loads(stored["q1"])
+    assert lcb_meta["platform"] == "atcoder"
+    assert lcb_meta["public_test_cases"] == {
+        "sha256": hashlib.sha256(public.encode()).hexdigest(), "n_tests": 1,
+    }
+    assert lcb_meta["private_test_cases"] == {
+        "sha256": hashlib.sha256(private.encode()).hexdigest(), "n_tests": 3,
+    }
+    problem = json.loads(stored["HumanEval/0"])["evalplus_problem"]
+    assert problem["entry_point"] == "f"
+    assert problem["base_input"]["n_tests"] == 1
+    assert problem["plus_input"]["n_tests"] == 2
+    # The run itself still scores against the full in-memory item.
+    assert lcb.metadata["private_test_cases"] == private
+
+
+def test_items_parquet_is_not_rewritten_when_unchanged(tmp_path):
+    writer = RawDataWriter(tmp_path)
+    path = writer.write_items(_items())
+    first = path.stat()
+    writer.write_items(_items())
+    assert path.stat().st_ino == first.st_ino
+    assert path.stat().st_mtime_ns == first.st_mtime_ns
+
+    changed = _items()[:1]
+    writer.write_items(changed)
+    assert list(pd.read_parquet(path)["item_id"]) == ["HumanEval/0"]
+
+
+def _lcb_release_v6_is_cached() -> bool:
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        from qcd.data import livecodebench
+    except ImportError:
+        return False
+    return all(
+        isinstance(
+            try_to_load_from_cache(
+                livecodebench._REPO_ID, filename,
+                revision=livecodebench.REPO_REVISION, repo_type="dataset",
+            ),
+            str,
+        )
+        for filename in livecodebench._RELEASE_FILES["release_v6"]
+    )
+
+
+@pytest.mark.skipif(not _lcb_release_v6_is_cached(), reason="LiveCodeBench release_v6 not in the HF cache")
+def test_real_lcb_release_v6_items_write_a_small_items_parquet(tmp_path):
+    """Storing the raw test payloads made this column about 4.5 GB, and
+    pyarrow refused it, so every main-study cell died before loading a model."""
+    import datetime as dt
+
+    from qcd.data.livecodebench import load_livecodebench_split
+
+    pre, post = load_livecodebench_split(dt.datetime(2025, 1, 1))
+    items = pre + post
+    assert len(items) == 1055
+
+    path = RawDataWriter(tmp_path).write_items(items)
+
+    assert path.stat().st_size < 50_000_000
+    stored = pd.read_parquet(path)
+    assert len(stored) == 1055
+    for metadata_json in stored["metadata_json"]:
+        metadata = json.loads(metadata_json)
+        for key in ("public_test_cases", "private_test_cases"):
+            assert metadata[key] is None or set(metadata[key]) == {"sha256", "n_tests"}
+
+
 def test_write_model_item_labels_roundtrip(tmp_path):
     writer = RawDataWriter(tmp_path)
     path = writer.write_model_item_labels([{

@@ -45,7 +45,7 @@ from qcd.detectors.cdd import peakedness
 from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score
 from qcd.generation.cache import GenerationCache
-from qcd.generation.sampler import sample_item
+from qcd.generation.sampler import sample_ids, sample_item
 from qcd.io.manifest import (
     StudyPhase, build_manifest, resolve_library_defaults,
     unresolved_library_defaults, write_manifest,
@@ -306,7 +306,7 @@ def main() -> None:
             prompt_token_logprobs=prompt_logprobs,
             decoding_temperature=0.0,
         )
-        for sample_id, sample in enumerate(generations.samples, start=1):
+        for sample_id, sample in zip(sample_ids(len(generations.samples)), generations.samples):
             writer.add_generation(
                 model=model_spec.name, quant=quant_label, item_id=item.item_id, sample_id=sample_id,
                 is_greedy=False, text=sample.text, token_ids=sample.token_ids,

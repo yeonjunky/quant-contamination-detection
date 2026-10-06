@@ -43,3 +43,19 @@ def test_every_registry_model_resolves_through_the_argument():
     for spec in ALL_MODELS:
         assert LCB.get_model(spec.name) is spec
     assert LCB.get_model(OLMO3_1_32B.name) is OLMO3_1_32B
+
+
+def test_each_arm_writes_to_its_own_default_directory():
+    """Every arm is validated with the default output directory, so a shared
+    default left only the last arm's report on disk."""
+    arms = [
+        LCB._parse_args(["--model", spec.name, "--quant", quant.value])
+        for spec in ALL_MODELS for quant in Quant
+    ]
+    directories = {args.output_dir for args in arms}
+    assert len(directories) == len(arms)
+    for directory in directories:
+        assert directory.parent == LCB._DEFAULT_OUTPUT_ROOT
+
+    explicit = LCB._parse_args(["--output-dir", "/tmp/elsewhere"])
+    assert str(explicit.output_dir) == "/tmp/elsewhere"
