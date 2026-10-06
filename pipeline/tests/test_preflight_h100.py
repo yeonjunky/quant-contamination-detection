@@ -44,10 +44,10 @@ def _env(tmp_path, **overrides) -> "PRE.Environment":
         offline=False,
         models=(QWEN2_5_7B,),
         python_version="3.12.13",
-        pins={"torch": "2.13.0+cu130"},
-        installed_version={"torch": "2.13.0+cu130"}.get,
+        pins={"torch": "2.13.0"},
+        installed_version={"torch": "2.13.0"}.get,
         require_clean_checkout=lambda repo: "a" * 40,
-        cuda_device=lambda: ("NVIDIA H100 80GB HBM3", 80 * GB),
+        cuda_device=lambda: ("NVIDIA H100 80GB HBM3", 80 * GB, "13.0"),
         hf_home=tmp_path,
         free_bytes=lambda path: 500 * GB,
         min_free_bytes=173 * GB,
@@ -83,8 +83,8 @@ def test_python_check(tmp_path):
 def test_package_checks(tmp_path):
     env = _env(
         tmp_path,
-        pins={"torch": "2.13.0+cu130", "numpy": "2.4.6", "bitsandbytes": "0.50.1"},
-        installed_version={"torch": "2.13.0+cu130", "numpy": "2.5.1"}.get,
+        pins={"torch": "2.13.0", "numpy": "2.4.6", "bitsandbytes": "0.50.1"},
+        installed_version={"torch": "2.13.0", "numpy": "2.5.1"}.get,
     )
     by_name = {check.name: check for check in PRE.check_packages(env)}
     assert by_name["package torch"].status == PRE.PASS
@@ -94,6 +94,30 @@ def test_package_checks(tmp_path):
     assert "not installed" in by_name["package bitsandbytes"].detail
 
 
+@pytest.mark.parametrize(("pinned", "installed", "status"), [
+    ("2.13.0", "2.13.0+cu130", PRE.PASS),
+    ("2.13.0+cu130", "2.13.0", PRE.PASS),
+    ("2.13.0+cu130", "2.13.0+cu124", PRE.PASS),
+    ("2.13.0", "2.13.1+cu130", PRE.FAIL),
+    ("2.13.0", "2.13.0.post1", PRE.FAIL),
+    ("2.13.0", "2.13", PRE.FAIL),
+])
+def test_package_check_ignores_only_the_local_version_segment(tmp_path, pinned, installed, status):
+    env = _env(tmp_path, pins={"torch": pinned}, installed_version={"torch": installed}.get)
+    [check] = PRE.check_packages(env)
+    assert check.status == status
+
+
+def test_every_h100_pin_is_the_version_in_the_recorded_h100_freeze():
+    def normalized(pins):
+        return {name.lower().replace("_", "-"): version for name, version in pins.items()}
+
+    pipeline = Path(__file__).parents[1]
+    pins = normalized(PRE.parse_pins((pipeline / "requirements-h100.txt").read_text(encoding="utf-8")))
+    freeze = normalized(PRE.parse_pins((pipeline / "envs" / "local-smoke-freeze.txt").read_text(encoding="utf-8")))
+    assert {name: freeze.get(name) for name in pins} == pins
+
+
 def test_parse_pins_keeps_only_exact_pins():
     text = "# torch==0.0\ntorch==2.13.0+cu130  # note\nzstandard\nnumpy == 2.4.6\n"
     assert PRE.parse_pins(text) == {"torch": "2.13.0+cu130", "numpy": "2.4.6"}
@@ -101,7 +125,8 @@ def test_parse_pins_keeps_only_exact_pins():
 
 def test_cuda_check(tmp_path):
     result = PRE.check_cuda(_env(tmp_path))
-    assert result.status == PRE.PASS and result.detail == "NVIDIA H100 80GB HBM3, 80.0 GB"
+    assert result.status == PRE.PASS
+    assert result.detail == "NVIDIA H100 80GB HBM3, 80.0 GB, torch built for CUDA 13.0"
     missing = PRE.check_cuda(_env(tmp_path, cuda_device=_raise(RuntimeError("torch is not installed"))))
     assert missing.status == PRE.FAIL and missing.detail == "torch is not installed"
 

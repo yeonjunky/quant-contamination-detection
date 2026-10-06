@@ -9,8 +9,10 @@ Checks:
   - the checkout is clean at HEAD (`qcd.io.manifest.require_clean_checkout`);
   - Python is 3.12, the H100 image's interpreter (Dockerfile; 3.12.13 per
     pipeline_implementation_log.md), and every `==` pin in
-    requirements-h100.txt matches the installed version;
-  - CUDA is available, with the GPU name and total memory;
+    requirements-h100.txt matches the installed version (a PEP 440 local
+    segment such as `+cu130` is ignored; the rest must match exactly);
+  - CUDA is available, with the GPU name, total memory and the CUDA version
+    torch was built with (informational);
   - the filesystem holding HF_HOME has room for the five bf16 snapshots
     (registry parameter counts x 2 bytes, an estimate: about 173 GB);
   - each registry model's pinned revision resolves on the Hub and this
@@ -75,8 +77,8 @@ class Environment:
     pins: dict[str, str]
     installed_version: Callable[[str], str | None]
     require_clean_checkout: Callable[[Path], str]
-    # (GPU name, total bytes); raises RuntimeError with the reason otherwise.
-    cuda_device: Callable[[], tuple[str, int]]
+    # (GPU name, total bytes, torch.version.cuda); raises RuntimeError with the reason otherwise.
+    cuda_device: Callable[[], tuple[str, int, str | None]]
     hf_home: Path
     free_bytes: Callable[[Path], int]
     min_free_bytes: int
@@ -108,12 +110,16 @@ def check_python(env: Environment) -> Check:
     return Check("python", FAIL, f"{env.python_version}, expected {EXPECTED_PYTHON}.x")
 
 
+def _public_version(version: str) -> str:
+    return version.split("+", 1)[0]
+
+
 def check_packages(env: Environment) -> list[Check]:
     checks = []
     for package, pinned in env.pins.items():
         installed = env.installed_version(package)
-        if installed == pinned:
-            checks.append(Check(f"package {package}", PASS, pinned))
+        if installed is not None and _public_version(installed) == _public_version(pinned):
+            checks.append(Check(f"package {package}", PASS, installed))
         elif installed is None:
             checks.append(Check(f"package {package}", FAIL, f"not installed, pinned {pinned}"))
         else:
@@ -123,10 +129,10 @@ def check_packages(env: Environment) -> list[Check]:
 
 def check_cuda(env: Environment) -> Check:
     try:
-        name, total = env.cuda_device()
+        name, total, cuda_build = env.cuda_device()
     except RuntimeError as error:
         return Check("cuda", FAIL, str(error))
-    return Check("cuda", PASS, f"{name}, {total / 1e9:.1f} GB")
+    return Check("cuda", PASS, f"{name}, {total / 1e9:.1f} GB, torch built for CUDA {cuda_build}")
 
 
 def check_disk(env: Environment) -> Check:
@@ -226,7 +232,7 @@ def _installed_version(package: str) -> str | None:
         return None
 
 
-def _cuda_device() -> tuple[str, int]:
+def _cuda_device() -> tuple[str, int, str | None]:
     try:
         import torch  # noqa: PLC0415
     except ImportError:
@@ -234,7 +240,7 @@ def _cuda_device() -> tuple[str, int]:
     if not torch.cuda.is_available():
         raise RuntimeError("torch.cuda.is_available() is False")
     properties = torch.cuda.get_device_properties(0)
-    return properties.name, properties.total_memory
+    return properties.name, properties.total_memory, torch.version.cuda
 
 
 def _remote_commit(repo_id: str, filename: str, revision: str, repo_type: str) -> str:
