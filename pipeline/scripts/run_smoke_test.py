@@ -12,7 +12,8 @@ validation-only namespace `data/raw/validation/smoke_test/` and its manifest
 records `study_phase="engineering_validation"`, so the analysis side refuses
 it. §4.6 also forbids letting outcome values steer the configuration, so this
 script checks only *properties* of the numbers — finite, in range, right
-schema — and neither prints nor stores an item's pass rate or detector scores.
+schema, not every greedy output stopped by the 512-token cap — and neither
+prints nor stores an item's pass rate or detector scores.
 Both quantities are still computed, because the range checks are the point.
 
 Mirrors qcd/dry_run.py's structure (run everything, print a checklist,
@@ -126,13 +127,24 @@ def _select_items(n: int):
     return sorted(items, key=lambda item: len(item.prompt))[:n]
 
 
-def _save_pip_freeze() -> Path:
-    envs_dir = _PIPELINE_DIR / "envs"
-    envs_dir.mkdir(parents=True, exist_ok=True)
-    out_path = envs_dir / "local-smoke-freeze.txt"
+def _save_pip_freeze(run_dir: Path) -> Path:
+    """Into this run's own validation directory. The tracked
+    `envs/local-smoke-freeze.txt` is the 2026-08-15 record and stays as it is;
+    rewriting it would leave the checkout dirty for preflight and run_main."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out_path = run_dir / "pip-freeze.txt"
     freeze = subprocess.run([sys.executable, "-m", "pip", "freeze"], capture_output=True, text=True, check=True).stdout
     out_path.write_text(freeze)
     return out_path
+
+
+def greedy_outputs_stop_before_the_cap(greedy_generations) -> bool:
+    """False when every greedy output ran to the 512-token cap.
+
+    The smoke items are the five shortest HumanEval prompts; a model that
+    never stops on any of them most likely has the wrong stop-token set. A
+    property of the run, not a score."""
+    return not all(generation.truncated_at_cap for generation in greedy_generations)
 
 
 def _load_model_for_smoke_test(spec, quant: Quant, checkpoint_path: Path | None):
@@ -233,6 +245,7 @@ def main() -> None:
     pass_rates_ok = True
     detector_scores_ok = True
     teacher_forced_scoring_ok = True
+    greedy_generations = []
 
     for item in items:
         t0 = time.time()
@@ -242,6 +255,7 @@ def main() -> None:
             batch_size=sample_batch_size,
         )
         print(f"  {item.item_id}: {time.time() - t0:.1f}s, greedy {len(generations.greedy.token_ids)} tokens")
+        greedy_generations.append(generations.greedy)
 
         for gen in [generations.greedy, *generations.samples]:
             if not gen.token_logprobs or not _isfinite_all(gen.token_logprobs):
@@ -309,15 +323,17 @@ def main() -> None:
         )
     )
 
-    freeze_path = _save_pip_freeze()
+    freeze_path = _save_pip_freeze(run_dir)
     manifest_path = _write_validation_manifest(
         run_dir, model_spec=model_spec, quant=quant, quant_label=quant_label,
         model=model, n_items=len(items), sample_batch_size=sample_batch_size,
+        pip_freeze_path=freeze_path,
     )
     print(f"Validation manifest: {manifest_path}")
 
     checks = {
         "logprobs_finite": all_finite,
+        "greedy_outputs_not_all_at_512_cap": greedy_outputs_stop_before_the_cap(greedy_generations),
         "repeated_samples_differ": samples_differ,
         "sandbox_pass_rate_in_range": pass_rates_ok,
         "teacher_forced_scoring_ok": teacher_forced_scoring_ok,
@@ -344,7 +360,7 @@ def main() -> None:
 
 def _write_validation_manifest(
     run_dir: Path, *, model_spec, quant: Quant, quant_label: str, model, n_items: int,
-    sample_batch_size: int,
+    sample_batch_size: int, pip_freeze_path: Path,
 ) -> Path:
     """Paper §4.6: validation output is recorded as validation output.
 
@@ -372,6 +388,7 @@ def _write_validation_manifest(
         extra={
             "library_default_settings": library_defaults,
             "library_default_settings_unresolved": unresolved_library_defaults(library_defaults),
+            "pip_freeze_path": str(pip_freeze_path),
         },
     )
     return write_manifest(manifest, run_dir / "manifest.json")

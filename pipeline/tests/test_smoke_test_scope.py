@@ -95,3 +95,43 @@ def test_an_unmeasured_32b_model_can_try_an_explicit_sample_batch_size():
     assert _batch_size_from_cli(["--model", QWEN2_5_32B.name, "--sample-batch-size", "16"]) == 16
     with pytest.raises(SystemExit, match="must be >= 1"):
         _batch_size_from_cli(["--sample-batch-size", "0"])
+
+
+def test_pip_freeze_goes_into_the_run_directory_not_the_tracked_record(tmp_path, monkeypatch):
+    tracked = Path(__file__).parents[1] / "envs" / "local-smoke-freeze.txt"
+    before = tracked.read_bytes()
+
+    class Completed:
+        stdout = "torch==0.0.0\n"
+
+    monkeypatch.setattr(SMOKE.subprocess, "run", lambda *args, **kwargs: Completed())
+    run_dir = tmp_path / "bnb_nf4"
+    path = SMOKE._save_pip_freeze(run_dir)
+
+    assert path == run_dir / "pip-freeze.txt"
+    assert path.read_text() == "torch==0.0.0\n"
+    assert tracked.read_bytes() == before
+
+
+def test_validation_manifest_records_where_the_freeze_was_saved(tmp_path):
+    import json
+
+    freeze_path = tmp_path / "pip-freeze.txt"
+    manifest_path = SMOKE._write_validation_manifest(
+        tmp_path, model_spec=QWEN2_5_7B, quant=Quant.BNB_NF4, quant_label="bnb_nf4",
+        model=object(), n_items=5, sample_batch_size=50, pip_freeze_path=freeze_path,
+    )
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["extra"]["pip_freeze_path"] == str(freeze_path)
+    assert manifest["study_phase"] == "engineering_validation"
+
+
+class _Greedy:
+    def __init__(self, truncated_at_cap):
+        self.truncated_at_cap = truncated_at_cap
+
+
+def test_stop_token_check_fails_only_when_every_greedy_output_hit_the_cap():
+    assert SMOKE.greedy_outputs_stop_before_the_cap([_Greedy(True)] * 5) is False
+    assert SMOKE.greedy_outputs_stop_before_the_cap([_Greedy(True)] * 4 + [_Greedy(False)]) is True
+    assert SMOKE.greedy_outputs_stop_before_the_cap([_Greedy(False)] * 5) is True
