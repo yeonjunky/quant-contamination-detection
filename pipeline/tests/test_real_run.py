@@ -585,11 +585,13 @@ def test_a_completed_cell_is_skipped_without_loading_its_model(tmp_path, run_wit
     parts = _part_bytes(tmp_path, "[gd]*.parquet")
     assert run_with.loads == [(_QWEN, Quant.BF16)]
 
+    recorded = marker.read_text()
     model = _CountingModel()
     run_with(model, tmp_path)
     assert run_with.loads == [(_QWEN, Quant.BF16)]
     assert model.calls == []
     assert _part_bytes(tmp_path, "[gd]*.parquet") == parts
+    assert marker.read_text() == recorded
 
     # Interrupted after its last part but before the marker: every part is on
     # disk, so the marker is written without loading the model either.

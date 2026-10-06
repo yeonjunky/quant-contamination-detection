@@ -508,6 +508,26 @@ def test_cdd_length_and_empty_outputs_match_the_planted_values(analysis_outputs)
         assert row["sample_cap_hit_rate"] == pytest.approx(11 / 54)
 
 
+def test_sample_empty_rate_is_per_sample_not_per_item():
+    import pandas as pd
+
+    from qcd.analysis.study_inputs import RawTables, cdd_length_and_empty_outputs
+
+    scores = pd.DataFrame([
+        {"model": "m", "quant": "bf16", "item_id": item, "detector": "cdd", "score": 0.5,
+         "source_sample_ids": [0, 1, 2, 3], "cdd_threshold_length": length,
+         "cdd_n_empty_samples": n_empty, "cdd_greedy_empty": False}
+        for item, length, n_empty in (("a", 12, 3), ("b", 20, 0))
+    ])
+    generations = pd.DataFrame(columns=["model", "quant", "is_greedy", "truncated_at_cap"])
+    tables = RawTables(Path("."), pd.DataFrame(), pd.DataFrame(), scores, generations, {})
+
+    (row,) = cdd_length_and_empty_outputs(tables)["by_model_and_precision"]
+    assert row["sample_empty_rate"] == pytest.approx(3 / 6)
+    assert row["median_threshold_length"] == 16.0
+    assert row["greedy_cap_hit_rate"] is None
+
+
 def test_the_descriptive_block_leaves_the_confirmatory_family_unchanged(
     tmp_path, monkeypatch, run_analysis_module, analysis_outputs
 ):
