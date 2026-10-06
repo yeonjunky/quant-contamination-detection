@@ -228,7 +228,7 @@ def run(config: RealRunConfig) -> None:
             "include_mbppplus": config.include_mbppplus,
             "item_limit_per_condition": config.item_limit_per_condition,
             "generation_max_new_tokens": GENERATION_MAX_NEW_TOKENS,
-            "generation_seed_policy": "sha256(item_id,sample_id,temperature)-v1",
+            "generation_seed_policy": "sha256(item_id,sample_id,temperature)-per-row-generator-full-batch-v2",
             "decoding_settings": {
                 "greedy": greedy_decoding,
                 "samples": sample_decoding,
@@ -311,7 +311,7 @@ def run(config: RealRunConfig) -> None:
                     generation_config=(
                         f"max_new_tokens={getattr(model, 'max_new_tokens', GENERATION_MAX_NEW_TOKENS)};"
                         f"decoding={greedy_decoding_id}/{sample_decoding_id};"
-                        "seed_policy=sha256-v1"
+                        "seed_policy=sha256-per-row-full-batch-v2"
                     ),
                 )
                 generation_seconds = time.perf_counter() - started

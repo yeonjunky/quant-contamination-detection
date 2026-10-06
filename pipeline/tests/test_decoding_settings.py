@@ -139,14 +139,10 @@ class _FakeLogprobRow:
 
 def _install_stub_torch(monkeypatch):
     """A `torch` just large enough for `_RealModelAdapter.generate`:
-    `manual_seed`, `no_grad`, and `torch.nn.functional.log_softmax`."""
+    `no_grad` and `torch.nn.functional.log_softmax`."""
     import types
 
     torch_module = types.ModuleType("torch")
-    torch_module.seeds = []
-
-    def manual_seed(seed):
-        torch_module.seeds.append(seed)
 
     class _NoGrad:
         def __enter__(self):
@@ -155,7 +151,6 @@ def _install_stub_torch(monkeypatch):
         def __exit__(self, *exc_info):
             return False
 
-    torch_module.manual_seed = manual_seed
     torch_module.no_grad = _NoGrad
 
     functional = types.ModuleType("torch.nn.functional")
@@ -328,17 +323,24 @@ def test_generate_passes_the_frozen_config_and_no_loose_decoding_kwargs(monkeypa
     model = _RecordingModel([65, 66])
     adapter = _RealModelAdapter(model, _StubTokenizer(), max_new_tokens=8)
 
-    adapter.generate("item-1", "hi", temperature=0.8, sample_id=3)
+    adapter.generate("item-1", "hi", temperature=0.0, sample_id=0)
 
     assert model.received_config.top_p == 1.0
     assert model.received_config.top_k == 0
     assert model.received_config.repetition_penalty == 1.0
-    assert model.received_config.do_sample is True
-    assert model.received_config.temperature == 0.8
+    assert model.received_config.do_sample is False
+    assert model.received_config.temperature == 1.0
     assert model.received_config.max_new_tokens == 8
     # Only the model input travels as a loose kwarg; every decoding setting
     # rides in the config object, which is what makes it win the merge.
     assert set(model.received_kwargs) == {"attention_mask"}
+
+
+def test_generate_is_greedy_only(monkeypatch):
+    _install_stub_torch(monkeypatch)
+    adapter = _RealModelAdapter(_RecordingModel([1]), _StubTokenizer())
+    with pytest.raises(ValueError, match="generate_samples"):
+        adapter.generate("item-1", "hi", temperature=0.8, sample_id=3)
 
 
 # --- (b) stored log-probabilities are raw ------------------------------------

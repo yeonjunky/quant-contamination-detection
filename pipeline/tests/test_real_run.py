@@ -198,6 +198,12 @@ def test_run_scores_fixed_prompt_and_keeps_completion_confidence(tmp_path, monke
                 token_logprobs=[-0.2, -0.3], is_greedy=temperature == 0.0,
             )
 
+        def generate_samples(self, item_id, prompt, *, temperature, sample_ids):
+            return [
+                self.generate(item_id, prompt, temperature=temperature, sample_id=sample_id)
+                for sample_id in sample_ids
+            ]
+
         def score_prompt_logprobs(self, item_id, prompt):
             self.prompt_calls.append((item_id, prompt))
             return [-1.0, -2.0, -3.0]
@@ -297,6 +303,12 @@ def test_run_records_decoding_settings_truncation_and_prompt_provenance(tmp_path
                 truncated_at_cap=is_greedy,
             )
 
+        def generate_samples(self, item_id, prompt, *, temperature, sample_ids):
+            return [
+                self.generate(item_id, prompt, temperature=temperature, sample_id=sample_id)
+                for sample_id in sample_ids
+            ]
+
         def score_prompt_detail(self, item_id, prompt):
             del item_id, prompt
             return detail
@@ -364,18 +376,29 @@ def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, monk
         tokenizer = object()
 
         def __init__(self, fail_after=None):
-            self.calls = 0
+            self.calls = []
             self.fail_after = fail_after
 
-        def generate(self, item_id, prompt, *, temperature, sample_id):
-            if self.fail_after is not None and self.calls == self.fail_after:
+        def _record(self, call):
+            if self.fail_after is not None and len(self.calls) == self.fail_after:
                 raise KeyboardInterrupt("simulated interruption")
-            self.calls += 1
+            self.calls.append(call)
+
+        @staticmethod
+        def _sample(item_id, sample_id, temperature):
             token = int(item_id[1:]) * 100 + sample_id
             return SimpleNamespace(
                 text=f"print({token})", token_ids=[token],
                 token_logprobs=[-0.5], is_greedy=temperature == 0.0,
             )
+
+        def generate(self, item_id, prompt, *, temperature, sample_id):
+            self._record((item_id, "greedy", (sample_id,)))
+            return self._sample(item_id, sample_id, temperature)
+
+        def generate_samples(self, item_id, prompt, *, temperature, sample_ids):
+            self._record((item_id, "samples", tuple(sample_ids)))
+            return [self._sample(item_id, s, temperature) for s in sample_ids]
 
         def score_prompt_logprobs(self, item_id, prompt):
             return [-1.0]
@@ -398,15 +421,17 @@ def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, monk
         return frame.drop(columns=[c for c in frame.columns if c.endswith("_seconds")]) \
             .sort_values(keys).reset_index(drop=True)
 
-    per_item = 1 + 2  # greedy + n_cdd_samples
+    # Interrupted while generating q2's sample batch: q1 is complete and q2's
+    # greedy output is cached, but none of q2's samples are.
     interrupted = tmp_path / "interrupted"
     with pytest.raises(KeyboardInterrupt):
-        run_with(CountingModel(fail_after=per_item + 1), interrupted)
+        run_with(CountingModel(fail_after=3), interrupted)
 
     resumed = CountingModel()
     run_with(resumed, interrupted)
-    # Only what the interruption left ungenerated is generated again.
-    assert resumed.calls == 2 * per_item - (per_item + 1)
+    # Only the missing unit is generated again, and the sample batch comes
+    # back whole, in one call.
+    assert resumed.calls == [("q2", "samples", (0, 1))]
 
     uninterrupted = tmp_path / "uninterrupted"
     run_with(CountingModel(), uninterrupted)
