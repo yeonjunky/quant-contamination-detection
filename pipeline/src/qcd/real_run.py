@@ -45,7 +45,7 @@ from qcd.detectors.perplexity import negative_log_perplexity_score
 from qcd.generation.cache import GenerationCache
 from qcd.generation.sampler import sample_item
 from qcd.io.manifest import (
-    StudyPhase, build_manifest, read_manifest, resolve_library_defaults,
+    RunManifest, StudyPhase, build_manifest, read_manifest, resolve_library_defaults,
     unresolved_library_defaults, write_manifest,
 )
 from qcd.io.cells import cell_id, completion_marker_path
@@ -286,8 +286,17 @@ def run(config: RealRunConfig) -> None:
             raise RuntimeError(
                 f"output directory already contains a different run configuration: {manifest_path}"
             )
+        if config.study_phase is StudyPhase.MAIN_STUDY:
+            _require_frozen_code_and_packages(existing, manifest, config.output_dir)
     else:
         write_manifest(manifest, manifest_path)
+    environment = {
+        "git_commit": manifest.git_commit,
+        "git_tracked_diff_sha256": manifest.git_tracked_diff_sha256,
+        "package_versions": manifest.package_versions,
+        "hostname": manifest.hostname,
+        "gpu_name": _gpu_name(),
+    }
 
     writer = RawDataWriter(config.output_dir / "raw")
     writer.write_items(items)
@@ -303,7 +312,47 @@ def run(config: RealRunConfig) -> None:
             greedy_decoding_id=greedy_decoding_id,
             sample_decoding_id=sample_decoding_id,
             config_hash=manifest.config_hash,
+            environment=environment,
         )
+
+
+def _require_frozen_code_and_packages(existing: dict, current: RunManifest, output_dir: Path) -> None:
+    """Every cell of one main study runs the code and packages its manifest
+    recorded, so no two cells of one study differ in what produced them."""
+    frozen_commit = existing.get("git_commit")
+    if (frozen_commit, existing.get("git_tracked_diff_sha256")) != (
+        current.git_commit, current.git_tracked_diff_sha256,
+    ):
+        raise RuntimeError(
+            f"main-study cell refused: the study in {output_dir} is frozen at commit "
+            f"{frozen_commit}, and this process runs {current.git_commit}. Run the cell from "
+            "the frozen commit, or move the directory aside to start a new frozen study."
+        )
+    recorded = existing.get("package_versions")
+    if not recorded:
+        raise RuntimeError(
+            f"main-study cell refused: the manifest in {output_dir} records no package "
+            "versions, so this process cannot show it runs the study's packages."
+        )
+    changed = {
+        package: {"frozen": frozen, "now": current.package_versions.get(package)}
+        for package, frozen in recorded.items()
+        if current.package_versions.get(package) != frozen
+    }
+    if changed:
+        raise RuntimeError(
+            f"main-study cell refused: installed package versions differ from the study "
+            f"frozen in {output_dir}: {changed}. Install the frozen versions, or move the "
+            "directory aside to start a new frozen study."
+        )
+
+
+def _gpu_name() -> str | None:
+    try:
+        import torch  # noqa: PLC0415
+    except ImportError:
+        return None
+    return torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
 
 
 def selected_cells(config: RealRunConfig) -> list[tuple[ModelSpec, Quant]]:
@@ -341,18 +390,31 @@ def _run_cell(
     greedy_decoding_id: str,
     sample_decoding_id: str,
     config_hash: str,
+    environment: dict,
 ) -> None:
     """Score one (model, precision) cell, resuming from its written parts.
 
     Each batch of items is flushed to its own atomically written part, so a
     part on disk is final: a rerun skips it and regenerates only the batches
     that never reached disk. `complete.json` is written after the last part,
-    and a cell carrying it is skipped without loading the model."""
+    and a cell carrying it is skipped without loading the model. Both it and
+    `started.json` record the commit, package versions, host and GPU of the
+    process that wrote them."""
     this_cell = cell_id(model_spec.name, quant.value)
     completion_marker = completion_marker_path(config.output_dir, this_cell)
     cell_dir = completion_marker.parent
     if completion_marker.exists():
         return
+    _write_json_atomic(
+        {
+            "model": model_spec.name,
+            "quant": quant.value,
+            "config_hash": config_hash,
+            **environment,
+            "started_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        },
+        cell_dir / "started.json",
+    )
     parts = [f"{this_cell}-{index:05d}" for index in range(len(batches))]
     pending = [(part, batch) for part, batch in zip(parts, batches) if not writer.has_part(part)]
     if pending:
@@ -367,7 +429,8 @@ def _run_cell(
             "n_items": sum(len(batch) for batch in batches),
             "parts": parts,
             "config_hash": config_hash,
-            "completed_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+            **environment,
+            "completed_at_utc":dt.datetime.now(dt.timezone.utc).isoformat(),
         },
         completion_marker,
     )

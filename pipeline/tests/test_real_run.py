@@ -678,3 +678,66 @@ def test_cdd_rows_record_threshold_length_and_empty_outputs(tmp_path, run_with):
 
     others = scores[scores["detector"] != "cdd"]
     assert others[["cdd_threshold_length", "cdd_n_empty_samples", "cdd_greedy_empty"]].isna().all().all()
+
+
+# --- one frozen commit and environment per main study ------------------------
+
+
+def test_a_main_study_cell_from_another_commit_is_refused(tmp_path, run_with, monkeypatch):
+    import qcd.io.manifest as manifest_module
+
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BF16)}))
+    frozen = _manifest(tmp_path)["git_commit"]
+
+    monkeypatch.setattr(manifest_module, "get_git_commit_hash", lambda repo_dir=None: "f" * 40)
+    model = _CountingModel()
+    with pytest.raises(RuntimeError, match=f"frozen at commit {frozen}") as refused:
+        run_with(model, tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert "move the directory aside" in str(refused.value)
+    assert model.calls == []
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+
+
+def test_a_main_study_cell_with_other_package_versions_is_refused(tmp_path, run_with, monkeypatch):
+    import qcd.io.manifest as manifest_module
+
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BF16)}))
+
+    installed = manifest_module.get_installed_package_versions
+    monkeypatch.setattr(
+        manifest_module, "get_installed_package_versions",
+        lambda packages=manifest_module.DEFAULT_TRACKED_PACKAGES: {
+            **installed(packages), "transformers": "0.0.0-other",
+        },
+    )
+    with pytest.raises(RuntimeError, match="transformers"):
+        run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+
+
+def test_a_validation_run_is_not_frozen_to_one_commit(tmp_path, run_with, monkeypatch):
+    import qcd.io.manifest as manifest_module
+    from qcd.io.manifest import StudyPhase
+
+    phase = StudyPhase.ENGINEERING_VALIDATION
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, study_phase=phase,
+             cells=frozenset({(_QWEN, Quant.BF16)}))
+    monkeypatch.setattr(manifest_module, "get_git_commit_hash", lambda repo_dir=None: "f" * 40)
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, study_phase=phase,
+             cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert run_with.loads == [(_QWEN, Quant.BF16), (_QWEN, Quant.BNB_NF4)]
+
+
+def test_each_cell_records_the_commit_and_environment_that_produced_it(tmp_path, run_with):
+    run_with(_CountingModel(), tmp_path)
+
+    manifest = _manifest(tmp_path)
+    cell_dir = tmp_path / "cells" / "Qwen2.5-7B-Instruct-bf16"
+    for record_name in ("started.json", "complete.json"):
+        record = json.loads((cell_dir / record_name).read_text())
+        assert record["git_commit"] == manifest["git_commit"], record_name
+        assert record["git_tracked_diff_sha256"] == manifest["git_tracked_diff_sha256"], record_name
+        assert record["package_versions"] == manifest["package_versions"], record_name
+        assert record["hostname"] == manifest["hostname"], record_name
+        assert "gpu_name" in record, record_name
+        assert record["config_hash"] == manifest["config_hash"], record_name
