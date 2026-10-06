@@ -17,3 +17,13 @@ def test_olmo_3_1_32b_uses_verified_hugging_face_id() -> None:
 
 def test_invalid_olmo_3_32b_id_is_not_in_roster() -> None:
     assert all(model.hf_repo_id != "allenai/Olmo-3-32B-Instruct" for model in ALL_MODELS)
+
+
+def test_sample_batch_size_is_fixed_for_small_models_and_unmeasured_for_32b() -> None:
+    assert {model.name: model.sample_batch_size for model in ALL_MODELS} == {
+        "Qwen2.5-7B-Instruct": 50,
+        "Llama-3.1-8B-Instruct": 50,
+        "Olmo3-7B-Instruct": 50,
+        "Qwen2.5-32B-Instruct": None,
+        "Olmo3.1-32B-Instruct": None,
+    }

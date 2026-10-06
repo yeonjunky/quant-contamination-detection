@@ -39,6 +39,11 @@ class ModelSpec:
     # proxy labels. A sensitivity date is present only for bracketed cutoffs.
     primary_first_post_boundary: str | None = None
     sensitivity_first_post_boundary: str | None = None
+    # Rows per batched generate call for an item's CDD samples. Fixed per
+    # model because logits differ slightly with batch size. None means not
+    # yet chosen: set it from the H100 smoke-test measurement before the
+    # main run, which refuses to start without it.
+    sample_batch_size: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
