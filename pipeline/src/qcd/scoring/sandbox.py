@@ -124,7 +124,7 @@ def _trusted_exec_with_time(code: str, inputs: list, entry_point: str):
 # --- LiveCodeBench (custom subprocess harness) -------------------------------
 
 
-def _decode_private_test_cases(raw: str) -> list[dict]:
+def decode_private_test_cases(raw: str) -> list[dict]:
     decompressed = zlib.decompress(base64.b64decode(raw))
     inner_json_string = pickle.loads(decompressed)  # noqa: S301 — see module docstring's trust-boundary note
     return json.loads(inner_json_string)
@@ -133,7 +133,7 @@ def _decode_private_test_cases(raw: str) -> list[dict]:
 def _load_test_cases(item: Item) -> list[dict]:
     public = json.loads(item.metadata["public_test_cases"]) if item.metadata.get("public_test_cases") else []
     private_raw = item.metadata.get("private_test_cases")
-    private = _decode_private_test_cases(private_raw) if private_raw else []
+    private = decode_private_test_cases(private_raw) if private_raw else []
     return public + private
 
 
