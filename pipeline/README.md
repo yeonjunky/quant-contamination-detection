@@ -246,7 +246,7 @@ python scripts/run_lcb_smoke_test.py --help
 Both smoke tests take `--model` and `--quant`, so any roster model at any of the
 four precisions can be validated before the main run touches it. They write to
 the validation-only namespace — `data/raw/validation/smoke_test/<model>/<quant>/` and
-`data/raw/validation/lcb_smoke_test/` (repo-root-anchored, inside the gitignored
+`data/raw/validation/lcb_smoke_test/<model>-<quant>/` (repo-root-anchored, inside the gitignored
 `/data/`) — and each writes a manifest recording
 `study_phase="engineering_validation"`. The dry run writes to a temporary
 directory.

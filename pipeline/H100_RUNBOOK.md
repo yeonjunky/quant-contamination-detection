@@ -26,6 +26,10 @@ pip install -e .
   점검이 무시하고, torch가 어떤 CUDA 버전으로 빌드됐는지는 `cuda` 행에 따로 보여 준다.
 - Llama-3.1-8B-Instruct는 접근 승인이 필요한 모델이다. H100 계정의 Hugging Face 토큰으로 접근이
   되는지 2단계가 확인한다. 토큰 설정은 직접 한다.
+- 채점에 영향을 주는 환경 변수 `EVALPLUS_MAX_MEMORY_BYTES`, `EVALPLUS_TIMEOUT_PER_TASK`,
+  `HUMANEVAL_OVERRIDE_PATH`, `MBPP_OVERRIDE_PATH`는 **설정하지 않는다.** 값이 실행 기록에 들어가므로
+  셀마다 다르면 그 셀은 거부된다. 특히 `EVALPLUS_TIMEOUT_PER_TASK`는 설정하면 evalplus 0.3.1이 문자열과
+  숫자를 비교하다 오류를 낼 것으로 보인다(코드를 읽어 판단했고, 실행해 보지는 않았다).
 
 ## 2. 사전 점검 (1차)
 
@@ -66,7 +70,8 @@ python scripts/run_lcb_smoke_test.py --model <MODEL> --quant <QUANT>
 
 - 32B 모델은 아직 묶음 크기가 없으므로 `run_smoke_test.py`에 `--sample-batch-size 2`를 붙인다
   (이 테스트는 샘플을 2개만 뽑는다).
-- 출력은 `data/raw/validation/` 아래에만 쌓인다. `pip freeze` 기록도 그 실행의 폴더
+- 출력은 `data/raw/validation/` 아래에만 쌓이고, 셀마다 따로 폴더가 생긴다
+  (`smoke_test/<MODEL>/<QUANT>/`, `lcb_smoke_test/<MODEL>-<QUANT>/`). `pip freeze` 기록도 그 실행의 폴더
   (`data/raw/validation/smoke_test/<MODEL>/<QUANT>/pip-freeze.txt`)에 쓰이고, 그 경로가 manifest에 남는다.
   추적 파일 `envs/local-smoke-freeze.txt`는 건드리지 않으므로 스모크 테스트 뒤에도 작업 트리가
   깨끗하다.
@@ -121,9 +126,10 @@ python scripts/measure_sample_batch.py --model <MODEL> --quant <QUANT> <처음�
 - **통과 조건**: 20개 셀 모두 `reproducible: true`, 그리고 다시 잰 두 셀의 비교가 "all digests match"로
   끝난다(exit 0). 하나라도 어긋나면 본 실행 전에 원인을 찾는다. 같은 입력에서 결과가 달라지면 중단
   후 재개한 결과도 달라지기 때문이다.
-- **시간 추정**: `normal_decoding`에 기록된 문항당 시간 × 1,597문항 × 셀 수로 전체 GPU 시간을
-  계산한다. 가장 긴 문항으로 잰 값이라 실제보다 크게 나온다. 감당할 수 없으면 본 실행 전에 계획을
-  다시 정한다.
+- **시간 추정 (생성만)**: `normal_decoding`에 기록된 문항당 시간 × 1,597문항 × 셀 수로 생성 시간을
+  계산한다. 가장 긴 문항으로 잰 값이라 실제보다 크게 나온다. 이 값에는 코드 채점(샌드박스) 시간이
+  빠져 있다. 채점은 GPU 생성이 끝난 뒤 문항마다 테스트를 하나씩 돌리므로, 시간 전체는 7단계 첫 셀의
+  기록으로 다시 계산한다. 생성 시간만으로도 감당할 수 없으면 본 실행 전에 계획을 다시 정한다.
 
 ## 6. 묶음 크기 고정과 사전 점검 (최종)
 
@@ -135,9 +141,11 @@ python scripts/measure_sample_batch.py --model <MODEL> --quant <QUANT> <처음�
 
 ```bash
 python -m pytest -q
-python scripts/preflight_h100.py
+python scripts/preflight_h100.py --min-free-gb 50
 ```
 
+- 3–4단계에서 모델을 이미 내려받았으므로, 최종 점검의 디스크 기준은 본 실행 출력이 들어갈 여유만
+  본다. 50GB는 출력 크기 추정(약 17GB, 평균 생성 길이 300토큰 가정)에 여유를 더한 값이다.
 - **통과 조건**: 테스트 통과, 사전 점검 exit 0(FAIL 없음), 작업 트리 깨끗함.
 - 이 시점 이후로 모델·문항·채점·분석 구성을 바꾸지 않는다.
 
@@ -154,9 +162,17 @@ python scripts/run_main.py --cell <MODEL>:<QUANT>
   쓰지 않은 25문항 단위 묶음부터 이어 간다. 이미 쓴 문항 묶음 파일은 건드리지 않는다. 다만 공용
   파일인 `items.parquet`, `model_item_labels.parquet`와 그 셀의 채팅 템플릿 파일
   (`chat_templates.<셀>.parquet`)은 다시 쓰이며, 내용은 이전과 같다.
-- 셀이 끝나면 `data/raw/main/cells/<cell>/complete.json`이 생긴다.
-- 메모리 부족 같은 운영 실패로 설정을 바꿔야 하면, 결과를 보기 전에 기록하고 다시 고정한다(§4.6).
-  이미 쓴 셀의 데이터와 섞지 않는다.
+- 셀이 시작하면 `data/raw/main/cells/<cell>/started.json`, 끝나면 `complete.json`이 생긴다. 둘 다
+  커밋, 패키지 버전, 호스트, GPU 이름을 기록한다. 셀마다 시작할 때 약 1분이 더 걸린다(LCB 문항
+  읽기와 숨은 테스트 수 세기).
+- **본 실행은 첫 셀을 시작한 커밋과 패키지 버전에 묶인다.** 다른 커밋, 커밋 안 된 변경, 다른 패키지
+  버전, 다른 채점 환경 변수로 셀을 시작하면 거부된다. `git pull`이나 `pip install`을 하지 않는다.
+- **시간 다시 계산.** 첫 셀의 첫 두 묶음(50문항)이 쓰이면, 그 생성 파일의 `generation_seconds`,
+  `prompt_scoring_seconds`, `sandbox_scoring_seconds` 열의 문항당 합계 평균 × 1,597 × 20으로 전체 시간을
+  추정한다. 시간 열만 보고, 점수나 통과 여부 열은 보지 않는다.
+- **설정을 바꿔야 할 때** (메모리 부족 같은 운영 실패): 결과를 보기 전에 원인과 바꿀 내용을 기록한다.
+  그다음 `data/raw/main`을 `data/raw/main_aborted_<날짜>`로 옮기고, 코드를 고쳐 커밋하고, 6단계부터
+  다시 한다. 새 본 실행은 20개 셀을 처음부터 돈다. 옮긴 폴더의 데이터는 분석에 쓰지 않는다(§4.6).
 - **통과 조건**: 20개 셀 모두 `complete.json`이 있다.
 
 ## 8. 데이터 내려받기와 분석
@@ -166,7 +182,7 @@ python scripts/run_main.py --cell <MODEL>:<QUANT>
 ```bash
 scripts/sync_from_h100.sh <ssh-alias> -- --dry-run
 scripts/sync_from_h100.sh <ssh-alias>
-python scripts/run_analysis.py --help
+python scripts/run_analysis.py ../data/raw/main
 ```
 
 - 첫 줄은 미리 보기다(rsync `--dry-run`). `--` 다음 인자는 rsync에 그대로 넘어가고, H100 쪽 저장소
@@ -174,4 +190,6 @@ python scripts/run_analysis.py --help
   `scripts/sync_from_h100.sh <ssh-alias> <원격 저장소 경로> -- --dry-run`처럼 별칭 바로 뒤에 경로를 쓴다.
 - 기본은 `data/raw/main/`만 받는다. 검증용 출력은 `--with-validation`(둘 다) 또는
   `--validation-only`를 별칭 앞에 붙여서 따로 받는다.
-- 분석은 20개 셀이 모두 끝난 본 실행 데이터만 받는다. 검증용 출력이나 일부만 끝난 데이터는 거부한다.
+- 분석 결과는 `../data/raw/main/analysis/`에 쓰인다.
+- 분석은 20개 셀이 모두 끝난 본 실행 데이터만 받는다. 검증용 출력, 일부만 끝난 데이터, 커밋이
+  다른 완료 기록은 거부한다.
