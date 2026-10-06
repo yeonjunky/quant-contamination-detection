@@ -197,14 +197,23 @@ def test_add_detector_score_and_flush_roundtrip(tmp_path):
     writer.add_detector_score(
         model="Qwen2.5-7B-Instruct", quant="bnb_nf4", item_id="x", detector="cdd",
         score=0.42, threshold_used=0.01, source_sample_ids=[0, 1, 2],
+        cdd_threshold_length=37, cdd_n_empty_samples=1, cdd_greedy_empty=False,
     )
-    assert writer.n_buffered_detector_scores == 1
+    writer.add_detector_score(
+        model="Qwen2.5-7B-Instruct", quant="bnb_nf4", item_id="x",
+        detector="perplexity", score=-1.5,
+    )
+    assert writer.n_buffered_detector_scores == 2
 
     written = writer.flush()
-    df = pd.read_parquet(written["detector_scores"])
-    assert len(df) == 1
-    assert df.iloc[0]["detector"] == "cdd"
-    assert df.iloc[0]["score"] == pytest.approx(0.42)
+    df = pd.read_parquet(written["detector_scores"]).set_index("detector")
+    assert len(df) == 2
+    assert df.loc["cdd", "score"] == pytest.approx(0.42)
+    assert df.loc["cdd", "cdd_threshold_length"] == 37
+    assert df.loc["cdd", "cdd_n_empty_samples"] == 1
+    assert df.loc["cdd", "cdd_greedy_empty"] == False  # noqa: E712
+    assert df.loc["perplexity", ["cdd_threshold_length", "cdd_n_empty_samples",
+                                 "cdd_greedy_empty"]].isna().all()
 
 
 def test_a_part_is_complete_only_once_both_of_its_files_exist(tmp_path):

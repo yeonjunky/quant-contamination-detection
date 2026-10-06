@@ -20,6 +20,7 @@ import dataclasses
 import datetime as dt
 import gc
 import json
+import math
 import os
 import re
 import tempfile
@@ -38,7 +39,7 @@ from qcd.data.livecodebench import REPO_REVISION as LCB_REPO_REVISION, load_live
 from qcd.data.mbppplus import load_mbppplus
 from qcd.data.schema import Dataset, Item
 from qcd.data.temporal_labels import materialize_model_item_labels
-from qcd.detectors.cdd import peakedness
+from qcd.detectors.cdd import peakedness, threshold_length
 from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score
 from qcd.generation.cache import GenerationCache
@@ -503,17 +504,29 @@ def _score_batches(
                     decoding_settings_id=sample_decoding_id,
                 )
 
-            cdd_score = peakedness(
-                generations.greedy.token_ids, [s.token_ids for s in generations.samples]
-            )
+            sample_token_ids = [s.token_ids for s in generations.samples]
+            cdd_score = peakedness(generations.greedy.token_ids, sample_token_ids)
             ppl_score = negative_log_perplexity_score(prompt_logprobs)
             mink_score = mink_prob(prompt_logprobs)
-            completion_ppl_score = negative_log_perplexity_score(
-                generations.greedy.token_logprobs
+            # An empty greedy output (immediate end of sequence) has no
+            # completion probability. These diagnostics are then NaN rather
+            # than an exception that aborts the whole cell.
+            greedy_logprobs = generations.greedy.token_logprobs
+            completion_ppl_score = (
+                negative_log_perplexity_score(greedy_logprobs) if greedy_logprobs else math.nan
             )
-            completion_mink_score = mink_prob(generations.greedy.token_logprobs)
+            completion_mink_score = mink_prob(greedy_logprobs) if greedy_logprobs else math.nan
+            writer.add_detector_score(
+                model=model_spec.name, quant=quant.value, item_id=item.item_id,
+                detector="cdd", score=cdd_score,
+                source_sample_ids=list(range(config.n_cdd_samples + 1)),
+                cdd_threshold_length=threshold_length(
+                    generations.greedy.token_ids, sample_token_ids
+                ),
+                cdd_n_empty_samples=sum(not ids for ids in sample_token_ids),
+                cdd_greedy_empty=not generations.greedy.token_ids,
+            )
             for detector, score in (
-                ("cdd", cdd_score),
                 ("perplexity", ppl_score),
                 ("mink_prob", mink_score),
                 ("completion_perplexity", completion_ppl_score),
@@ -522,9 +535,6 @@ def _score_batches(
                 writer.add_detector_score(
                     model=model_spec.name, quant=quant.value, item_id=item.item_id,
                     detector=detector, score=score,
-                    source_sample_ids=(
-                        list(range(config.n_cdd_samples + 1)) if detector == "cdd" else None
-                    ),
                 )
         writer.flush(part=part)
 

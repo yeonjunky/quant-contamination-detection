@@ -639,3 +639,39 @@ def test_an_interrupted_cell_resumes_at_its_first_unwritten_part(tmp_path, run_w
         keys = ["item_id", "sample_id"] if kind == "generations" else ["item_id", "detector"]
         assert not resumed_frame.duplicated(subset=keys).any()
         pd.testing.assert_frame_equal(resumed_frame, _read_raw(uninterrupted, kind))
+
+
+class _FixedOutputModel(_CountingModel):
+    """q1: a 120-token greedy output and samples of 0, 5 and 150 tokens.
+    q2: every output empty."""
+
+    _LENGTHS = {"q1": {0: 120, 1: 0, 2: 5, 3: 150}, "q2": {0: 0, 1: 0, 2: 0, 3: 0}}
+
+    @classmethod
+    def _sample(cls, item_id, sample_id, temperature):
+        row = sample_id if temperature == 0.0 else sample_id + 1
+        n = cls._LENGTHS[item_id][row]
+        return SimpleNamespace(
+            text="x" * n, token_ids=[7] * n, token_logprobs=[-0.5] * n,
+            is_greedy=temperature == 0.0,
+        )
+
+
+def test_cdd_rows_record_threshold_length_and_empty_outputs(tmp_path, run_with):
+    run_with(_FixedOutputModel(), tmp_path)
+
+    scores = _read_raw(tmp_path, "detector_scores")
+    cdd = scores[scores["detector"] == "cdd"].set_index("item_id")
+    # l is the longest output after truncation to 100 tokens, not the cap
+    # itself and not the untruncated 150.
+    assert cdd.loc["q1", "cdd_threshold_length"] == 100
+    assert cdd.loc["q1", "cdd_n_empty_samples"] == 1
+    assert cdd.loc["q1", "cdd_greedy_empty"] == False  # noqa: E712
+    # All outputs empty: l=0, a zero threshold, and peakedness 1.0.
+    assert cdd.loc["q2", "cdd_threshold_length"] == 0
+    assert cdd.loc["q2", "cdd_n_empty_samples"] == 3
+    assert cdd.loc["q2", "cdd_greedy_empty"] == True  # noqa: E712
+    assert cdd.loc["q2", "score"] == 1.0
+
+    others = scores[scores["detector"] != "cdd"]
+    assert others[["cdd_threshold_length", "cdd_n_empty_samples", "cdd_greedy_empty"]].isna().all().all()
