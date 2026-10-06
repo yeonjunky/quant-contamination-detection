@@ -678,12 +678,15 @@ restatement of defaults: shipped configurations differ across the roster (Qwen2.
 example, ships `temperature 0.7`, `top_p 0.8`, `top_k 20`, `repetition_penalty 1.05`), so inheriting them
 would truncate each model's CDD sample distribution differently and make the peakedness scores
 incomparable across arms. The greedy output is generated alone. The 50 samples of an item are generated
-together in one batch of exactly 50 rows, ordered by sample index, and each row draws its tokens from its
-own random-number generator seeded with sha256(item_id, sample_id, temperature). A given item and sample
-index therefore draw the same random sequence at every precision, independent of the other rows. The batch
-size is fixed because logits can differ in their last digits between batch sizes, which can change a
-sampled token; for the same reason an interrupted item is regenerated as a whole batch, never in part.
-The seed-policy identifier is stored in the run manifest. All precisions are
+in batches of a size fixed per model and shared by all of that model's precisions (50 for the 7B/8B
+models; for the 32B models, the largest size that fits on the H100, set from the engineering-validation
+memory check before the main run), always grouping consecutive sample indices in the same way. Each row
+draws its tokens from its own random-number generator seeded with sha256(item_id, sample_id, temperature),
+so a given item and sample index draw the same random sequence at every precision, independent of the
+other rows. The batch size and grouping are fixed because logits can differ in their last digits between
+batch sizes, which can change a sampled token; for the same reason an interrupted item is regenerated
+whole, never in part. The seed-policy identifier and each model's batch size are stored in the run
+manifest. All precisions are
 generated on the single inference stack described in §4.3. For CDD, truncate output token IDs to at most 100 tokens, excluding the prompt. Let l be the
 maximum actual length across the truncated greedy output and all 50 samples. The score is
 (1/50)Σ I[ED(sample_i,greedy)≤0.05l], using token-level Levenshtein distance. l is not automatically
