@@ -761,3 +761,19 @@ def test_each_cell_records_the_commit_and_environment_that_produced_it(tmp_path,
         assert record["hostname"] == manifest["hostname"], record_name
         assert "gpu_name" in record, record_name
         assert record["config_hash"] == manifest["config_hash"], record_name
+
+
+def test_a_cell_with_other_scoring_environment_variables_is_refused(tmp_path, run_with, monkeypatch):
+    """evalplus's memory cap and per-task timeout come from the environment
+    and change pass/fail, so they are part of the study's configuration."""
+    monkeypatch.setenv("EVALPLUS_MAX_MEMORY_BYTES", "4294967296")
+    monkeypatch.delenv("EVALPLUS_TIMEOUT_PER_TASK", raising=False)
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BF16)}))
+    recorded = _manifest(tmp_path)["config"]["scoring_environment"]
+    assert recorded["EVALPLUS_MAX_MEMORY_BYTES"] == "4294967296"
+    assert recorded["EVALPLUS_TIMEOUT_PER_TASK"] is None
+
+    monkeypatch.setenv("EVALPLUS_MAX_MEMORY_BYTES", "-1")
+    with pytest.raises(RuntimeError, match="EVALPLUS_MAX_MEMORY_BYTES"):
+        run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert run_with.loads == [(_QWEN, Quant.BF16)]

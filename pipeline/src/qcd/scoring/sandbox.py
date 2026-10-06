@@ -59,6 +59,20 @@ from qcd.data.schema import Dataset, Item
 if sys.platform == "darwin":
     os.environ.setdefault("EVALPLUS_MAX_MEMORY_BYTES", "-1")
 
+# Environment variables evalplus 0.3.1 reads that change a pass/fail verdict:
+# the memory cap and per-task timeout of `untrusted_check`, and the files the
+# HumanEval+/MBPP+ problems are read from.
+SCORING_ENVIRONMENT_VARIABLES = (
+    "EVALPLUS_MAX_MEMORY_BYTES", "EVALPLUS_TIMEOUT_PER_TASK",
+    "HUMANEVAL_OVERRIDE_PATH", "MBPP_OVERRIDE_PATH",
+)
+
+
+def scoring_environment() -> dict[str, str | None]:
+    """The value scoring sees for each of those variables; None means unset,
+    so evalplus's own default applies."""
+    return {name: os.environ.get(name) for name in SCORING_ENVIRONMENT_VARIABLES}
+
 _LCB_HARNESS_TIMEOUT_SECONDS = 6.0
 
 _FUNCTIONAL_HARNESS_PREAMBLE = (

@@ -53,6 +53,7 @@ from qcd.io.raw_writer import RawDataWriter
 from qcd.models.loader import decoding_settings_id, load_model, resolved_decoding_settings
 from qcd.scoring.logprob import score_prompt_logprobs
 from qcd.scoring.pass_rate import partial_pass_rate
+from qcd.scoring.sandbox import scoring_environment
 
 _EVALPLUS_DATASETS = (Dataset.HUMANEVAL, Dataset.MBPPPLUS)
 
@@ -255,6 +256,7 @@ def run(config: RealRunConfig) -> None:
             "generation_max_new_tokens": GENERATION_MAX_NEW_TOKENS,
             "generation_seed_policy": "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v4",
             "sample_batch_sizes": {m.name: m.sample_batch_size for m in config.models},
+            "scoring_environment": scoring_environment(),
             "decoding_settings": {
                 "greedy": greedy_decoding,
                 "samples": sample_decoding,
@@ -282,6 +284,13 @@ def run(config: RealRunConfig) -> None:
     manifest_path = config.output_dir / "manifest.json"
     if manifest_path.exists():
         existing = read_manifest(manifest_path)
+        frozen_scoring = existing.get("config", {}).get("scoring_environment")
+        if frozen_scoring != run_config["scoring_environment"]:
+            raise RuntimeError(
+                f"cell refused: the scoring environment variables differ from the study in "
+                f"{config.output_dir}: frozen {frozen_scoring}, now "
+                f"{run_config['scoring_environment']}. Set them as the manifest records."
+            )
         if existing.get("config_hash") != manifest.config_hash:
             raise RuntimeError(
                 f"output directory already contains a different run configuration: {manifest_path}"
