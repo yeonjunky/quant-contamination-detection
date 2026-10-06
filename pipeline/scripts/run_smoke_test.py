@@ -127,6 +127,12 @@ def _select_items(n: int):
     return sorted(items, key=lambda item: len(item.prompt))[:n]
 
 
+def smoke_run_dir(model_name: str, quant_label: str) -> Path:
+    """One directory per (model, precision or checkpoint), so the 20 smoke
+    cells never overwrite each other's manifest, pip freeze or raw files."""
+    return _DATA_DIR / model_name / quant_label
+
+
 def _save_pip_freeze(run_dir: Path) -> Path:
     """Into this run's own validation directory. The tracked
     `envs/local-smoke-freeze.txt` is the 2026-08-15 record and stays as it is;
@@ -234,9 +240,7 @@ def main() -> None:
     # across runs, so skip the cache reuse entirely rather than deepen
     # score_logprobs()'s cross-process contract.
     cache = GenerationCache(Path(tempfile.mkdtemp(prefix="qcd_smoke_cache_")))
-    # Tagged by quant_label, not a shared "raw" dir — otherwise a later run
-    # silently overwrites the previous run's output on disk.
-    run_dir = _DATA_DIR / quant_label
+    run_dir = smoke_run_dir(model_spec.name, quant_label)
     writer = RawDataWriter(run_dir / "raw", file_prefix=model_spec.name)
     writer.write_items(items)
 

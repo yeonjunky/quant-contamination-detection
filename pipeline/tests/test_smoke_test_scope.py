@@ -135,3 +135,15 @@ def test_stop_token_check_fails_only_when_every_greedy_output_hit_the_cap():
     assert SMOKE.greedy_outputs_stop_before_the_cap([_Greedy(True)] * 5) is False
     assert SMOKE.greedy_outputs_stop_before_the_cap([_Greedy(True)] * 4 + [_Greedy(False)]) is True
     assert SMOKE.greedy_outputs_stop_before_the_cap([_Greedy(False)] * 5) is True
+
+
+def test_every_smoke_cell_writes_to_its_own_directory():
+    from qcd.models.registry import ALL_MODELS
+
+    cells = [(spec.name, quant.value) for spec in ALL_MODELS for quant in Quant]
+    directories = {SMOKE.smoke_run_dir(name, quant) for name, quant in cells}
+    assert len(directories) == len(cells) == 20
+    assert SMOKE.smoke_run_dir(QWEN2_5_7B.name, "bnb_nf4") == (
+        Path(__file__).resolve().parents[2]
+        / "data" / "raw" / "validation" / "smoke_test" / QWEN2_5_7B.name / "bnb_nf4"
+    )

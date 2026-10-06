@@ -197,7 +197,7 @@ real HumanEval items and exits non-zero if any check fails —
 all four precisions of the §4.3 ladder), and `--checkpoint-path` bypasses
 `load_model()`'s canonical-path resolution to load a checkpoint sitting
 somewhere else on disk. Output goes to the validation-only namespace
-`data/raw/validation/smoke_test/<quant>/`, with a manifest recording
+`data/raw/validation/smoke_test/<model>/<quant>/`, with a manifest recording
 `study_phase="engineering_validation"`.
 
 Per paper §4.6 the checklist tests *properties* of the numbers, not their
@@ -245,7 +245,7 @@ python scripts/run_lcb_smoke_test.py --help
 
 Both smoke tests take `--model` and `--quant`, so any roster model at any of the
 four precisions can be validated before the main run touches it. They write to
-the validation-only namespace — `data/raw/validation/smoke_test/<quant>/` and
+the validation-only namespace — `data/raw/validation/smoke_test/<model>/<quant>/` and
 `data/raw/validation/lcb_smoke_test/` (repo-root-anchored, inside the gitignored
 `/data/`) — and each writes a manifest recording
 `study_phase="engineering_validation"`. The dry run writes to a temporary

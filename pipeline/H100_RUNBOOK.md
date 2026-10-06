@@ -67,7 +67,7 @@ python scripts/run_lcb_smoke_test.py --model <MODEL> --quant <QUANT>
 - 32B 모델은 아직 묶음 크기가 없으므로 `run_smoke_test.py`에 `--sample-batch-size 2`를 붙인다
   (이 테스트는 샘플을 2개만 뽑는다).
 - 출력은 `data/raw/validation/` 아래에만 쌓인다. `pip freeze` 기록도 그 실행의 폴더
-  (`data/raw/validation/smoke_test/<QUANT>/pip-freeze.txt`)에 쓰이고, 그 경로가 manifest에 남는다.
+  (`data/raw/validation/smoke_test/<MODEL>/<QUANT>/pip-freeze.txt`)에 쓰이고, 그 경로가 manifest에 남는다.
   추적 파일 `envs/local-smoke-freeze.txt`는 건드리지 않으므로 스모크 테스트 뒤에도 작업 트리가
   깨끗하다.
 - `run_smoke_test.py`는 5개 문항의 greedy 출력이 모두 512토큰 상한까지 갔으면
