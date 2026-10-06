@@ -62,6 +62,21 @@ def test_band_is_model_specific_not_precision_only():
     assert large[1] > small[1]
 
 
+def test_awq_32b_band_never_exceeds_the_card():
+    # Audit #5: the uncapped AWQ ceiling for a 32.5B model is 134 GB, so on an
+    # 80 GB H100 any peak, even one leaving no room for the KV cache, passed.
+    assert SMOKE.plausible_peak_gb(QWEN2_5_32B, Quant.GPTQ_AWQ_INT4)[1] == pytest.approx(134.0)
+    lower, upper = SMOKE.plausible_peak_gb(QWEN2_5_32B, Quant.GPTQ_AWQ_INT4, device_total_gb=80.0)
+    assert upper == 80.0
+    assert not lower <= 85.0 <= upper
+
+
+def test_device_cap_leaves_a_band_below_the_card_unchanged():
+    assert SMOKE.plausible_peak_gb(QWEN2_5_7B, Quant.BNB_NF4, device_total_gb=80.0) == (
+        SMOKE.plausible_peak_gb(QWEN2_5_7B, Quant.BNB_NF4)
+    )
+
+
 def _batch_size_from_cli(argv):
     args = SMOKE.build_parser().parse_args(argv)
     return SMOKE._sample_batch_size(args.sample_batch_size, SMOKE.get_model(args.model))

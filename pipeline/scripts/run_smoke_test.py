@@ -77,8 +77,14 @@ _UPPER_FACTOR = 2.0
 _OVERHEAD_GB = 4.0  # KV cache, activations, allocator slack
 
 
-def plausible_peak_gb(spec: ModelSpec, quant: Quant) -> tuple[float, float]:
+def plausible_peak_gb(
+    spec: ModelSpec, quant: Quant, device_total_gb: float | None = None,
+) -> tuple[float, float]:
     """(lower, upper) GB band for peak allocated GPU memory.
+
+    The upper bound never exceeds `device_total_gb` when it is known: for the
+    32B AWQ arm the formula gives 134 GB, above an 80 GB card, so an uncapped
+    band could not flag a load that leaves no room for the KV cache.
 
     AWQ gets a bf16-width ceiling on purpose: real peak memory measured loading
     our W4A16_ASYM checkpoints through plain `AutoModelForCausalLM.from_pretrained`
@@ -96,7 +102,10 @@ def plausible_peak_gb(spec: ModelSpec, quant: Quant) -> tuple[float, float]:
         if quant is Quant.GPTQ_AWQ_INT4
         else weight_gb
     )
-    return _LOWER_FACTOR * weight_gb, _UPPER_FACTOR * ceiling_basis + _OVERHEAD_GB
+    upper = _UPPER_FACTOR * ceiling_basis + _OVERHEAD_GB
+    if device_total_gb is not None:
+        upper = min(upper, device_total_gb)
+    return _LOWER_FACTOR * weight_gb, upper
 
 
 _PIPELINE_DIR = Path(__file__).resolve().parent.parent
@@ -288,8 +297,17 @@ def main() -> None:
 
     written = writer.flush()
     peak_gb = torch.cuda.max_memory_allocated() / 1e9
-    lower_gb, upper_gb = plausible_peak_gb(model_spec, quant)
-    print(f"\nPeak GPU memory: {peak_gb:.2f} GB (expected band {lower_gb:.1f}-{upper_gb:.1f} GB)")
+    device_total_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+    lower_gb, upper_gb = plausible_peak_gb(model_spec, quant, device_total_gb)
+    uncapped_upper_gb = plausible_peak_gb(model_spec, quant)[1]
+    print(
+        f"\nPeak GPU memory: {peak_gb:.2f} GB (expected band {lower_gb:.1f}-{upper_gb:.1f} GB"
+        + (
+            f"; upper bound capped at the device total {device_total_gb:.1f} GB, "
+            f"formula gives {uncapped_upper_gb:.1f} GB)"
+            if upper_gb < uncapped_upper_gb else ")"
+        )
+    )
 
     freeze_path = _save_pip_freeze()
     manifest_path = _write_validation_manifest(
