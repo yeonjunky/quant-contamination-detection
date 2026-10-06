@@ -14,11 +14,13 @@ foreclose the paired and mixed-effects analyses this design depends on."
   the 512-token cap, and (on the greedy row) the scored-text identity, token
   boundaries and chat-template id paper §4.4 asks to be recorded with a
   probability-detector score.
-- `chat_templates.parquet` — one row per (model, quant, chat template): the
-  rendered template text itself, stored once per run rather than repeated on
-  every generations row, keyed by the `chat_template_id` those rows carry.
+- `chat_templates.<part>.parquet` — one row per (model, quant, chat template):
+  the rendered template text itself, stored once per model/precision cell
+  rather than repeated on every generations row, keyed by the
+  `chat_template_id` those rows carry.
 - `detector_scores.<part>.parquet` — one row per (model, quant, item, detector):
-score, threshold used, source sample ids.
+  score, threshold used, source sample ids, and on the `cdd` row the
+  threshold length `l` and the empty-output counts behind that score.
 
 New columns are added as optional keyword arguments defaulting to None, so a
 parquet file written before they existed still reads — the columns are simply
@@ -98,14 +100,14 @@ class RawDataWriter:
         _write_parquet_atomic(pd.DataFrame(rows), path)
         return path
 
-    def write_chat_templates(self, rows: list[dict]) -> Path:
+    def write_chat_templates(self, rows: list[dict], *, part: str) -> Path:
         """One row per (model, quant, chat template). Paper §4.4 requires the
         chat template to be recorded with the probability-detector scores; the
         template is identical for every item of a given tokenizer, so it is
-        stored once per run and generations rows carry only its
-        `chat_template_id`. Rewritten in full whenever a new template is seen,
-        which is at most once per model/precision arm."""
-        path = self.output_dir / f"{self.file_prefix}chat_templates.parquet"
+        stored once per model/precision cell and generations rows carry only
+        its `chat_template_id`. Each cell writes its own `part`, so cells run
+        as separate processes never rewrite one another's rows."""
+        path = self.output_dir / f"{self.file_prefix}chat_templates.{part}.parquet"
         _write_parquet_atomic(pd.DataFrame(rows), path)
         return path
 
@@ -201,7 +203,14 @@ class RawDataWriter:
         score: float,
         threshold_used: float | None = None,
         source_sample_ids: list[int] | None = None,
+        cdd_threshold_length: int | None = None,
+        cdd_n_empty_samples: int | None = None,
+        cdd_greedy_empty: bool | None = None,
     ) -> None:
+        """The `cdd_*` fields belong on the `cdd` row. `cdd_threshold_length`
+        is the `l` of `detectors.cdd.threshold_length`, which varies by item
+        and precision; the empty-output fields count zero-token generations,
+        since an all-empty item has l=0 and a peakedness of 1.0."""
         self._detector_score_rows.append(
             {
                 "model": model,
@@ -211,6 +220,9 @@ class RawDataWriter:
                 "score": score,
                 "threshold_used": threshold_used,
                 "source_sample_ids": list(source_sample_ids) if source_sample_ids is not None else None,
+                "cdd_threshold_length": cdd_threshold_length,
+                "cdd_n_empty_samples": cdd_n_empty_samples,
+                "cdd_greedy_empty": cdd_greedy_empty,
             }
         )
 
@@ -229,6 +241,15 @@ class RawDataWriter:
             written["detector_scores"] = path
             self._detector_score_rows.clear()
         return written
+
+    def has_part(self, part: str) -> bool:
+        """Whether `flush(part=part)` completed: it writes generations first
+        and detector scores second, each atomically, so a part is complete
+        only when both files exist."""
+        return all(
+            (self.output_dir / f"{self.file_prefix}{stem}.{part}.parquet").exists()
+            for stem in ("generations", "detector_scores")
+        )
 
     @property
     def n_buffered_generations(self) -> int:

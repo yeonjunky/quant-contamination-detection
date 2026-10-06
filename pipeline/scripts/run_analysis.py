@@ -19,6 +19,9 @@ What this driver runs, and nothing else:
 3. **§4.4's truncated-generation rate by precision**, because "a truncation
    rate that differs across precisions would confound a pass@1 shift with a
    length-cap artifact".
+4. **A descriptive, exploratory block** on CDD's threshold length `l`, empty
+   outputs and cap hits per model and precision. It reads the same tables
+   but feeds no test; C1-C4 do not depend on it.
 
 Two gates run before any of that:
 
@@ -38,6 +41,7 @@ Outputs (in `--out`, default `<run_dir>/analysis`):
     confirmatory_family.json   C1-C4, raw and Holm-adjusted p-values
     beta_qe_intervals.json     per-model conditional-logit β_QE and J
     truncation_rates.json      §4.4 rates by precision
+    cdd_length_and_empty_outputs.json   descriptive only, not confirmatory
     analysis_manifest.json     what §4.5.5/§4.5.6 require to be recorded
 """
 
@@ -94,6 +98,7 @@ CONFIRMATORY_TARGET = Quant.BNB_NF4.value
 CONFIRMATORY_FAMILY_FILENAME = "confirmatory_family.json"
 BETA_QE_FILENAME = "beta_qe_intervals.json"
 TRUNCATION_FILENAME = "truncation_rates.json"
+CDD_LENGTH_FILENAME = "cdd_length_and_empty_outputs.json"
 ANALYSIS_MANIFEST_FILENAME = "analysis_manifest.json"
 
 
@@ -392,6 +397,9 @@ def run_analysis(
         ),
         "truncation_rates": _write_json(
             out_dir / TRUNCATION_FILENAME, study_inputs.truncated_generation_rates(tables)
+        ),
+        "cdd_length_and_empty_outputs": _write_json(
+            out_dir / CDD_LENGTH_FILENAME, study_inputs.cdd_length_and_empty_outputs(tables)
         ),
     }
     manifest = build_analysis_manifest(

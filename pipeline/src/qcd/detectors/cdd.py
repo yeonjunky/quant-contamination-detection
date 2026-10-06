@@ -50,6 +50,20 @@ def token_edit_distance(a: list[int], b: list[int]) -> int:
     return prev[m]
 
 
+def threshold_length(
+    greedy_token_ids: list[int],
+    sample_token_ids_list: list[list[int]],
+    *,
+    max_tokens: int = CDD_MAX_TOKENS,
+) -> int:
+    """`l` in Peak(M;x): the longest of the greedy reference and the samples
+    after truncation to `max_tokens`. It is 0 when every output is empty, and
+    then `peakedness` returns 1.0."""
+    return min(
+        max_tokens, max(len(greedy_token_ids), *(len(s) for s in sample_token_ids_list))
+    )
+
+
 def peakedness(
     greedy_token_ids: list[int],
     sample_token_ids_list: list[list[int]],
@@ -65,8 +79,9 @@ def peakedness(
 
     greedy_trunc = greedy_token_ids[:max_tokens]
     samples_trunc = [sample[:max_tokens] for sample in sample_token_ids_list]
-    actual_max_length = max(len(greedy_trunc), *(len(sample) for sample in samples_trunc))
-    threshold = alpha * actual_max_length
+    threshold = alpha * threshold_length(
+        greedy_token_ids, sample_token_ids_list, max_tokens=max_tokens
+    )
 
     close = 0
     for sample_trunc in samples_trunc:

@@ -357,7 +357,7 @@ def test_run_records_decoding_settings_truncation_and_prompt_provenance(tmp_path
     assert greedy["chat_template_id"] == detail.chat_template_id
 
     # The template text itself is stored once per run, not per item.
-    templates = pd.read_parquet(tmp_path / "raw" / "chat_templates.parquet")
+    templates = pd.read_parquet(tmp_path / "raw" / "chat_templates.Qwen2.5-7B-Instruct-bf16.parquet")
     assert len(templates) == 1
     assert templates.iloc[0]["chat_template_id"] == detail.chat_template_id
     assert "message.content" in templates.iloc[0]["chat_template"]
@@ -410,27 +410,44 @@ def run_with(monkeypatch):
     monkeypatch.setattr(real_run_module, "_assemble_candidate_code", lambda item, text: text)
     monkeypatch.setattr(real_run_module, "partial_pass_rate", lambda item, code: 1.0)
 
+    def _load(model):
+        def load(spec, quant, mock=False):
+            _run.loads.append((spec.name, quant))
+            return model
+        return load
+
     def _run(model, output_dir, *, batch_size=2, spec=_TEST_QWEN, **overrides):
-        monkeypatch.setattr(real_run_module, "load_model", lambda spec, quant, mock=False: model)
+        monkeypatch.setattr(real_run_module, "load_model", _load(model))
         run(_small_config(
             output_dir, n_cdd_samples=3, include_humaneval=False, include_mbppplus=False,
             models=(dataclasses.replace(spec, sample_batch_size=batch_size),),
             **overrides,
         ))
 
+    _run.loads = []
     return _run
 
 
-def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, run_with):
-    def read(output_dir, kind):
-        frame = pd.concat(
-            [pd.read_parquet(p) for p in sorted((output_dir / "raw").glob(f"{kind}*.parquet"))],
-            ignore_index=True,
-        )
-        keys = ["item_id", "sample_id"] if kind == "generations" else ["item_id", "detector"]
-        return frame.drop(columns=[c for c in frame.columns if c.endswith("_seconds")]) \
-            .sort_values(keys).reset_index(drop=True)
+def _read_raw(output_dir, kind):
+    """One raw table across its parts, without the wall-clock timing columns,
+    which no two runs share."""
+    frame = pd.concat(
+        [pd.read_parquet(p) for p in sorted((output_dir / "raw").glob(f"{kind}.*.parquet"))],
+        ignore_index=True,
+    )
+    keys = (
+        ["quant", "item_id", "sample_id"] if kind == "generations"
+        else ["quant", "item_id", "detector"]
+    )
+    return frame.drop(columns=[c for c in frame.columns if c.endswith("_seconds")]) \
+        .sort_values(keys).reset_index(drop=True)
 
+
+def _part_bytes(output_dir, pattern="*.parquet"):
+    return {p.name: p.read_bytes() for p in sorted((output_dir / "raw").glob(pattern))}
+
+
+def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, run_with):
     # Interrupted between q2's two sample chunks: q1 is complete, q2's greedy
     # output is cached, and q2's first chunk was generated but not cached.
     interrupted = tmp_path / "interrupted"
@@ -445,7 +462,7 @@ def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, run_
     uninterrupted = tmp_path / "uninterrupted"
     run_with(_CountingModel(), uninterrupted)
     for kind in ("generations", "detector_scores"):
-        pd.testing.assert_frame_equal(read(interrupted, kind), read(uninterrupted, kind))
+        pd.testing.assert_frame_equal(_read_raw(interrupted, kind), _read_raw(uninterrupted, kind))
 
 
 def test_a_cache_made_at_another_batch_size_is_not_served(tmp_path, run_with):
@@ -489,6 +506,7 @@ def test_a_model_without_a_measured_batch_size_refuses_before_loading(tmp_path, 
         ))
     assert "Qwen2.5-32B-Instruct" in str(refused.value)
     assert "Olmo3.1-32B-Instruct" in str(refused.value)
+    assert "scripts/measure_sample_batch.py" in str(refused.value)
     assert "models/registry.py" in str(refused.value)
     assert loaded == []
     assert not (tmp_path / "manifest.json").exists()
@@ -509,3 +527,154 @@ def test_a_validation_run_proceeds_with_an_explicit_batch_size(tmp_path, run_wit
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["study_phase"] == "engineering_validation"
     assert manifest["config"]["sample_batch_sizes"] == {QWEN2_5_32B.name: 2}
+
+
+# --- one (model, precision) cell per process --------------------------------
+
+_BOTH = (Quant.BF16, Quant.BNB_NF4)
+_QWEN = QWEN2_5_7B.name
+
+
+def _manifest(output_dir):
+    return json.loads((output_dir / "manifest.json").read_text())
+
+
+def test_cell_processes_share_the_full_studys_manifest_and_output(tmp_path, run_with):
+    full = tmp_path / "full"
+    run_with(_CountingModel(), full, quant_levels=_BOTH)
+    run_with.loads.clear()
+
+    split = tmp_path / "split"
+    run_with(_CountingModel(), split, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BF16)}))
+    assert _manifest(split)["config_hash"] == _manifest(full)["config_hash"]
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+    assert set(_read_raw(split, "detector_scores")["quant"]) == {"bf16"}
+    bf16_files = _part_bytes(split)
+
+    # The second cell's process is accepted by the directory the first wrote,
+    # and leaves the first cell's files exactly as they were.
+    run_with(_CountingModel(), split, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert run_with.loads == [(_QWEN, Quant.BF16), (_QWEN, Quant.BNB_NF4)]
+    after = _part_bytes(split)
+    for name, content in bf16_files.items():
+        if "bf16" in name:
+            assert after[name] == content, name
+    for kind in ("generations", "detector_scores"):
+        pd.testing.assert_frame_equal(_read_raw(split, kind), _read_raw(full, kind))
+
+
+def test_an_unknown_cell_is_refused_before_loading(tmp_path, monkeypatch):
+    import qcd.real_run as real_run_module
+
+    loaded = []
+    monkeypatch.setattr(
+        real_run_module, "load_model", lambda spec, quant, mock=False: loaded.append(spec)
+    )
+    with pytest.raises(ValueError, match=r"Qwen2.5-7B-Instruct:bnb_nf4"):
+        run(_small_config(tmp_path, cells=frozenset({(_QWEN, Quant.BNB_NF4)})))
+    assert loaded == []
+    assert not (tmp_path / "manifest.json").exists()
+
+
+def test_a_completed_cell_is_skipped_without_loading_its_model(tmp_path, run_with):
+    run_with(_CountingModel(), tmp_path)
+    marker = tmp_path / "cells" / "Qwen2.5-7B-Instruct-bf16" / "complete.json"
+    record = json.loads(marker.read_text())
+    assert record["n_items"] == 2
+    assert record["parts"] == ["Qwen2.5-7B-Instruct-bf16-00000"]
+    assert record["config_hash"] == _manifest(tmp_path)["config_hash"]
+    parts = _part_bytes(tmp_path, "[gd]*.parquet")
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+
+    recorded = marker.read_text()
+    model = _CountingModel()
+    run_with(model, tmp_path)
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+    assert model.calls == []
+    assert _part_bytes(tmp_path, "[gd]*.parquet") == parts
+    assert marker.read_text() == recorded
+
+    # Interrupted after its last part but before the marker: every part is on
+    # disk, so the marker is written without loading the model either.
+    marker.unlink()
+    run_with(model, tmp_path)
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+    assert json.loads(marker.read_text())["parts"] == record["parts"]
+
+
+def test_an_interrupted_cell_resumes_at_its_first_unwritten_part(tmp_path, run_with, monkeypatch):
+    import qcd.real_run as real_run_module
+
+    monkeypatch.setattr(real_run_module, "_RAW_BATCH_ITEMS", 1)
+    sandboxed = []
+    monkeypatch.setattr(
+        real_run_module, "partial_pass_rate", lambda item, code: sandboxed.append(item.item_id) or 1.0
+    )
+
+    interrupted = tmp_path / "interrupted"
+    # Three model calls per item (greedy, two sample chunks): the fourth is
+    # q2's greedy output, after q1's part was flushed.
+    with pytest.raises(KeyboardInterrupt):
+        run_with(_CountingModel(fail_after=3), interrupted)
+    first_part = _part_bytes(interrupted)
+    assert sorted(first_part) == [
+        "detector_scores.Qwen2.5-7B-Instruct-bf16-00000.parquet",
+        "generations.Qwen2.5-7B-Instruct-bf16-00000.parquet",
+        "items.parquet", "model_item_labels.parquet",
+    ]
+    assert not (interrupted / "cells" / "Qwen2.5-7B-Instruct-bf16" / "complete.json").exists()
+
+    sandboxed.clear()
+    resumed = _CountingModel()
+    run_with(resumed, interrupted)
+    # q1 is neither generated, sandboxed nor rewritten; only q2 runs.
+    assert resumed.calls == [("q2", "greedy", (0,)), ("q2", "samples", (0, 1)), ("q2", "samples", (2,))]
+    assert sandboxed == ["q2"]
+    after = _part_bytes(interrupted)
+    for name, content in first_part.items():
+        assert after[name] == content, name
+
+    uninterrupted = tmp_path / "uninterrupted"
+    run_with(_CountingModel(), uninterrupted)
+    assert sorted(_part_bytes(interrupted)) == sorted(_part_bytes(uninterrupted))
+    for kind in ("generations", "detector_scores"):
+        resumed_frame = _read_raw(interrupted, kind)
+        keys = ["item_id", "sample_id"] if kind == "generations" else ["item_id", "detector"]
+        assert not resumed_frame.duplicated(subset=keys).any()
+        pd.testing.assert_frame_equal(resumed_frame, _read_raw(uninterrupted, kind))
+
+
+class _FixedOutputModel(_CountingModel):
+    """q1: a 120-token greedy output and samples of 0, 5 and 150 tokens.
+    q2: every output empty."""
+
+    _LENGTHS = {"q1": {0: 120, 1: 0, 2: 5, 3: 150}, "q2": {0: 0, 1: 0, 2: 0, 3: 0}}
+
+    @classmethod
+    def _sample(cls, item_id, sample_id, temperature):
+        row = sample_id if temperature == 0.0 else sample_id + 1
+        n = cls._LENGTHS[item_id][row]
+        return SimpleNamespace(
+            text="x" * n, token_ids=[7] * n, token_logprobs=[-0.5] * n,
+            is_greedy=temperature == 0.0,
+        )
+
+
+def test_cdd_rows_record_threshold_length_and_empty_outputs(tmp_path, run_with):
+    run_with(_FixedOutputModel(), tmp_path)
+
+    scores = _read_raw(tmp_path, "detector_scores")
+    cdd = scores[scores["detector"] == "cdd"].set_index("item_id")
+    # l is the longest output after truncation to 100 tokens, not the cap
+    # itself and not the untruncated 150.
+    assert cdd.loc["q1", "cdd_threshold_length"] == 100
+    assert cdd.loc["q1", "cdd_n_empty_samples"] == 1
+    assert cdd.loc["q1", "cdd_greedy_empty"] == False  # noqa: E712
+    # All outputs empty: l=0, a zero threshold, and peakedness 1.0.
+    assert cdd.loc["q2", "cdd_threshold_length"] == 0
+    assert cdd.loc["q2", "cdd_n_empty_samples"] == 3
+    assert cdd.loc["q2", "cdd_greedy_empty"] == True  # noqa: E712
+    assert cdd.loc["q2", "score"] == 1.0
+
+    others = scores[scores["detector"] != "cdd"]
+    assert others[["cdd_threshold_length", "cdd_n_empty_samples", "cdd_greedy_empty"]].isna().all().all()
