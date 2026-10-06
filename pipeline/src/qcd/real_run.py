@@ -139,7 +139,7 @@ class RealRunConfig:
         if unmeasured:
             raise ValueError(
                 f"{unmeasured} have no sample_batch_size. Measure it on the H100 "
-                "(scripts/run_smoke_test.py --sample-batch-size) and set it in "
+                "(scripts/measure_sample_batch.py) and set it in "
                 "models/registry.py before the main run."
             )
 

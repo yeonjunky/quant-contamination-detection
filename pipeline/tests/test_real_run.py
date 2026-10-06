@@ -506,6 +506,7 @@ def test_a_model_without_a_measured_batch_size_refuses_before_loading(tmp_path, 
         ))
     assert "Qwen2.5-32B-Instruct" in str(refused.value)
     assert "Olmo3.1-32B-Instruct" in str(refused.value)
+    assert "scripts/measure_sample_batch.py" in str(refused.value)
     assert "models/registry.py" in str(refused.value)
     assert loaded == []
     assert not (tmp_path / "manifest.json").exists()
