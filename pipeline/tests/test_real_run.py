@@ -469,6 +469,31 @@ def test_a_cache_made_at_another_batch_size_is_not_served(tmp_path, run_with):
     )
 
 
+def test_a_model_without_a_measured_batch_size_refuses_before_loading(tmp_path, monkeypatch):
+    import qcd.real_run as real_run_module
+    from qcd.io.manifest import StudyPhase
+    from qcd.models.registry import MAIN_ANALYSIS_MODELS
+
+    loaded = []
+    monkeypatch.setattr(
+        real_run_module, "load_model", lambda spec, quant, mock=False: loaded.append(spec)
+    )
+    monkeypatch.setattr(
+        real_run_module, "load_all_items", lambda config: loaded.append("items")
+    )
+
+    # What scripts/run_main.py builds: the registry roster, main study.
+    with pytest.raises(ValueError, match="Measure it on the H100") as refused:
+        run(_small_config(
+            tmp_path, models=MAIN_ANALYSIS_MODELS, study_phase=StudyPhase.MAIN_STUDY,
+        ))
+    assert "Qwen2.5-32B-Instruct" in str(refused.value)
+    assert "Olmo3.1-32B-Instruct" in str(refused.value)
+    assert "models/registry.py" in str(refused.value)
+    assert loaded == []
+    assert not (tmp_path / "manifest.json").exists()
+
+
 def test_a_validation_run_proceeds_with_an_explicit_batch_size(tmp_path, run_with):
     from qcd.io.manifest import StudyPhase
     from qcd.models.registry import QWEN2_5_32B

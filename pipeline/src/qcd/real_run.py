@@ -119,6 +119,18 @@ class RealRunConfig:
     # engineering run must set it explicitly.
     study_phase: StudyPhase = StudyPhase.MAIN_STUDY
 
+    def __post_init__(self) -> None:
+        # Refused here, before any item or model is loaded. This driver has no
+        # batch-size override, so a validation run tries a value by passing a
+        # ModelSpec with `sample_batch_size` set.
+        unmeasured = [m.name for m in self.models if m.sample_batch_size is None]
+        if unmeasured:
+            raise ValueError(
+                f"{unmeasured} have no sample_batch_size. Measure it on the H100 "
+                "(scripts/run_smoke_test.py --sample-batch-size) and set it in "
+                "models/registry.py before the main run."
+            )
+
 
 def load_all_items(config: RealRunConfig) -> list[Item]:
     lcb_pre, lcb_post = load_livecodebench_split(config.lcb_cutoff_boundary, release_version=config.lcb_release_version)
