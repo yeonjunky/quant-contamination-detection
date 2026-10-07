@@ -326,13 +326,8 @@ def run(config: RealRunConfig) -> None:
     batches = [
         items[start:start + _RAW_BATCH_ITEMS] for start in range(0, len(items), _RAW_BATCH_ITEMS)
     ]
-    # Spawned, not forked, and started before any model loads: evalplus forks
-    # its test processes, and a fork of a CUDA process is unsafe. A worker
-    # that cannot start fails here rather than after a model has loaded.
-    sandbox = ProcessPoolExecutor(_SANDBOX_WORKERS, mp_context=multiprocessing.get_context("spawn"))
+    sandbox = start_sandbox_pool()
     try:
-        for worker_started in [sandbox.submit(int) for _ in range(_SANDBOX_WORKERS)]:
-            worker_started.result()
         for model_spec, quant in selected_cells(config):
             _run_cell(
                 config, model_spec, quant, batches, writer, cache, sandbox,
@@ -447,6 +442,11 @@ def _run_cell(
             "quant": quant.value,
             "config_hash": config_hash,
             **environment,
+            # CPU contention among the sandbox workers can move a
+            # timeout-bound test between pass and fail, so the host's CPU
+            # count and load at start are kept with the cell.
+            "cpu_count": os.cpu_count(),
+            "load_average": list(os.getloadavg()),
             "started_at_utc": started_at.isoformat(),
         },
         start_record,
@@ -482,6 +482,22 @@ class _GeneratedItem(NamedTuple):
     detail: PromptScoringDetail | None
     prompt_logprobs: list[float]
     sandbox_score: Future
+
+
+def start_sandbox_pool() -> ProcessPoolExecutor:
+    """The main run's code-scoring workers.
+
+    Spawned, not forked, and started before any model loads: evalplus forks
+    its test processes, and a fork of a CUDA process is unsafe. A worker that
+    cannot start fails here rather than after a model has loaded."""
+    sandbox = ProcessPoolExecutor(_SANDBOX_WORKERS, mp_context=multiprocessing.get_context("spawn"))
+    try:
+        for worker_started in [sandbox.submit(int) for _ in range(_SANDBOX_WORKERS)]:
+            worker_started.result()
+    except BaseException:
+        sandbox.shutdown(cancel_futures=True)
+        raise
+    return sandbox
 
 
 def _timed_partial_pass_rate(item: Item, candidate_code: str) -> tuple[float, float]:

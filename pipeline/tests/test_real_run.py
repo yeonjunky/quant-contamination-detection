@@ -773,6 +773,9 @@ def test_each_cell_records_the_commit_and_environment_that_produced_it(tmp_path,
         assert record["hostname"] == manifest["hostname"], record_name
         assert "gpu_name" in record, record_name
         assert record["config_hash"] == manifest["config_hash"], record_name
+    started = json.loads((cell_dir / "started.json").read_text())
+    assert isinstance(started["cpu_count"], int) and started["cpu_count"] >= 1
+    assert len(started["load_average"]) == 3
 
 
 def test_a_resumed_cell_keeps_its_first_start_record(tmp_path, run_with):
