@@ -27,7 +27,7 @@ import re
 import tempfile
 import time
 from collections import defaultdict
-from concurrent.futures import Future, ProcessPoolExecutor, wait
+from concurrent.futures import Future, ProcessPoolExecutor
 from pathlib import Path
 from typing import NamedTuple
 
@@ -327,10 +327,12 @@ def run(config: RealRunConfig) -> None:
         items[start:start + _RAW_BATCH_ITEMS] for start in range(0, len(items), _RAW_BATCH_ITEMS)
     ]
     # Spawned, not forked, and started before any model loads: evalplus forks
-    # its test processes, and a fork of a CUDA process is unsafe.
+    # its test processes, and a fork of a CUDA process is unsafe. A worker
+    # that cannot start fails here rather than after a model has loaded.
     sandbox = ProcessPoolExecutor(_SANDBOX_WORKERS, mp_context=multiprocessing.get_context("spawn"))
     try:
-        wait([sandbox.submit(int) for _ in range(_SANDBOX_WORKERS)])
+        for worker_started in [sandbox.submit(int) for _ in range(_SANDBOX_WORKERS)]:
+            worker_started.result()
         for model_spec, quant in selected_cells(config):
             _run_cell(
                 config, model_spec, quant, batches, writer, cache, sandbox,
