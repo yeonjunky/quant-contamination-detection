@@ -18,6 +18,7 @@ from qcd.config import ModelSpec, Quant
 from qcd.data.schema import Dataset, Item
 from qcd.models.registry import QWEN2_5_7B
 from qcd.real_run import RealRunConfig, _assemble_candidate_code, _generation_prompt, load_all_items, run
+from tests import sandbox_fakes
 
 
 _TEST_QWEN = dataclasses.replace(
@@ -214,7 +215,7 @@ def test_run_scores_fixed_prompt_and_keeps_completion_confidence(tmp_path, monke
         real_run_module, "load_model", lambda spec, quant, mock=False: fake_model
     )
     monkeypatch.setattr(real_run_module, "_assemble_candidate_code", lambda item, text: text)
-    monkeypatch.setattr(real_run_module, "partial_pass_rate", lambda item, code: 1.0)
+    monkeypatch.setattr(real_run_module, "_timed_partial_pass_rate", sandbox_fakes.passes)
 
     config = _small_config(
         tmp_path, n_cdd_samples=2, include_humaneval=False, include_mbppplus=False
@@ -318,7 +319,7 @@ def test_run_records_decoding_settings_truncation_and_prompt_provenance(tmp_path
         real_run_module, "load_model", lambda spec, quant, mock=False: FakeModel()
     )
     monkeypatch.setattr(real_run_module, "_assemble_candidate_code", lambda item, text: text)
-    monkeypatch.setattr(real_run_module, "partial_pass_rate", lambda item, code: 1.0)
+    monkeypatch.setattr(real_run_module, "_timed_partial_pass_rate", sandbox_fakes.passes)
 
     config = _small_config(
         tmp_path, n_cdd_samples=2, include_humaneval=False, include_mbppplus=False
@@ -396,19 +397,14 @@ class _CountingModel:
 
 
 @pytest.fixture
-def run_with(monkeypatch):
-    """Runs `run()` on two fixed LCB items against the given model, with
-    n=3 samples drawn at the given batch size."""
+def run_with(monkeypatch, tmp_path):
+    """Runs `run()` on fixed LCB items q1..qN (two by default) against the
+    given model, with n=3 samples drawn at the given batch size, scored by a
+    `sandbox_fakes` function in the driver's spawned sandbox workers."""
     import qcd.real_run as real_run_module
 
-    items = [
-        Item(item_id=f"q{i}", dataset=Dataset.LCB_PRE, prompt=f"prompt {i}",
-             metadata={"contest_date": "2023-06-01"})
-        for i in (1, 2)
-    ]
-    monkeypatch.setattr(real_run_module, "load_all_items", lambda config: items)
     monkeypatch.setattr(real_run_module, "_assemble_candidate_code", lambda item, text: text)
-    monkeypatch.setattr(real_run_module, "partial_pass_rate", lambda item, code: 1.0)
+    monkeypatch.setenv("QCD_TEST_SANDBOX_LOG", str(tmp_path / "sandbox.log"))
 
     def _load(model):
         def load(spec, quant, mock=False):
@@ -416,7 +412,17 @@ def run_with(monkeypatch):
             return model
         return load
 
-    def _run(model, output_dir, *, batch_size=2, spec=_TEST_QWEN, **overrides):
+    def _run(
+        model, output_dir, *, batch_size=2, spec=_TEST_QWEN, n_items=2,
+        sandbox=sandbox_fakes.passes, **overrides,
+    ):
+        items = [
+            Item(item_id=f"q{i}", dataset=Dataset.LCB_PRE, prompt=f"prompt {i}",
+                 metadata={"contest_date": "2023-06-01"})
+            for i in range(1, n_items + 1)
+        ]
+        monkeypatch.setattr(real_run_module, "load_all_items", lambda config: items)
+        monkeypatch.setattr(real_run_module, "_timed_partial_pass_rate", sandbox)
         monkeypatch.setattr(real_run_module, "load_model", _load(model))
         run(_small_config(
             output_dir, n_cdd_samples=3, include_humaneval=False, include_mbppplus=False,
@@ -441,6 +447,10 @@ def _read_raw(output_dir, kind):
     )
     return frame.drop(columns=[c for c in frame.columns if c.endswith("_seconds")]) \
         .sort_values(keys).reset_index(drop=True)
+
+
+def _sandbox_log(tmp_path):
+    return (tmp_path / "sandbox.log").read_text().splitlines()
 
 
 def _part_bytes(output_dir, pattern="*.parquet"):
@@ -609,16 +619,12 @@ def test_an_interrupted_cell_resumes_at_its_first_unwritten_part(tmp_path, run_w
     import qcd.real_run as real_run_module
 
     monkeypatch.setattr(real_run_module, "_RAW_BATCH_ITEMS", 1)
-    sandboxed = []
-    monkeypatch.setattr(
-        real_run_module, "partial_pass_rate", lambda item, code: sandboxed.append(item.item_id) or 1.0
-    )
 
     interrupted = tmp_path / "interrupted"
     # Three model calls per item (greedy, two sample chunks): the fourth is
     # q2's greedy output, after q1's part was flushed.
     with pytest.raises(KeyboardInterrupt):
-        run_with(_CountingModel(fail_after=3), interrupted)
+        run_with(_CountingModel(fail_after=3), interrupted, sandbox=sandbox_fakes.records)
     first_part = _part_bytes(interrupted)
     assert sorted(first_part) == [
         "detector_scores.Qwen2.5-7B-Instruct-bf16-00000.parquet",
@@ -627,18 +633,18 @@ def test_an_interrupted_cell_resumes_at_its_first_unwritten_part(tmp_path, run_w
     ]
     assert not (interrupted / "cells" / "Qwen2.5-7B-Instruct-bf16" / "complete.json").exists()
 
-    sandboxed.clear()
+    (tmp_path / "sandbox.log").unlink()
     resumed = _CountingModel()
-    run_with(resumed, interrupted)
+    run_with(resumed, interrupted, sandbox=sandbox_fakes.records)
     # q1 is neither generated, sandboxed nor rewritten; only q2 runs.
     assert resumed.calls == [("q2", "greedy", (0,)), ("q2", "samples", (1, 2)), ("q2", "samples", (3,))]
-    assert sandboxed == ["q2"]
+    assert [line.split()[0] for line in _sandbox_log(tmp_path)] == ["q2"]
     after = _part_bytes(interrupted)
     for name, content in first_part.items():
         assert after[name] == content, name
 
     uninterrupted = tmp_path / "uninterrupted"
-    run_with(_CountingModel(), uninterrupted)
+    run_with(_CountingModel(), uninterrupted, sandbox=sandbox_fakes.records)
     assert sorted(_part_bytes(interrupted)) == sorted(_part_bytes(uninterrupted))
     for kind in ("generations", "detector_scores"):
         resumed_frame = _read_raw(interrupted, kind)
