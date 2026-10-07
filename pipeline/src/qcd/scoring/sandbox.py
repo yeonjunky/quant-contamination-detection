@@ -59,6 +59,20 @@ from qcd.data.schema import Dataset, Item
 if sys.platform == "darwin":
     os.environ.setdefault("EVALPLUS_MAX_MEMORY_BYTES", "-1")
 
+# Environment variables evalplus 0.3.1 reads that change a pass/fail verdict:
+# the memory cap and per-task timeout of `untrusted_check`, and the files the
+# HumanEval+/MBPP+ problems are read from.
+SCORING_ENVIRONMENT_VARIABLES = (
+    "EVALPLUS_MAX_MEMORY_BYTES", "EVALPLUS_TIMEOUT_PER_TASK",
+    "HUMANEVAL_OVERRIDE_PATH", "MBPP_OVERRIDE_PATH",
+)
+
+
+def scoring_environment() -> dict[str, str | None]:
+    """The value scoring sees for each of those variables; None means unset,
+    so evalplus's own default applies."""
+    return {name: os.environ.get(name) for name in SCORING_ENVIRONMENT_VARIABLES}
+
 _LCB_HARNESS_TIMEOUT_SECONDS = 6.0
 
 _FUNCTIONAL_HARNESS_PREAMBLE = (
@@ -124,7 +138,7 @@ def _trusted_exec_with_time(code: str, inputs: list, entry_point: str):
 # --- LiveCodeBench (custom subprocess harness) -------------------------------
 
 
-def _decode_private_test_cases(raw: str) -> list[dict]:
+def decode_private_test_cases(raw: str) -> list[dict]:
     decompressed = zlib.decompress(base64.b64decode(raw))
     inner_json_string = pickle.loads(decompressed)  # noqa: S301 — see module docstring's trust-boundary note
     return json.loads(inner_json_string)
@@ -133,7 +147,7 @@ def _decode_private_test_cases(raw: str) -> list[dict]:
 def _load_test_cases(item: Item) -> list[dict]:
     public = json.loads(item.metadata["public_test_cases"]) if item.metadata.get("public_test_cases") else []
     private_raw = item.metadata.get("private_test_cases")
-    private = _decode_private_test_cases(private_raw) if private_raw else []
+    private = decode_private_test_cases(private_raw) if private_raw else []
     return public + private
 
 

@@ -12,7 +12,8 @@ validation-only namespace `data/raw/validation/smoke_test/` and its manifest
 records `study_phase="engineering_validation"`, so the analysis side refuses
 it. §4.6 also forbids letting outcome values steer the configuration, so this
 script checks only *properties* of the numbers — finite, in range, right
-schema — and neither prints nor stores an item's pass rate or detector scores.
+schema, not every greedy output stopped by the 512-token cap — and neither
+prints nor stores an item's pass rate or detector scores.
 Both quantities are still computed, because the range checks are the point.
 
 Mirrors qcd/dry_run.py's structure (run everything, print a checklist,
@@ -44,7 +45,7 @@ from qcd.detectors.cdd import peakedness
 from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score
 from qcd.generation.cache import GenerationCache
-from qcd.generation.sampler import sample_item
+from qcd.generation.sampler import sample_ids, sample_item
 from qcd.io.manifest import (
     StudyPhase, build_manifest, resolve_library_defaults,
     unresolved_library_defaults, write_manifest,
@@ -77,8 +78,14 @@ _UPPER_FACTOR = 2.0
 _OVERHEAD_GB = 4.0  # KV cache, activations, allocator slack
 
 
-def plausible_peak_gb(spec: ModelSpec, quant: Quant) -> tuple[float, float]:
+def plausible_peak_gb(
+    spec: ModelSpec, quant: Quant, device_total_gb: float | None = None,
+) -> tuple[float, float]:
     """(lower, upper) GB band for peak allocated GPU memory.
+
+    The upper bound never exceeds `device_total_gb` when it is known: for the
+    32B AWQ arm the formula gives 134 GB, above an 80 GB card, so an uncapped
+    band could not flag a load that leaves no room for the KV cache.
 
     AWQ gets a bf16-width ceiling on purpose: real peak memory measured loading
     our W4A16_ASYM checkpoints through plain `AutoModelForCausalLM.from_pretrained`
@@ -96,7 +103,10 @@ def plausible_peak_gb(spec: ModelSpec, quant: Quant) -> tuple[float, float]:
         if quant is Quant.GPTQ_AWQ_INT4
         else weight_gb
     )
-    return _LOWER_FACTOR * weight_gb, _UPPER_FACTOR * ceiling_basis + _OVERHEAD_GB
+    upper = _UPPER_FACTOR * ceiling_basis + _OVERHEAD_GB
+    if device_total_gb is not None:
+        upper = min(upper, device_total_gb)
+    return _LOWER_FACTOR * weight_gb, upper
 
 
 _PIPELINE_DIR = Path(__file__).resolve().parent.parent
@@ -117,13 +127,30 @@ def _select_items(n: int):
     return sorted(items, key=lambda item: len(item.prompt))[:n]
 
 
-def _save_pip_freeze() -> Path:
-    envs_dir = _PIPELINE_DIR / "envs"
-    envs_dir.mkdir(parents=True, exist_ok=True)
-    out_path = envs_dir / "local-smoke-freeze.txt"
+def smoke_run_dir(model_name: str, quant_label: str) -> Path:
+    """One directory per (model, precision or checkpoint), so the 20 smoke
+    cells never overwrite each other's manifest, pip freeze or raw files."""
+    return _DATA_DIR / model_name / quant_label
+
+
+def _save_pip_freeze(run_dir: Path) -> Path:
+    """Into this run's own validation directory. The tracked
+    `envs/local-smoke-freeze.txt` is the 2026-08-15 record and stays as it is;
+    rewriting it would leave the checkout dirty for preflight and run_main."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out_path = run_dir / "pip-freeze.txt"
     freeze = subprocess.run([sys.executable, "-m", "pip", "freeze"], capture_output=True, text=True, check=True).stdout
     out_path.write_text(freeze)
     return out_path
+
+
+def greedy_outputs_stop_before_the_cap(greedy_generations) -> bool:
+    """False when every greedy output ran to the 512-token cap.
+
+    The smoke items are the five shortest HumanEval prompts; a model that
+    never stops on any of them most likely has the wrong stop-token set. A
+    property of the run, not a score."""
+    return not all(generation.truncated_at_cap for generation in greedy_generations)
 
 
 def _load_model_for_smoke_test(spec, quant: Quant, checkpoint_path: Path | None):
@@ -141,7 +168,7 @@ def _load_model_for_smoke_test(spec, quant: Quant, checkpoint_path: Path | None)
     return _RealModelAdapter(model, tokenizer)
 
 
-def _parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", default=QWEN2_5_7B.name, help="ModelSpec.name from models/registry.py (default: %(default)s)")
     parser.add_argument("--quant", choices=_QUANT_CHOICES, default=Quant.BNB_NF4.value)
@@ -150,15 +177,33 @@ def _parse_args() -> argparse.Namespace:
         help="Load directly from this local checkpoint dir instead of load_model()'s canonical-path "
              "resolution (see module docstring's --checkpoint-path example).",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--sample-batch-size", type=int, default=None,
+        help="Rows per batched sample generate call, to try a value before it is fixed in "
+             "models/registry.py. Default: the model's registry value.",
+    )
+    return parser
+
+
+def _sample_batch_size(override: int | None, spec: ModelSpec) -> int:
+    batch_size = override if override is not None else spec.sample_batch_size
+    if batch_size is None:
+        raise SystemExit(
+            f"{spec.name} has no sample_batch_size in models/registry.py; "
+            "pass --sample-batch-size to try one"
+        )
+    if batch_size < 1:
+        raise SystemExit(f"--sample-batch-size must be >= 1, got {batch_size}")
+    return batch_size
 
 
 def main() -> None:
     import torch  # noqa: PLC0415
 
-    args = _parse_args()
+    args = build_parser().parse_args()
     model_spec = get_model(args.model)
     quant = Quant(args.quant)
+    sample_batch_size = _sample_batch_size(args.sample_batch_size, model_spec)
     # Distinguishes cache entries/written rows by checkpoint, not just Quant
     # level — without this, two different --checkpoint-path runs sharing the
     # same (model, quant) collide in GenerationCache and silently serve each
@@ -195,9 +240,7 @@ def main() -> None:
     # across runs, so skip the cache reuse entirely rather than deepen
     # score_logprobs()'s cross-process contract.
     cache = GenerationCache(Path(tempfile.mkdtemp(prefix="qcd_smoke_cache_")))
-    # Tagged by quant_label, not a shared "raw" dir — otherwise a later run
-    # silently overwrites the previous run's output on disk.
-    run_dir = _DATA_DIR / quant_label
+    run_dir = smoke_run_dir(model_spec.name, quant_label)
     writer = RawDataWriter(run_dir / "raw", file_prefix=model_spec.name)
     writer.write_items(items)
 
@@ -206,14 +249,17 @@ def main() -> None:
     pass_rates_ok = True
     detector_scores_ok = True
     teacher_forced_scoring_ok = True
+    greedy_generations = []
 
     for item in items:
         t0 = time.time()
         generations = sample_item(
             model, cache, model_name=model_spec.name, quant=quant_label,
             item_id=item.item_id, prompt=item.prompt, n_samples=N_SAMPLES, sample_temperature=SAMPLE_TEMPERATURE,
+            batch_size=sample_batch_size,
         )
         print(f"  {item.item_id}: {time.time() - t0:.1f}s, greedy {len(generations.greedy.token_ids)} tokens")
+        greedy_generations.append(generations.greedy)
 
         for gen in [generations.greedy, *generations.samples]:
             if not gen.token_logprobs or not _isfinite_all(gen.token_logprobs):
@@ -260,7 +306,7 @@ def main() -> None:
             prompt_token_logprobs=prompt_logprobs,
             decoding_temperature=0.0,
         )
-        for sample_id, sample in enumerate(generations.samples, start=1):
+        for sample_id, sample in zip(sample_ids(len(generations.samples)), generations.samples):
             writer.add_generation(
                 model=model_spec.name, quant=quant_label, item_id=item.item_id, sample_id=sample_id,
                 is_greedy=False, text=sample.text, token_ids=sample.token_ids,
@@ -269,18 +315,29 @@ def main() -> None:
 
     written = writer.flush()
     peak_gb = torch.cuda.max_memory_allocated() / 1e9
-    lower_gb, upper_gb = plausible_peak_gb(model_spec, quant)
-    print(f"\nPeak GPU memory: {peak_gb:.2f} GB (expected band {lower_gb:.1f}-{upper_gb:.1f} GB)")
+    device_total_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+    lower_gb, upper_gb = plausible_peak_gb(model_spec, quant, device_total_gb)
+    uncapped_upper_gb = plausible_peak_gb(model_spec, quant)[1]
+    print(
+        f"\nPeak GPU memory: {peak_gb:.2f} GB (expected band {lower_gb:.1f}-{upper_gb:.1f} GB"
+        + (
+            f"; upper bound capped at the device total {device_total_gb:.1f} GB, "
+            f"formula gives {uncapped_upper_gb:.1f} GB)"
+            if upper_gb < uncapped_upper_gb else ")"
+        )
+    )
 
-    freeze_path = _save_pip_freeze()
+    freeze_path = _save_pip_freeze(run_dir)
     manifest_path = _write_validation_manifest(
         run_dir, model_spec=model_spec, quant=quant, quant_label=quant_label,
-        model=model, n_items=len(items),
+        model=model, n_items=len(items), sample_batch_size=sample_batch_size,
+        pip_freeze_path=freeze_path,
     )
     print(f"Validation manifest: {manifest_path}")
 
     checks = {
         "logprobs_finite": all_finite,
+        "greedy_outputs_not_all_at_512_cap": greedy_outputs_stop_before_the_cap(greedy_generations),
         "repeated_samples_differ": samples_differ,
         "sandbox_pass_rate_in_range": pass_rates_ok,
         "teacher_forced_scoring_ok": teacher_forced_scoring_ok,
@@ -306,7 +363,8 @@ def main() -> None:
 
 
 def _write_validation_manifest(
-    run_dir: Path, *, model_spec, quant: Quant, quant_label: str, model, n_items: int
+    run_dir: Path, *, model_spec, quant: Quant, quant_label: str, model, n_items: int,
+    sample_batch_size: int, pip_freeze_path: Path,
 ) -> Path:
     """Paper §4.6: validation output is recorded as validation output.
 
@@ -324,6 +382,7 @@ def _write_validation_manifest(
             "quant_label": quant_label,
             "n_items": n_items,
             "n_samples": N_SAMPLES,
+            "sample_batch_size": sample_batch_size,
             "sample_temperature": SAMPLE_TEMPERATURE,
             "dataset": "humaneval",
             "stores_outcome_values": False,
@@ -333,6 +392,7 @@ def _write_validation_manifest(
         extra={
             "library_default_settings": library_defaults,
             "library_default_settings_unresolved": unresolved_library_defaults(library_defaults),
+            "pip_freeze_path": str(pip_freeze_path),
         },
     )
     return write_manifest(manifest, run_dir / "manifest.json")

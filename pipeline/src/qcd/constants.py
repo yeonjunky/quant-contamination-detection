@@ -109,8 +109,8 @@ MBPPPLUS_N_ITEMS = 378
 # the first day after the latest model-level cutoff" — the two Olmo Instruct
 # cards' `Date cutoff: Dec. 2024` makes 2025-01-01 their first post-boundary
 # date, and it is the latest of the five arms' bounds. This is a fixed design
-# value, not an open question; scripts/run_main.py defaults to it and keeps a
-# CLI override only for the §4.2 boundary-sensitivity re-runs.
+# value, not an open question; scripts/run_main.py uses it with no override,
+# since §4.2's boundary-sensitivity analyses change labels only.
 LCB_SHARED_CONTROL_BOUNDARY = "2025-01-01"
 
 # Paper §5 step 3's planning target for the primary LCB condition. Under

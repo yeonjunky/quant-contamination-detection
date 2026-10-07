@@ -31,6 +31,7 @@ QWEN2_5_7B = ModelSpec(
     revision="a09a35458c702b33eeacc393d103063234e8bc28",
     role="7B size axis",
     primary_first_post_boundary="2024-09-20",
+    sample_batch_size=50,
 )
 QWEN2_5_32B = ModelSpec(
     name="Qwen2.5-32B-Instruct",
@@ -39,6 +40,8 @@ QWEN2_5_32B = ModelSpec(
     revision="5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd",
     role="Primary",
     primary_first_post_boundary="2024-09-20",
+    # None: set from the H100 smoke-test measurement before the main run.
+    sample_batch_size=None,
 )
 LLAMA3_1_8B = ModelSpec(
     name="Llama-3.1-8B-Instruct",
@@ -57,6 +60,7 @@ LLAMA3_1_8B = ModelSpec(
     ),
     primary_first_post_boundary="2024-01-01",
     sensitivity_first_post_boundary="2023-04-01",
+    sample_batch_size=50,
 )
 OLMO3_7B = ModelSpec(
     name="Olmo3-7B-Instruct",
@@ -65,6 +69,7 @@ OLMO3_7B = ModelSpec(
     revision="6e5971d9eba42665f5bd5a0fcf047f299ce1dccc",
     role="Open-corpus confirmed-positive evidence + size axis",
     primary_first_post_boundary="2025-01-01",
+    sample_batch_size=50,
 )
 OLMO3_1_32B = ModelSpec(
     name="Olmo3.1-32B-Instruct",
@@ -73,6 +78,8 @@ OLMO3_1_32B = ModelSpec(
     revision="ac0587e4a7744a551c059d8cd17ba220bc940dae",
     role="Open-corpus confirmed-positive evidence + size axis",
     primary_first_post_boundary="2025-01-01",
+    # None: set from the H100 smoke-test measurement before the main run.
+    sample_batch_size=None,
 )
 
 MAIN_ANALYSIS_MODELS: tuple[ModelSpec, ...] = (

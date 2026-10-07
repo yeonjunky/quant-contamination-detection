@@ -107,6 +107,8 @@ mock이든 실제 백엔드든 동일 코드로 동작. 캐시 히트 시 `model
 s_greedy) ≤ α·l_max)`. 토큰 단위 Levenshtein distance를 O(n·m) DP로 직접 구현(scipy 없음
 컨벤션), star topology(모든 샘플을 greedy와만 비교, 샘플끼리는 비교 안 함), `l_max=100`
 토큰으로 자른 뒤 계산. 임계값이 정확히 `α·l_max=5.0`이 되는 경계값 테스트까지 포함.
+(현재 정의: 임계값 길이 l은 고정 `l_max`가 아니라 잘린 greedy 출력과 50샘플 중 실제 최대 길이다 —
+커밋 `927f2df`, `CDD_SCORE_DEFINITION="actual-max-truncated-length-v2"`, 논문 §4.4.)
 
 ### 4.2 `detectors/perplexity.py`
 표준 정의(평균 음의 로그확률의 지수). AUC 계산에 실제로 넣는 건 `perplexity()` 자체가

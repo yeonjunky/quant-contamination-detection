@@ -40,11 +40,12 @@ object (`top_p=1.0`, top-k disabled with `top_k=0`, `repetition_penalty=1.0`, no
 penalty or minimum-length constraint, 512-token cap), and the adapter replaces each
 checkpoint's own `generation_config` with one carrying nothing but its stop/pad token ids, so
 the checkpoint contributes nothing to decoding. The stored per-token log-probabilities are the
-**raw** values read from `outputs.logits`, before the logits processors run. The raw tables
+**raw** values, before the logits processors run: read from `outputs.logits` for the greedy
+output, and recorded by the per-row sampler for the temperature samples. The raw tables
 gained the columns §4.4 asks to be recorded alongside a probability-detector score:
 `truncated_at_cap` and `max_new_tokens`, a `decoding_settings_id` pointing at the manifest's
 full resolved record, and — on the greedy row — the scored text's sha256, character span,
-token indices and `chat_template_id`. A new `chat_templates.parquet` holds the rendered
+token indices and `chat_template_id`. `chat_templates.<cell>.parquet` holds the rendered
 template text, one row per model/precision, so it is stored once per run instead of on every
 generations row. The common boundary 2025-01-01 is a constant
 (`constants.LCB_SHARED_CONTROL_BOUNDARY`), not a per-script default.
@@ -196,7 +197,7 @@ real HumanEval items and exits non-zero if any check fails —
 all four precisions of the §4.3 ladder), and `--checkpoint-path` bypasses
 `load_model()`'s canonical-path resolution to load a checkpoint sitting
 somewhere else on disk. Output goes to the validation-only namespace
-`data/raw/validation/smoke_test/<quant>/`, with a manifest recording
+`data/raw/validation/smoke_test/<model>/<quant>/`, with a manifest recording
 `study_phase="engineering_validation"`.
 
 Per paper §4.6 the checklist tests *properties* of the numbers, not their
@@ -244,8 +245,8 @@ python scripts/run_lcb_smoke_test.py --help
 
 Both smoke tests take `--model` and `--quant`, so any roster model at any of the
 four precisions can be validated before the main run touches it. They write to
-the validation-only namespace — `data/raw/validation/smoke_test/<quant>/` and
-`data/raw/validation/lcb_smoke_test/` (repo-root-anchored, inside the gitignored
+the validation-only namespace — `data/raw/validation/smoke_test/<model>/<quant>/` and
+`data/raw/validation/lcb_smoke_test/<model>-<quant>/` (repo-root-anchored, inside the gitignored
 `/data/`) — and each writes a manifest recording
 `study_phase="engineering_validation"`. The dry run writes to a temporary
 directory.
@@ -263,7 +264,9 @@ validation rows.
 python scripts/run_main.py --help
 ```
 
-`run_main.py` is the only study-data driver. It runs all five
+`run_main.py` is the only study-data driver. Its only option is `--cell MODEL:QUANT`
+(repeatable) to run one model/precision cell per process; the H100 order of steps is in
+`H100_RUNBOOK.md`. It runs all five
 `MAIN_ANALYSIS_MODELS` across the full four-level ladder and writes to
 `data/raw/main` (repo-root-anchored) with `study_phase="main_study"`. Freeze the
 operational configuration before starting it. `run_pilot.py` and

@@ -59,6 +59,24 @@ def test_peakedness_truncates_to_max_tokens():
     assert peakedness(greedy, [sample]) == 1.0
 
 
+def test_peakedness_short_outputs_use_actual_maximum_length():
+    # Source equation (1): l=10, so one edit exceeds alpha*l=0.5.
+    # The fixed 100-token ceiling must not act as padding.
+    greedy = list(range(10))
+    one_edit = greedy[:-1] + [99]
+    assert peakedness(greedy, [one_edit]) == 0.0
+
+
+def test_peakedness_uses_one_maximum_across_reference_and_all_samples():
+    greedy = [0] * 19
+    one_edit = [0] * 18 + [1]
+    longer = [0] * 20
+    # The 20-token sample sets l=20 for both comparisons: one edit is allowed.
+    assert peakedness(greedy, [one_edit, longer]) == 1.0
+    # The greedy reference also participates in the maximum.
+    assert peakedness(longer, [greedy]) == 1.0
+
+
 def test_peakedness_empty_samples_raises():
     with pytest.raises(ValueError):
         peakedness([1, 2, 3], [])

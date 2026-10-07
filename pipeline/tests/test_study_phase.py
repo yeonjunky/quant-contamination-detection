@@ -106,15 +106,6 @@ def test_run_main_defaults_to_the_main_study_namespace():
     assert run_main.MAIN_OUTPUT_DIR == repo_root / "data" / "raw" / "main"
 
 
-def test_run_main_defaults_the_common_boundary_to_the_constant():
-    # E-F11: the boundary is a fixed design value, so the driver no longer
-    # requires it to be typed at every invocation; the override stays for
-    # §4.2's boundary-sensitivity re-runs.
-    args = _load_script("run_main").build_parser().parse_args([])
-    assert args.lcb_cutoff == LCB_SHARED_CONTROL_BOUNDARY
-    assert args.output_dir == Path(__file__).resolve().parents[2] / "data" / "raw" / "main"
-
-
 def test_smoke_test_writes_the_validation_namespace_and_phase():
     smoke = _load_script("run_smoke_test")
     repo_root = Path(__file__).resolve().parents[2]
@@ -125,7 +116,9 @@ def test_smoke_test_writes_the_validation_namespace_and_phase():
 def test_lcb_smoke_test_writes_the_validation_namespace():
     lcb = _load_script("run_lcb_smoke_test")
     repo_root = Path(__file__).resolve().parents[2]
-    assert lcb._DEFAULT_OUTPUT == repo_root / "data" / "raw" / "validation" / "lcb_smoke_test"
+    assert lcb._parse_args([]).output_dir == (
+        repo_root / "data" / "raw" / "validation" / "lcb_smoke_test" / "Qwen2.5-7B-Instruct-bnb_nf4"
+    )
 
 
 # --- E-F11 / E-F12 fixed strings -------------------------------------------

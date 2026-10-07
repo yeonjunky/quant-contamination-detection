@@ -64,8 +64,9 @@ class _RealGenerationSample:
     separate class, not imported from models.mock (see _seed_from's
     docstring).
 
-    `token_logprobs` holds **raw** per-token log-probabilities (see
-    `_RealModelAdapter.generate`), and `truncated_at_cap` records whether this
+    `token_logprobs` holds **raw** per-token log-probabilities (from
+    `outputs.logits` for the greedy output, from `_PerRowSampler` for
+    samples), and `truncated_at_cap` records whether this
     generation stopped because it hit the 512-token cap rather than because
     the model emitted a stop token (paper §4.4: "we record per item whether
     generation stopped at the cap and report the truncated-generation rate by
@@ -179,9 +180,13 @@ def frozen_decoding_settings(
         "renormalize_logits": False,
         "use_mtp": False,
         "use_cache": True,
-        # Raw (pre-logits-processor) logits, needed for the stored token
-        # log-probabilities — see `_RealModelAdapter.generate`.
-        "output_logits": True,
+        # Raw (pre-logits-processor) logits, needed for the greedy output's
+        # stored token log-probabilities — see `_RealModelAdapter.generate`.
+        # Samples record theirs inside `_PerRowSampler` instead: keeping every
+        # step's full-vocabulary logits for a 50-row batch would cost about
+        # 15.6 GB of GPU memory per item at Qwen's vocabulary and the
+        # 512-token cap (50 x 512 x 152,064 x 4 bytes).
+        "output_logits": is_greedy,
         "output_scores": False,
         "output_attentions": False,
         "output_hidden_states": False,
@@ -279,6 +284,47 @@ def hit_length_cap(
     return True
 
 
+class _PerRowSampler:
+    """Logits processor that draws each row's next token with that row's own
+    `torch.Generator`.
+
+    transformers' own sampling draws the whole batch with one
+    `torch.multinomial` on the global RNG (generation/utils.py:2936), so a
+    row's tokens would depend on its batch neighbours. This processor applies
+    the temperature itself, samples, and returns scores that are -inf
+    everywhere except the drawn token. Custom processors run before the
+    built-in temperature warper (utils.py:1257 vs :1276), and with the frozen
+    sample settings that warper is the only one transformers appends, so the
+    warper and the final multinomial both leave the one-hot unchanged.
+
+    Being the first processor, it receives the raw float32 logits, so it also
+    records each row's raw log-probability of the token it drew
+    (`drawn_logprobs`, one tensor of shape [n_rows] per step, before the
+    temperature is applied).
+
+    Duck-typed rather than subclassing `transformers.LogitsProcessor`, which
+    needs torch at import time; `LogitsProcessorList` only calls it."""
+
+    def __init__(self, generators: list, temperature: float) -> None:
+        self.generators = generators
+        self.temperature = temperature
+        self.drawn_logprobs: list = []
+
+    def __call__(self, input_ids, scores):
+        import torch  # noqa: PLC0415
+
+        probs = torch.softmax(scores / self.temperature, dim=-1)
+        drawn = torch.cat([
+            torch.multinomial(probs[row], 1, generator=generator)
+            for row, generator in enumerate(self.generators)
+        ])
+        self.drawn_logprobs.append(
+            torch.log_softmax(scores, dim=-1).gather(1, drawn[:, None]).squeeze(1)
+        )
+        one_hot = torch.full_like(scores, float("-inf"))
+        return one_hot.scatter_(1, drawn[:, None], 0.0)
+
+
 class LoadedModel(Protocol):
     """The call surface every backend (real or mock) must expose — the rest
     of the pipeline (generation/sampler.py, scoring/logprob.py) is written
@@ -296,6 +342,10 @@ class LoadedModel(Protocol):
     tokenizer: object
 
     def generate(self, item_id: str, prompt: str, *, temperature: float, sample_id: int): ...
+
+    def generate_samples(
+        self, item_id: str, prompt: str, *, temperature: float, sample_ids: list[int]
+    ) -> list: ...
 
     def score_logprobs(self, item_id: str, token_ids: list[int]) -> list[float]: ...
 
@@ -411,6 +461,9 @@ class _RealModelAdapter:
         self.eos_token_ids = _collect_eos_token_ids(model, tokenizer)
         self.checkpoint_generation_config = getattr(model, "generation_config", None)
         self._neutralize_checkpoint_generation_config()
+        # The ids generate() itself stops on: only the (neutralized) model
+        # generation_config's, which can be fewer than `eos_token_ids`.
+        self._stop_token_ids = _collect_eos_token_ids(model, None)
         self._generation_configs: dict[float, object] = {}
         # score_logprobs() only receives token_ids (matches the shared
         # LoadedModel Protocol, which has no prompt argument) but a real
@@ -419,6 +472,11 @@ class _RealModelAdapter:
         # current call site (generation/sampler.py), so stash it here on
         # first generate() and look it up when needed.
         self._prompts: dict[str, str] = {}
+        # Logits processors run ahead of everything else in generate() and
+        # generate_samples(). Only scripts/measure_sample_batch.py sets it, to
+        # force rows to the token cap while it measures memory; the main run
+        # leaves it empty (tests/test_measure_sample_batch.py checks both).
+        self.extra_logits_processors: tuple = ()
 
     def _neutralize_checkpoint_generation_config(self) -> None:
         """Replace the checkpoint's `generation_config` with one that carries
@@ -493,49 +551,107 @@ class _RealModelAdapter:
         return encoded["input_ids"].to(self.model.device), encoded["attention_mask"].to(self.model.device)
 
     def generate(self, item_id: str, prompt: str, *, temperature: float, sample_id: int) -> _RealGenerationSample:
+        """The greedy reference output, as a batch of one."""
         import torch  # noqa: PLC0415
-        import torch.nn.functional as F  # noqa: PLC0415
 
+        del sample_id  # greedy decoding draws no random numbers
+        if temperature != 0.0:
+            raise ValueError(
+                "generate() is the greedy path; sampled generations go through "
+                "generate_samples(), which seeds every sample on its own"
+            )
         self._prompts[item_id] = prompt
         input_ids, attention_mask = self._build_input_ids(prompt)
-        is_greedy = temperature == 0.0
-
-        torch.manual_seed(_seed_from(item_id, sample_id, temperature))
-
         # Every decoding setting travels in this object, not as loose
         # generate() kwargs — that is what stops the checkpoint's own
         # generation_config from filling them in (paper §4.4; see the
         # module-level resolution-order note). `attention_mask` stays a kwarg
         # because it is a model input, not a decoding setting.
+        extra = {}
+        if self.extra_logits_processors:
+            from transformers import LogitsProcessorList  # noqa: PLC0415
+
+            extra["logits_processor"] = LogitsProcessorList(self.extra_logits_processors)
         with torch.no_grad():
             outputs = self.model.generate(
                 input_ids,
                 attention_mask=attention_mask,
                 generation_config=self._generation_config_for(temperature),
+                **extra,
             )
+        import torch.nn.functional as F  # noqa: PLC0415
 
-        prompt_len = input_ids.shape[-1]
-        new_token_ids = outputs.sequences[0][prompt_len:].tolist()
-
+        new_token_ids = outputs.sequences[0][input_ids.shape[-1]:].tolist()
         # outputs.logits[i] is the **raw**, unprocessed logits for generation
         # step i (one entry per new token, in order), captured before the
         # logits processors run (transformers 5.14.1 generation/utils.py:2907
         # and :2917); outputs.scores would be the post-processor values.
         # §4.4's probability quantities are raw model log-probabilities, so
-        # this path uses the raw logits. With the frozen settings above the
-        # two agree for greedy decoding and differ only by the temperature
-        # warper for samples, but the stored number is the raw one either way.
-        #
-        # These values are stored as `token_logprobs` in generations.parquet
-        # and feed real_run.py's `completion_perplexity` /
-        # `completion_mink_prob` diagnostic scores. The Q1 perplexity and
-        # Min-k% scores do NOT come from here — they come from
-        # score_prompt_detail()'s fixed-benchmark-text pass.
+        # this path uses the raw logits.
         token_logprobs = [
             F.log_softmax(step_logits[0].float(), dim=-1)[token_id].item()
             for step_logits, token_id in zip(outputs.logits, new_token_ids)
         ]
+        return self._sample(new_token_ids, token_logprobs, is_greedy=True)
 
+    def generate_samples(
+        self, item_id: str, prompt: str, *, temperature: float, sample_ids: list[int]
+    ) -> list[_RealGenerationSample]:
+        """One batched generate call for the given temperature samples, one
+        row per sample id, in the order given.
+
+        Each row draws its tokens from its own `torch.Generator` seeded with
+        `_seed_from(item_id, sample_id, temperature)`, so a sample's tokens
+        do not depend on which other rows share the batch, or on precision.
+        The logits themselves do depend slightly on batch size, which is why
+        the caller (`generation/sampler.py`) always splits an item's sample
+        ids into the same chunks of the model's fixed batch size."""
+        import torch  # noqa: PLC0415
+        from transformers import LogitsProcessorList  # noqa: PLC0415
+
+        self._prompts[item_id] = prompt
+        input_ids, attention_mask = self._build_input_ids(prompt)
+        n_rows = len(sample_ids)
+        generators = [
+            torch.Generator(device=self.model.device).manual_seed(
+                _seed_from(item_id, sample_id, temperature)
+            )
+            for sample_id in sample_ids
+        ]
+        sampler = _PerRowSampler(generators, temperature)
+        with torch.no_grad():
+            outputs = self.model.generate(
+                input_ids.repeat(n_rows, 1),
+                attention_mask=attention_mask.repeat(n_rows, 1),
+                generation_config=self._generation_config_for(temperature),
+                logits_processor=LogitsProcessorList([*self.extra_logits_processors, sampler]),
+            )
+        prompt_len = input_ids.shape[-1]
+        # [n_rows][steps], moved off the device once.
+        drawn_logprobs = torch.stack(sampler.drawn_logprobs, dim=1).tolist()
+        samples = []
+        for row in range(n_rows):
+            new_token_ids = outputs.sequences[row][prompt_len:].tolist()
+            # A batched generate keeps appending pad ids to a row that already
+            # stopped. Cutting right after the row's first stop token gives
+            # exactly what a batch of one would have returned.
+            for position, token_id in enumerate(new_token_ids):
+                if token_id in self._stop_token_ids:
+                    new_token_ids = new_token_ids[: position + 1]
+                    break
+            samples.append(self._sample(
+                new_token_ids, drawn_logprobs[row][: len(new_token_ids)], is_greedy=False
+            ))
+        return samples
+
+    def _sample(
+        self, new_token_ids: list[int], token_logprobs: list[float], *, is_greedy: bool
+    ) -> _RealGenerationSample:
+        """`token_logprobs` are raw model log-probabilities of the generated
+        tokens. They are stored in generations.parquet and feed real_run.py's
+        `completion_perplexity` / `completion_mink_prob` diagnostic scores.
+        The Q1 perplexity and Min-k% scores do NOT come from here — they come
+        from score_prompt_detail()'s fixed-benchmark-text pass."""
         text = self.tokenizer.decode(new_token_ids, skip_special_tokens=True)
         return _RealGenerationSample(
             text=text, token_ids=new_token_ids, token_logprobs=token_logprobs,

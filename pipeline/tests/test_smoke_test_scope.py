@@ -7,6 +7,7 @@ single band per precision could not hold both size classes, so the band is
 derived per model.
 """
 
+import dataclasses
 import importlib.util
 from pathlib import Path
 
@@ -60,3 +61,89 @@ def test_band_is_model_specific_not_precision_only():
     small = SMOKE.plausible_peak_gb(QWEN2_5_7B, Quant.BNB_NF4)
     large = SMOKE.plausible_peak_gb(QWEN2_5_32B, Quant.BNB_NF4)
     assert large[1] > small[1]
+
+
+def test_awq_32b_band_never_exceeds_the_card():
+    # Audit #5: the uncapped AWQ ceiling for a 32.5B model is 134 GB, so on an
+    # 80 GB H100 any peak, even one leaving no room for the KV cache, passed.
+    assert SMOKE.plausible_peak_gb(QWEN2_5_32B, Quant.GPTQ_AWQ_INT4)[1] == pytest.approx(134.0)
+    lower, upper = SMOKE.plausible_peak_gb(QWEN2_5_32B, Quant.GPTQ_AWQ_INT4, device_total_gb=80.0)
+    assert upper == 80.0
+    assert not lower <= 85.0 <= upper
+
+
+def test_device_cap_leaves_a_band_below_the_card_unchanged():
+    assert SMOKE.plausible_peak_gb(QWEN2_5_7B, Quant.BNB_NF4, device_total_gb=80.0) == (
+        SMOKE.plausible_peak_gb(QWEN2_5_7B, Quant.BNB_NF4)
+    )
+
+
+def _batch_size_from_cli(argv):
+    args = SMOKE.build_parser().parse_args(argv)
+    return SMOKE._sample_batch_size(args.sample_batch_size, SMOKE.get_model(args.model))
+
+
+def test_sample_batch_size_defaults_to_the_registry_value():
+    assert _batch_size_from_cli([]) == QWEN2_5_7B.sample_batch_size == 50
+
+
+def test_an_unmeasured_32b_model_can_try_an_explicit_sample_batch_size():
+    unmeasured = dataclasses.replace(QWEN2_5_32B, sample_batch_size=None)
+    assert SMOKE._sample_batch_size(16, unmeasured) == 16
+    with pytest.raises(SystemExit, match="pass --sample-batch-size"):
+        SMOKE._sample_batch_size(None, unmeasured)
+    assert _batch_size_from_cli(["--model", QWEN2_5_32B.name, "--sample-batch-size", "16"]) == 16
+    with pytest.raises(SystemExit, match="must be >= 1"):
+        _batch_size_from_cli(["--sample-batch-size", "0"])
+
+
+def test_pip_freeze_goes_into_the_run_directory_not_the_tracked_record(tmp_path, monkeypatch):
+    tracked = Path(__file__).parents[1] / "envs" / "local-smoke-freeze.txt"
+    before = tracked.read_bytes()
+
+    class Completed:
+        stdout = "torch==0.0.0\n"
+
+    monkeypatch.setattr(SMOKE.subprocess, "run", lambda *args, **kwargs: Completed())
+    run_dir = tmp_path / "bnb_nf4"
+    path = SMOKE._save_pip_freeze(run_dir)
+
+    assert path == run_dir / "pip-freeze.txt"
+    assert path.read_text() == "torch==0.0.0\n"
+    assert tracked.read_bytes() == before
+
+
+def test_validation_manifest_records_where_the_freeze_was_saved(tmp_path):
+    import json
+
+    freeze_path = tmp_path / "pip-freeze.txt"
+    manifest_path = SMOKE._write_validation_manifest(
+        tmp_path, model_spec=QWEN2_5_7B, quant=Quant.BNB_NF4, quant_label="bnb_nf4",
+        model=object(), n_items=5, sample_batch_size=50, pip_freeze_path=freeze_path,
+    )
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["extra"]["pip_freeze_path"] == str(freeze_path)
+    assert manifest["study_phase"] == "engineering_validation"
+
+
+class _Greedy:
+    def __init__(self, truncated_at_cap):
+        self.truncated_at_cap = truncated_at_cap
+
+
+def test_stop_token_check_fails_only_when_every_greedy_output_hit_the_cap():
+    assert SMOKE.greedy_outputs_stop_before_the_cap([_Greedy(True)] * 5) is False
+    assert SMOKE.greedy_outputs_stop_before_the_cap([_Greedy(True)] * 4 + [_Greedy(False)]) is True
+    assert SMOKE.greedy_outputs_stop_before_the_cap([_Greedy(False)] * 5) is True
+
+
+def test_every_smoke_cell_writes_to_its_own_directory():
+    from qcd.models.registry import ALL_MODELS
+
+    cells = [(spec.name, quant.value) for spec in ALL_MODELS for quant in Quant]
+    directories = {SMOKE.smoke_run_dir(name, quant) for name, quant in cells}
+    assert len(directories) == len(cells) == 20
+    assert SMOKE.smoke_run_dir(QWEN2_5_7B.name, "bnb_nf4") == (
+        Path(__file__).resolve().parents[2]
+        / "data" / "raw" / "validation" / "smoke_test" / QWEN2_5_7B.name / "bnb_nf4"
+    )

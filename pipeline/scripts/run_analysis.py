@@ -19,12 +19,18 @@ What this driver runs, and nothing else:
 3. **§4.4's truncated-generation rate by precision**, because "a truncation
    rate that differs across precisions would confound a pass@1 shift with a
    length-cap artifact".
+4. **A descriptive, exploratory block** on CDD's threshold length `l`, empty
+   outputs and cap hits per model and precision. It reads the same tables
+   but feeds no test; C1-C4 do not depend on it.
 
-Two gates run before any of that:
+Three gates run before any of that:
 
 - `require_main_study()` on the input tree (paper §4.6 — engineering
   validation output is never manuscript evidence). This is the first thing
   the script does, before it opens a single parquet file.
+- `require_complete_study()`: every model x precision cell the manifest
+  names has a completion record with the manifest's `config_hash`, and every
+  part that record lists is on disk.
 - the §4.5.5 interval-coverage record must exist and be complete, because the
   analysis manifest has to carry its generating parameters, replication count
   and achieved coverage. The check "fixes which method supplies the reported
@@ -38,6 +44,7 @@ Outputs (in `--out`, default `<run_dir>/analysis`):
     confirmatory_family.json   C1-C4, raw and Holm-adjusted p-values
     beta_qe_intervals.json     per-model conditional-logit β_QE and J
     truncation_rates.json      §4.4 rates by precision
+    cdd_length_and_empty_outputs.json   descriptive only, not confirmatory
     analysis_manifest.json     what §4.5.5/§4.5.6 require to be recorded
 """
 
@@ -73,6 +80,7 @@ from qcd.analysis.coverage import (  # noqa: E402
 )
 from qcd.config import Quant  # noqa: E402
 from qcd.constants import ALPHA  # noqa: E402
+from qcd.io.cells import require_complete_study  # noqa: E402
 from qcd.io.manifest import (  # noqa: E402
     StudyPhase,
     build_manifest,
@@ -94,6 +102,7 @@ CONFIRMATORY_TARGET = Quant.BNB_NF4.value
 CONFIRMATORY_FAMILY_FILENAME = "confirmatory_family.json"
 BETA_QE_FILENAME = "beta_qe_intervals.json"
 TRUNCATION_FILENAME = "truncation_rates.json"
+CDD_LENGTH_FILENAME = "cdd_length_and_empty_outputs.json"
 ANALYSIS_MANIFEST_FILENAME = "analysis_manifest.json"
 
 
@@ -375,6 +384,9 @@ def run_analysis(
     # Paper §4.6 first, before anything is read: validation output is never
     # manuscript evidence.
     input_manifest = require_main_study(run_dir, consumer="scripts/run_analysis.py")
+    # Every model x precision cell must have finished, or the paired tests
+    # would silently run on whatever items happen to be on disk.
+    require_complete_study(run_dir, input_manifest, consumer="scripts/run_analysis.py")
     # §4.5.5: the coverage check fixes which method supplies the reported
     # interval, and the analysis manifest has to carry it.
     coverage_record = load_interval_coverage_record(coverage_record_path)
@@ -392,6 +404,9 @@ def run_analysis(
         ),
         "truncation_rates": _write_json(
             out_dir / TRUNCATION_FILENAME, study_inputs.truncated_generation_rates(tables)
+        ),
+        "cdd_length_and_empty_outputs": _write_json(
+            out_dir / CDD_LENGTH_FILENAME, study_inputs.cdd_length_and_empty_outputs(tables)
         ),
     }
     manifest = build_analysis_manifest(

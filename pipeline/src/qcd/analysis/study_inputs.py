@@ -458,3 +458,60 @@ def truncated_generation_rates(tables: RawTables) -> dict:
             by_model_precision, key=lambda row: (row["model"], row["precision"])
         ),
     }
+
+
+def _rate(numerator: int, denominator: int) -> float | None:
+    return numerator / denominator if denominator else None
+
+
+def cdd_length_and_empty_outputs(tables: RawTables) -> dict:
+    """Descriptive, per model and precision: CDD's threshold length `l`, how
+    often outputs are empty, and how often they hit the generation cap.
+
+    `l` is the longest output after truncation to 100 tokens, so the CDD
+    threshold moves with output length; an item whose outputs are all empty
+    has l=0 and scores 1.0. These are reported next to C1-C3 so a reader can
+    see whether a CDD shift travels with a length or empty-output shift.
+    Nothing here enters C1-C4 or any other test. A `cdd` row written without
+    the length fields is counted in `n_items_not_recorded`."""
+    scores = tables.detector_scores
+    cdd = scores[scores["detector"] == "cdd"]
+    generations = tables.generations
+    greedy_mask = generations["is_greedy"].astype(bool)
+    rows = []
+    for (model, quant), cell in cdd.groupby(["model", "quant"]):
+        recorded = cell[cell["cdd_threshold_length"].notna()]
+        lengths = recorded["cdd_threshold_length"].astype(int)
+        n_samples = int(recorded["source_sample_ids"].map(len).sum()) - len(recorded)
+        in_cell = (generations["model"] == model) & (generations["quant"] == quant)
+        greedy_cap = generations.loc[in_cell & greedy_mask, "truncated_at_cap"].dropna().astype(bool)
+        sample_cap = generations.loc[in_cell & ~greedy_mask, "truncated_at_cap"].dropna().astype(bool)
+        rows.append({
+            "model": str(model),
+            "precision": str(quant),
+            "n_items": int(len(cell)),
+            "n_items_not_recorded": int(len(cell) - len(recorded)),
+            "median_threshold_length": float(lengths.median()) if len(lengths) else None,
+            "n_items_threshold_length_zero": int((lengths == 0).sum()),
+            "greedy_empty_rate": _rate(
+                int(recorded["cdd_greedy_empty"].astype(bool).sum()), len(recorded)
+            ),
+            "sample_empty_rate": _rate(int(recorded["cdd_n_empty_samples"].sum()), n_samples),
+            "greedy_cap_hit_rate": _rate(int(greedy_cap.sum()), len(greedy_cap)),
+            "sample_cap_hit_rate": _rate(int(sample_cap.sum()), len(sample_cap)),
+        })
+    return {
+        "status": "descriptive and exploratory; not part of C1-C4 or any confirmatory computation",
+        "definitions": {
+            "threshold_length": (
+                "CDD's l: the longest of the greedy output and the samples after truncation "
+                "to 100 tokens (detectors.cdd.threshold_length)"
+            ),
+            "empty": "a generation with zero tokens",
+            "cap_hit": (
+                "a generation that stopped at the max_new_tokens cap; flags never written are "
+                "left out of the denominator"
+            ),
+        },
+        "by_model_and_precision": sorted(rows, key=lambda row: (row["model"], row["precision"])),
+    }

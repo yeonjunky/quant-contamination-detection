@@ -262,8 +262,8 @@ pipeline/
     sync_from_h100.sh                              # rsync wrapper
 data/                                               # gitignored
   raw/
-    validation/smoke_test/<quant>/                  # manifest.json (engineering_validation) + raw/
-    validation/lcb_smoke_test/                      # manifest.json + lcb_smoke_report.json + raw/
+    validation/smoke_test/<model>/<quant>/          # manifest.json (engineering_validation) + raw/
+    validation/lcb_smoke_test/<model>-<quant>/      # manifest.json + lcb_smoke_report.json + raw/
     main/                                           # manifest.json (main_study),
                                                     #   resolved_library_defaults.json,
                                                     #   raw/*.parquet, cache/, analysis/

@@ -81,13 +81,42 @@ def test_validation_only_skips_the_main_namespace(sandbox):
     assert "/data/raw/validation/" in calls[0]
 
 
-def test_extra_rsync_args_reach_rsync_and_not_the_namespace_argument(sandbox):
-    _, calls = _run(sandbox, "h100-box", "~/repo", "--", "--dry-run")
+_DEFAULT = "~/quant-contamination-detection"
 
-    assert len(calls) == 1
-    assert calls[0].endswith("--dry-run")
-    assert "~/repo/data/raw/main/" in calls[0]
-    assert " main " not in calls[0]
+
+@pytest.mark.parametrize(("args", "remote_path", "extra"), [
+    (["h100-box"], _DEFAULT, []),
+    (["h100-box", "~/repo"], "~/repo", []),
+    (["h100-box", "--", "--dry-run"], _DEFAULT, ["--dry-run"]),
+    (["h100-box", "~/repo", "--", "--dry-run"], "~/repo", ["--dry-run"]),
+    (["h100-box", "--", "--dry-run", "--itemize-changes"], _DEFAULT, ["--dry-run", "--itemize-changes"]),
+])
+def test_remote_path_and_extra_rsync_args(sandbox, args, remote_path, extra):
+    tmp_path, _, _ = sandbox
+    _, calls = _run(sandbox, *args)
+
+    destination = f"{tmp_path / 'data' / 'raw' / 'main'}/"
+    assert calls == [" ".join([
+        "-avz", "--progress", "--exclude", "hf_cache/", "--exclude", "*.safetensors",
+        "--exclude", "*.bin", f"h100-box:{remote_path}/data/raw/main/", destination, *extra,
+    ])]
+
+
+@pytest.mark.parametrize("flag", ["--with-validation", "--validation-only"])
+@pytest.mark.parametrize(("args", "remote_path", "extra"), [
+    (["h100-box"], _DEFAULT, ""),
+    (["h100-box", "--", "--dry-run"], _DEFAULT, " --dry-run"),
+    (["h100-box", "~/repo", "--", "--dry-run"], "~/repo", " --dry-run"),
+])
+def test_validation_flags_take_the_same_path_and_rsync_args(sandbox, flag, args, remote_path, extra):
+    tmp_path, _, _ = sandbox
+    _, calls = _run(sandbox, flag, *args)
+
+    namespaces = ["main", "validation"] if flag == "--with-validation" else ["validation"]
+    assert len(calls) == len(namespaces)
+    for call, namespace in zip(calls, namespaces):
+        remote = f"h100-box:{remote_path}/data/raw/{namespace}/"
+        assert call.endswith(f"{remote} {tmp_path / 'data' / 'raw' / namespace}/{extra}")
 
 
 def test_it_reports_the_study_phase_recorded_in_each_synced_run(sandbox):

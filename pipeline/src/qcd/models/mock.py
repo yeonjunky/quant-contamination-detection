@@ -145,6 +145,14 @@ class MockModel:
         text = self.tokenizer.decode(token_ids)
         return GenerationSample(text=text, token_ids=token_ids, token_logprobs=token_logprobs, is_greedy=is_greedy)
 
+    def generate_samples(
+        self, item_id: str, prompt: str, *, temperature: float, sample_ids: list[int]
+    ) -> list[GenerationSample]:
+        return [
+            self.generate(item_id, prompt, temperature=temperature, sample_id=sample_id)
+            for sample_id in sample_ids
+        ]
+
     def score_logprobs(self, item_id: str, token_ids: list[int]) -> list[float]:
         """Teacher-forced per-token log-probability for an already-generated
         sequence (needed by scoring/logprob.py, and by detectors like Min-k%

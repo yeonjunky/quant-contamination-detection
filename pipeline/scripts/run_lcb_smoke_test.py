@@ -11,7 +11,8 @@ does, so every model in `models/registry.py` and all four precisions of paper
 The defaults are unchanged: Qwen2.5-7B-Instruct at BNB-nf4.
 
 **Engineering validation (paper §4.6).** Output goes to the validation-only
-namespace `data/raw/validation/lcb_smoke_test/` and its manifest records
+namespace `data/raw/validation/lcb_smoke_test/<model>-<quant>/`, one directory
+per arm so validating every arm keeps every arm's report, and its manifest records
 `study_phase="engineering_validation"`. Following §4.6, the script checks only
 properties of the scoring output — extraction shape, value range, schema — and
 does not print or store an item's pass rate or pass@1 outcome. The candidate
@@ -34,6 +35,7 @@ from qcd.constants import LCB_SHARED_CONTROL_BOUNDARY
 from qcd.data.livecodebench import load_livecodebench_split
 from qcd.generation.cache import GenerationCache
 from qcd.generation.sampler import sample_item
+from qcd.io.cells import cell_id
 from qcd.io.manifest import StudyPhase, build_manifest, write_manifest
 from qcd.io.raw_writer import RawDataWriter
 from qcd.models.loader import load_model
@@ -45,7 +47,7 @@ from qcd.scoring.sandbox import _load_test_cases
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 # Paper §4.6's validation-only namespace, inside pipeline_build_plan.md's
 # `data/raw/{validation,main}` split.
-_DEFAULT_OUTPUT = _REPO_ROOT / "data" / "raw" / "validation" / "lcb_smoke_test"
+_DEFAULT_OUTPUT_ROOT = _REPO_ROOT / "data" / "raw" / "validation" / "lcb_smoke_test"
 _CANDIDATES = {
     ("pre", "stdin"): "1873_A",
     ("pre", "functional"): "2727",
@@ -59,7 +61,10 @@ _QUANT_CHOICES = tuple(quant.value for quant in Quant)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, default=_DEFAULT_OUTPUT)
+    parser.add_argument(
+        "--output-dir", type=Path, default=None,
+        help="default: data/raw/validation/lcb_smoke_test/<model>-<quant>",
+    )
     parser.add_argument(
         "--model",
         default=QWEN2_5_7B.name,
@@ -71,8 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _parse_args() -> argparse.Namespace:
-    return build_parser().parse_args()
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    args = build_parser().parse_args(argv)
+    if args.output_dir is None:
+        args.output_dir = _DEFAULT_OUTPUT_ROOT / cell_id(args.model, args.quant)
+    return args
 
 
 def _select_items(cutoff: dt.datetime, release: str):
@@ -110,6 +118,8 @@ def main() -> None:
         generations = sample_item(
             model, cache, model_name=model_spec.name, quant=quant.value,
             item_id=item.item_id, prompt=_generation_prompt(item), n_samples=0,
+            # No samples are drawn, so the batch size is never used.
+            batch_size=1,
         )
         generation_seconds = time.perf_counter() - started
         candidate = _assemble_candidate_code(item, generations.greedy.text)
