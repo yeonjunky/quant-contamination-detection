@@ -21,12 +21,15 @@ import datetime as dt
 import gc
 import json
 import math
+import multiprocessing
 import os
 import re
 import tempfile
 import time
 from collections import defaultdict
+from concurrent.futures import Future, ProcessPoolExecutor
 from pathlib import Path
+from typing import NamedTuple
 
 from qcd.config import ModelSpec, Quant
 from qcd.constants import (
@@ -37,13 +40,13 @@ from qcd.constants import (
 from qcd.data.humaneval import load_humaneval
 from qcd.data.livecodebench import REPO_REVISION as LCB_REPO_REVISION, load_livecodebench_split
 from qcd.data.mbppplus import load_mbppplus
-from qcd.data.schema import Dataset, Item
+from qcd.data.schema import Dataset, Item, PromptScoringDetail
 from qcd.data.temporal_labels import materialize_model_item_labels
 from qcd.detectors.cdd import peakedness, threshold_length
 from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score
 from qcd.generation.cache import GenerationCache
-from qcd.generation.sampler import GREEDY_SAMPLE_ID, sample_ids, sample_item
+from qcd.generation.sampler import GREEDY_SAMPLE_ID, ItemGenerations, sample_ids, sample_item
 from qcd.io.manifest import (
     RunManifest, StudyPhase, build_manifest, read_manifest, resolve_library_defaults,
     unresolved_library_defaults, write_manifest,
@@ -61,6 +64,13 @@ _EVALPLUS_DATASETS = (Dataset.HUMANEVAL, Dataset.MBPPPLUS)
 # ```, ...). DOTALL so the fence content can span multiple lines.
 _CODE_FENCE_RE = re.compile(r"```(?:[a-zA-Z0-9_+-]*)\n?(.*?)```", re.DOTALL)
 _RAW_BATCH_ITEMS = 25
+# Worker processes that run the code sandbox while the GPU generates the next
+# items. Each worker runs one item at a time, and that item's tests run one
+# subprocess at a time (`untrusted_check` per evalplus input list, one
+# `subprocess.run` per LCB test), so at most this many test programs run at
+# once beside the main process. It is in the manifest config because CPU
+# contention can move a timeout-bound test between pass and fail.
+_SANDBOX_WORKERS = 4
 
 
 def _strip_markdown_fence(text: str) -> str:
@@ -257,6 +267,7 @@ def run(config: RealRunConfig) -> None:
             "generation_seed_policy": "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v4",
             "sample_batch_sizes": {m.name: m.sample_batch_size for m in config.models},
             "scoring_environment": scoring_environment(),
+            "sandbox_workers": _SANDBOX_WORKERS,
             "decoding_settings": {
                 "greedy": greedy_decoding,
                 "samples": sample_decoding,
@@ -315,14 +326,23 @@ def run(config: RealRunConfig) -> None:
     batches = [
         items[start:start + _RAW_BATCH_ITEMS] for start in range(0, len(items), _RAW_BATCH_ITEMS)
     ]
-    for model_spec, quant in selected_cells(config):
-        _run_cell(
-            config, model_spec, quant, batches, writer, cache,
-            greedy_decoding_id=greedy_decoding_id,
-            sample_decoding_id=sample_decoding_id,
-            config_hash=manifest.config_hash,
-            environment=environment,
-        )
+    # Spawned, not forked, and started before any model loads: evalplus forks
+    # its test processes, and a fork of a CUDA process is unsafe. A worker
+    # that cannot start fails here rather than after a model has loaded.
+    sandbox = ProcessPoolExecutor(_SANDBOX_WORKERS, mp_context=multiprocessing.get_context("spawn"))
+    try:
+        for worker_started in [sandbox.submit(int) for _ in range(_SANDBOX_WORKERS)]:
+            worker_started.result()
+        for model_spec, quant in selected_cells(config):
+            _run_cell(
+                config, model_spec, quant, batches, writer, cache, sandbox,
+                greedy_decoding_id=greedy_decoding_id,
+                sample_decoding_id=sample_decoding_id,
+                config_hash=manifest.config_hash,
+                environment=environment,
+            )
+    finally:
+        sandbox.shutdown(cancel_futures=True)
 
 
 def _require_frozen_code_and_packages(existing: dict, current: RunManifest, output_dir: Path) -> None:
@@ -395,6 +415,7 @@ def _run_cell(
     batches: list[list[Item]],
     writer: RawDataWriter,
     cache: GenerationCache,
+    sandbox: ProcessPoolExecutor,
     *,
     greedy_decoding_id: str,
     sample_decoding_id: str,
@@ -434,7 +455,7 @@ def _run_cell(
     pending = [(part, batch) for part, batch in zip(parts, batches) if not writer.has_part(part)]
     if pending:
         _score_batches(
-            config, model_spec, quant, pending, writer, cache, cell_dir,
+            config, model_spec, quant, pending, writer, cache, sandbox, cell_dir,
             greedy_decoding_id=greedy_decoding_id, sample_decoding_id=sample_decoding_id,
         )
     _write_json_atomic(
@@ -451,6 +472,26 @@ def _run_cell(
     )
 
 
+class _GeneratedItem(NamedTuple):
+    """One item's GPU-side results, held until its sandbox score returns."""
+
+    item: Item
+    generations: ItemGenerations
+    generation_seconds: float
+    prompt_scoring_seconds: float
+    detail: PromptScoringDetail | None
+    prompt_logprobs: list[float]
+    sandbox_score: Future
+
+
+def _timed_partial_pass_rate(item: Item, candidate_code: str) -> tuple[float, float]:
+    """Runs in a sandbox worker; the time is the scoring alone, not the wait
+    in the worker queue."""
+    started = time.perf_counter()
+    pass_rate = partial_pass_rate(item, candidate_code)
+    return pass_rate, time.perf_counter() - started
+
+
 def _score_batches(
     config: RealRunConfig,
     model_spec: ModelSpec,
@@ -458,6 +499,7 @@ def _score_batches(
     pending: list[tuple[str, list[Item]]],
     writer: RawDataWriter,
     cache: GenerationCache,
+    sandbox: ProcessPoolExecutor,
     cell_dir: Path,
     *,
     greedy_decoding_id: str,
@@ -482,6 +524,7 @@ def _score_batches(
     ).get("_commit_hash") or model_spec.revision
     chat_template_rows: list[dict] = []
     for part, batch in pending:
+        generated: list[_GeneratedItem] = []
         for item in batch:
             started = time.perf_counter()
             generations = sample_item(
@@ -501,10 +544,9 @@ def _score_batches(
                 ),
             )
             generation_seconds = time.perf_counter() - started
-            candidate_code = _assemble_candidate_code(item, generations.greedy.text)
-            started = time.perf_counter()
-            pass_rate = partial_pass_rate(item, candidate_code)
-            sandbox_scoring_seconds = time.perf_counter() - started
+            sandbox_score = sandbox.submit(
+                _timed_partial_pass_rate, item, _assemble_candidate_code(item, generations.greedy.text)
+            )
             started = time.perf_counter()
             # `score_prompt_detail` is the real adapter's richer entry
             # point (§4.4's target text / token boundaries / chat
@@ -534,7 +576,19 @@ def _score_batches(
                     "model_revision": model_revision,
                 })
                 writer.write_chat_templates(chat_template_rows, part=cell_dir.name)
+            generated.append(_GeneratedItem(
+                item, generations, generation_seconds, prompt_scoring_seconds,
+                detail, prompt_logprobs, sandbox_score,
+            ))
 
+        # Every score of the part returns before any of its rows reaches the
+        # writer, so a worker's exception, re-raised by `result()`, leaves no
+        # partial part. It also bounds the outstanding items to one part.
+        scores = [entry.sandbox_score.result() for entry in generated]
+        for (
+            (item, generations, generation_seconds, prompt_scoring_seconds, detail, prompt_logprobs, _),
+            (pass_rate, sandbox_scoring_seconds),
+        ) in zip(generated, scores):
             writer.add_generation(
                 model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=GREEDY_SAMPLE_ID, is_greedy=True,
                 text=generations.greedy.text, token_ids=generations.greedy.token_ids,
