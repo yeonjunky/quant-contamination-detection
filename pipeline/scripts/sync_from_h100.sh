@@ -17,7 +17,8 @@
 #
 # Example:
 #   scripts/sync_from_h100.sh h100-box                       # main study only
-#   scripts/sync_from_h100.sh h100-box ~/repo -- --dry-run   # dry run first
+#   scripts/sync_from_h100.sh h100-box -- --dry-run          # dry run first
+#   scripts/sync_from_h100.sh h100-box ~/repo -- --dry-run   # other remote path
 #   scripts/sync_from_h100.sh --with-validation h100-box     # both namespaces
 #
 # The remote repo path defaults to ~/quant-contamination-detection — override
@@ -45,8 +46,10 @@ fi
 SSH_ALIAS="$1"
 shift
 
-REMOTE_REPO_PATH="${1:-~/quant-contamination-detection}"
+# `--` right after the alias means "default remote path, then rsync args".
+REMOTE_REPO_PATH="~/quant-contamination-detection"
 if [ "${1:-}" != "" ] && [ "${1:-}" != "--" ]; then
+    REMOTE_REPO_PATH="$1"
     shift
 fi
 

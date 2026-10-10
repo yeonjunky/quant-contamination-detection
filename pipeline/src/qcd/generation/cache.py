@@ -26,7 +26,9 @@ class CacheKey:
     quant: str
     item_id: str
     is_greedy: bool
-    sample_id: int
+    # The sample ids whose generations this entry's payload holds: `(0,)` for
+    # the greedy output, every sample id of an item for its sample batch.
+    sample_ids: tuple[int, ...]
     prompt: str
     temperature: float = 0.0
     model_revision: str = ""
@@ -43,7 +45,7 @@ class CacheKey:
             self.quant,
             self.item_id,
             str(self.is_greedy),
-            str(self.sample_id),
+            ",".join(map(str, self.sample_ids)),
             self.prompt,
             repr(self.temperature),
             self.model_revision,

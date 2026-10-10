@@ -77,14 +77,59 @@ def coerce_study_phase(study_phase: StudyPhase | str) -> str:
     )
 
 
-def get_git_commit_hash(repo_dir: str | Path | None = None) -> str | None:
+# Resolved against this file, not the process CWD: the checkout to record is
+# the one the running code came from, wherever the script was started.
+_CODE_DIR = Path(__file__).resolve().parent
+
+
+def _git(args: list[str], repo_dir: str | Path | None) -> subprocess.CompletedProcess | None:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=repo_dir, capture_output=True, text=True, timeout=5,
+            ["git", *args], cwd=repo_dir or _CODE_DIR, capture_output=True, timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return result.stdout.strip() if result.returncode == 0 else None
+    return result if result.returncode == 0 else None
+
+
+def get_git_commit_hash(repo_dir: str | Path | None = None) -> str | None:
+    result = _git(["rev-parse", "HEAD"], repo_dir)
+    return result.stdout.decode().strip() if result else None
+
+
+def get_git_tracked_changes(repo_dir: str | Path | None = None) -> tuple[bool | None, str | None]:
+    """(dirty, sha256 of `git diff HEAD`) for tracked files; (None, None)
+    outside git. The commit hash alone does not say what ran: a run started
+    from a modified tree would otherwise record a commit whose code it did
+    not execute. Untracked files are not counted."""
+    status = _git(["status", "--porcelain", "--untracked-files=no"], repo_dir)
+    if status is None:
+        return None, None
+    if not status.stdout.strip():
+        return False, None
+    diff = _git(["diff", "HEAD", "--binary"], repo_dir)
+    return True, hashlib.sha256(diff.stdout).hexdigest() if diff else None
+
+
+def require_clean_checkout(repo_dir: str | Path | None = None) -> str:
+    """Return the commit when the running code is exactly that commit.
+
+    Paper §4.6 freezes the configuration before the main run; a manifest can
+    only point at the frozen code if nothing tracked was modified.
+    """
+    commit = get_git_commit_hash(repo_dir)
+    if commit is None:
+        raise RuntimeError(
+            "main-study run refused: the code is not in a git checkout, so the manifest "
+            "cannot name the commit that produced the data."
+        )
+    dirty, _ = get_git_tracked_changes(repo_dir)
+    if dirty is not False:
+        raise RuntimeError(
+            f"main-study run refused: tracked files have uncommitted changes on top of {commit}. "
+            "Commit them (or discard them) so the manifest's commit is the code that ran."
+        )
+    return commit
 
 
 def get_installed_package_versions(packages: tuple[str, ...] = DEFAULT_TRACKED_PACKAGES) -> dict[str, str | None]:
@@ -112,6 +157,10 @@ def config_hash(config: dict) -> str:
 class RunManifest:
     study_phase: str
     git_commit: str | None
+    # Outside `config` on purpose: a dirty tree must be recorded without
+    # changing `config_hash`, which gates resume.
+    git_dirty: bool | None
+    git_tracked_diff_sha256: str | None
     config: dict
     config_hash: str
     package_versions: dict[str, str | None]
@@ -135,9 +184,12 @@ def build_manifest(
     """`study_phase` is a required keyword: a manifest without it cannot be
     built, so no producer can write an output tree whose phase is unknown
     (paper §4.6)."""
+    git_dirty, git_tracked_diff_sha256 = get_git_tracked_changes(repo_dir)
     return RunManifest(
         study_phase=coerce_study_phase(study_phase),
         git_commit=get_git_commit_hash(repo_dir),
+        git_dirty=git_dirty,
+        git_tracked_diff_sha256=git_tracked_diff_sha256,
         config=dict(config),
         config_hash=config_hash(config),
         package_versions=get_installed_package_versions(packages),

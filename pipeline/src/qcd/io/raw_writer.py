@@ -14,11 +14,13 @@ foreclose the paired and mixed-effects analyses this design depends on."
   the 512-token cap, and (on the greedy row) the scored-text identity, token
   boundaries and chat-template id paper §4.4 asks to be recorded with a
   probability-detector score.
-- `chat_templates.parquet` — one row per (model, quant, chat template): the
-  rendered template text itself, stored once per run rather than repeated on
-  every generations row, keyed by the `chat_template_id` those rows carry.
+- `chat_templates.<part>.parquet` — one row per (model, quant, chat template):
+  the rendered template text itself, stored once per model/precision cell
+  rather than repeated on every generations row, keyed by the
+  `chat_template_id` those rows carry.
 - `detector_scores.<part>.parquet` — one row per (model, quant, item, detector):
-score, threshold used, source sample ids.
+  score, threshold used, source sample ids, and on the `cdd` row the
+  threshold length `l` and the empty-output counts behind that score.
 
 New columns are added as optional keyword arguments defaulting to None, so a
 parquet file written before they existed still reads — the columns are simply
@@ -31,12 +33,16 @@ in memory.
 `Item.metadata` (a heterogeneous dict — LCB items and HumanEval+/MBPP+ items
 carry different keys) is stored as a JSON string column rather than a
 pyarrow struct column, since a struct column would need one consistent
-schema across every row and this dict's shape varies by dataset.
+schema across every row and this dict's shape varies by dataset. Test
+payloads are not stored: each one is replaced by its sha256 and test count
+(`stored_metadata`). LiveCodeBench release_v6's private tests alone are about
+4.5 GB, past pyarrow's 2 GiB limit for one string column; the run scores
+against the in-memory item and the pinned dataset revision holds the tests.
 """
 
 from __future__ import annotations
 
-import dataclasses
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -45,6 +51,41 @@ import tempfile
 import pandas as pd
 
 from qcd.data.schema import Item, corpus_reference_to_json
+from qcd.scoring.sandbox import decode_private_test_cases
+
+# Metadata keys holding test payloads, each with the function that counts its
+# tests: LiveCodeBench's raw fields, and the evalplus problem's input lists.
+_LCB_TEST_PAYLOADS = {
+    "public_test_cases": lambda raw: len(json.loads(raw)),
+    "private_test_cases": lambda raw: len(decode_private_test_cases(raw)),
+}
+_EVALPLUS_TEST_PAYLOADS = {"base_input": len, "plus_input": len}
+
+
+def _payload_digest(value, count) -> dict | None:
+    if not value:
+        return None
+    encoded = value if isinstance(value, str) else json.dumps(value, default=str)
+    return {
+        "sha256": hashlib.sha256(encoded.encode()).hexdigest(),
+        "n_tests": count(value),
+    }
+
+
+def stored_metadata(metadata: dict) -> dict:
+    """`metadata` with every test payload replaced by its sha256 and count."""
+    stored = {
+        key: _payload_digest(value, _LCB_TEST_PAYLOADS[key]) if key in _LCB_TEST_PAYLOADS else value
+        for key, value in metadata.items()
+    }
+    problem = metadata.get("evalplus_problem")
+    if problem is not None:
+        stored["evalplus_problem"] = {
+            key: _payload_digest(value, _EVALPLUS_TEST_PAYLOADS[key])
+            if key in _EVALPLUS_TEST_PAYLOADS else value
+            for key, value in problem.items()
+        }
+    return stored
 
 
 def _item_to_row(item: Item) -> dict:
@@ -62,7 +103,7 @@ def _item_to_row(item: Item) -> dict:
         # reads both shapes.
         "corpus_reference_json": corpus_reference_to_json(item.corpus_reference),
         "release_version": item.release_version,
-        "metadata_json": json.dumps(item.metadata, default=str),
+        "metadata_json": json.dumps(stored_metadata(item.metadata), default=str),
     }
 
 
@@ -80,6 +121,26 @@ def _write_parquet_atomic(frame: pd.DataFrame, path: Path) -> None:
         raise
 
 
+def _write_parquet_if_changed(frame: pd.DataFrame, path: Path) -> None:
+    """Every cell process writes the study's shared item tables. Leave the
+    file alone when its bytes would not change, so a cell never replaces a
+    file another process may be reading."""
+    encoded = frame.to_parquet(index=False)
+    if path.exists() and path.read_bytes() == encoded:
+        return
+    _write_parquet_atomic(frame, path)
+
+
+def part_is_written(raw_dir: Path, part: str, *, file_prefix: str = "") -> bool:
+    """Whether `RawDataWriter.flush(part=part)` completed: it writes
+    generations first and detector scores second, each atomically, so a part
+    is complete only when both files exist."""
+    return all(
+        (Path(raw_dir) / f"{file_prefix}{stem}.{part}.parquet").exists()
+        for stem in ("generations", "detector_scores")
+    )
+
+
 class RawDataWriter:
     def __init__(self, output_dir: str | Path, *, file_prefix: str = "") -> None:
         self.output_dir = Path(output_dir)
@@ -90,22 +151,22 @@ class RawDataWriter:
 
     def write_items(self, items: list[Item]) -> Path:
         path = self.output_dir / f"{self.file_prefix}items.parquet"
-        _write_parquet_atomic(pd.DataFrame([_item_to_row(item) for item in items]), path)
+        _write_parquet_if_changed(pd.DataFrame([_item_to_row(item) for item in items]), path)
         return path
 
     def write_model_item_labels(self, rows: list[dict]) -> Path:
         path = self.output_dir / f"{self.file_prefix}model_item_labels.parquet"
-        _write_parquet_atomic(pd.DataFrame(rows), path)
+        _write_parquet_if_changed(pd.DataFrame(rows), path)
         return path
 
-    def write_chat_templates(self, rows: list[dict]) -> Path:
+    def write_chat_templates(self, rows: list[dict], *, part: str) -> Path:
         """One row per (model, quant, chat template). Paper §4.4 requires the
         chat template to be recorded with the probability-detector scores; the
         template is identical for every item of a given tokenizer, so it is
-        stored once per run and generations rows carry only its
-        `chat_template_id`. Rewritten in full whenever a new template is seen,
-        which is at most once per model/precision arm."""
-        path = self.output_dir / f"{self.file_prefix}chat_templates.parquet"
+        stored once per model/precision cell and generations rows carry only
+        its `chat_template_id`. Each cell writes its own `part`, so cells run
+        as separate processes never rewrite one another's rows."""
+        path = self.output_dir / f"{self.file_prefix}chat_templates.{part}.parquet"
         _write_parquet_atomic(pd.DataFrame(rows), path)
         return path
 
@@ -201,7 +262,14 @@ class RawDataWriter:
         score: float,
         threshold_used: float | None = None,
         source_sample_ids: list[int] | None = None,
+        cdd_threshold_length: int | None = None,
+        cdd_n_empty_samples: int | None = None,
+        cdd_greedy_empty: bool | None = None,
     ) -> None:
+        """The `cdd_*` fields belong on the `cdd` row. `cdd_threshold_length`
+        is the `l` of `detectors.cdd.threshold_length`, which varies by item
+        and precision; the empty-output fields count zero-token generations,
+        since an all-empty item has l=0 and a peakedness of 1.0."""
         self._detector_score_rows.append(
             {
                 "model": model,
@@ -211,6 +279,9 @@ class RawDataWriter:
                 "score": score,
                 "threshold_used": threshold_used,
                 "source_sample_ids": list(source_sample_ids) if source_sample_ids is not None else None,
+                "cdd_threshold_length": cdd_threshold_length,
+                "cdd_n_empty_samples": cdd_n_empty_samples,
+                "cdd_greedy_empty": cdd_greedy_empty,
             }
         )
 
@@ -229,6 +300,9 @@ class RawDataWriter:
             written["detector_scores"] = path
             self._detector_score_rows.clear()
         return written
+
+    def has_part(self, part: str) -> bool:
+        return part_is_written(self.output_dir, part, file_prefix=self.file_prefix)
 
     @property
     def n_buffered_generations(self) -> int:

@@ -38,7 +38,7 @@ from qcd.detectors.cdd import peakedness
 from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score
 from qcd.generation.cache import GenerationCache
-from qcd.generation.sampler import sample_item
+from qcd.generation.sampler import GREEDY_SAMPLE_ID, sample_ids, sample_item
 from qcd.io.raw_writer import RawDataWriter
 from qcd.models.mock import MockModel
 from qcd.pilot.pilot_report import (
@@ -116,19 +116,20 @@ def run_dry_run(
             generations = sample_item(
                 model, cache, model_name=_MOCK_MODEL_NAME, quant=precision,
                 item_id=item.item_id, prompt=item.prompt, n_samples=n_cdd_samples,
+                batch_size=n_cdd_samples,
             )
             partial_pass = model.partial_pass_rate(item.item_id)
             partial_pass_by_precision[(precision, item.item_id)] = partial_pass
             prompt_logprobs = model.score_prompt_logprobs(item.item_id, item.prompt)
 
             writer.add_generation(
-                model=_MOCK_MODEL_NAME, quant=precision, item_id=item.item_id, sample_id=0, is_greedy=True,
+                model=_MOCK_MODEL_NAME, quant=precision, item_id=item.item_id, sample_id=GREEDY_SAMPLE_ID, is_greedy=True,
                 text=generations.greedy.text, token_ids=generations.greedy.token_ids,
                 token_logprobs=generations.greedy.token_logprobs, partial_pass_rate=partial_pass,
                 prompt_token_logprobs=prompt_logprobs,
                 decoding_temperature=0.0,
             )
-            for sample_id, sample in enumerate(generations.samples, start=1):
+            for sample_id, sample in zip(sample_ids(len(generations.samples)), generations.samples):
                 writer.add_generation(
                     model=_MOCK_MODEL_NAME, quant=precision, item_id=item.item_id, sample_id=sample_id,
                     is_greedy=False, text=sample.text, token_ids=sample.token_ids,

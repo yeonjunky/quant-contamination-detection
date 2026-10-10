@@ -27,6 +27,7 @@ from qcd.config import Quant
 from qcd.data.schema import Dataset, Item
 from qcd.data.temporal_labels import materialize_model_item_labels
 from qcd.io.manifest import StudyPhase, build_manifest, write_manifest
+from qcd.io.cells import cell_id, completion_marker_path
 from qcd.io.raw_writer import RawDataWriter
 from qcd.models.registry import QWEN2_5_7B, QWEN2_5_32B
 
@@ -35,6 +36,7 @@ _SCRIPTS = Path(__file__).parents[1] / "scripts"
 _BOUNDARY = dt.datetime.fromisoformat("2025-01-01")
 _MODELS = (QWEN2_5_32B, QWEN2_5_7B)
 _DETECTORS = ("perplexity", "mink_prob", "cdd")
+_QUANTS = (Quant.BF16.value, Quant.BNB_NF4.value)
 
 # Item counts of the synthetic tree, shaped like §4.5.6's three LCB groups
 # (possible-exposure / intermediate / shared-clean-control) at 1/20th scale.
@@ -115,6 +117,18 @@ def _arm_scores(base: dict[str, float], *, quant: str, rng) -> dict[str, float]:
     }
 
 
+def _planted_cdd_fields(index: int) -> dict:
+    """Item `index`'s CDD record against its one sample: the greedy output is
+    empty for every 9th item, the sample for every 6th, and both (so l=0)
+    for every 18th; every other item has l=40."""
+    return {
+        "source_sample_ids": [0, 1],
+        "cdd_threshold_length": 0 if index % 18 == 0 else 40,
+        "cdd_n_empty_samples": int(index % 6 == 0),
+        "cdd_greedy_empty": index % 9 == 0,
+    }
+
+
 def _write_run(
     tmp_path: Path,
     *,
@@ -137,7 +151,7 @@ def _write_run(
             )
             for item in items
         }
-        for quant in (Quant.BF16.value, Quant.BNB_NF4.value):
+        for quant in _QUANTS:
             for index, item in enumerate(items):
                 label = label_lookup[(model.name, item.item_id)]
                 exposed = label == "possible-exposure"
@@ -185,6 +199,7 @@ def _write_run(
                         item_id=item.item_id,
                         detector=detector,
                         score=score,
+                        **(_planted_cdd_fields(index) if detector == "cdd" else {}),
                     )
                 # §4.4's separate completion-based diagnostics: written by
                 # real_run.py, used by no confirmatory test.
@@ -192,16 +207,27 @@ def _write_run(
                     model=model.name, quant=quant, item_id=item.item_id,
                     detector="completion_perplexity", score=float("nan"),
                 )
-            writer.flush(part=f"{model.name}-{quant}")
+            writer.flush(part=cell_id(model.name, quant))
 
-    write_manifest(
-        build_manifest(
-            {"driver": "tests/test_run_analysis.py", "synthetic": True},
-            study_phase=study_phase,
-            seed=seed,
-        ),
-        run_dir / "manifest.json",
+    manifest = build_manifest(
+        {
+            "driver": "tests/test_run_analysis.py",
+            "synthetic": True,
+            "models": [model.name for model in _MODELS],
+            "quant_levels": list(_QUANTS),
+        },
+        study_phase=study_phase,
+        seed=seed,
     )
+    write_manifest(manifest, run_dir / "manifest.json")
+    # What real_run.py writes after each cell's last part; the one part per
+    # cell above is named by the cell itself.
+    for model in _MODELS:
+        for quant in _QUANTS:
+            cell = cell_id(model.name, quant)
+            marker = completion_marker_path(run_dir, cell)
+            marker.parent.mkdir(parents=True)
+            marker.write_text(json.dumps({"config_hash": manifest.config_hash, "parts": [cell]}))
     return run_dir
 
 
@@ -253,6 +279,55 @@ def test_a_missing_coverage_record_stops_the_analysis(tmp_path, run_analysis_mod
         run_analysis_module.run_analysis(
             run_dir, coverage_record_path=tmp_path / "does-not-exist.json"
         )
+
+
+# --- every study cell must have finished ------------------------------------
+
+_GATED_CELL = cell_id(QWEN2_5_7B.name, "bnb_nf4")
+
+
+def _break_missing_marker(run_dir):
+    completion_marker_path(run_dir, _GATED_CELL).unlink()
+
+
+def _break_config_hash(run_dir):
+    marker = completion_marker_path(run_dir, _GATED_CELL)
+    record = json.loads(marker.read_text())
+    marker.write_text(json.dumps(record | {"config_hash": "0" * 64}))
+
+
+def _break_missing_part(run_dir):
+    (run_dir / "raw" / f"detector_scores.{_GATED_CELL}.parquet").unlink()
+
+
+def test_a_complete_study_passes_the_completion_gate(analysis_outputs):
+    assert analysis_outputs["confirmatory_family"]["tests"]
+
+
+@pytest.mark.parametrize(
+    "break_cell, reason",
+    [
+        (_break_missing_marker, "no completion record"),
+        (_break_config_hash, "completion record has a different config_hash"),
+        (_break_missing_part, "parts missing on disk"),
+    ],
+)
+def test_an_incomplete_cell_refuses_before_any_parquet_is_read(
+    tmp_path, monkeypatch, run_analysis_module, break_cell, reason
+):
+    run_dir = _write_run(tmp_path)
+    break_cell(run_dir)
+    read = []
+    monkeypatch.setattr(
+        run_analysis_module.study_inputs, "load_raw_tables", lambda *a, **k: read.append(a)
+    )
+    with pytest.raises(ValueError, match="not a complete study") as refused:
+        run_analysis_module.run_analysis(run_dir)
+    assert f"{_GATED_CELL}: {reason}" in str(refused.value)
+    # Only the broken cell is listed.
+    assert str(refused.value).count("\n  ") == 1
+    assert read == []
+    assert not (run_dir / "analysis").exists()
 
 
 # --- (b) the four confirmatory tests and Holm -------------------------------
@@ -394,7 +469,10 @@ def test_manifest_records_library_versions_and_the_code_commit(analysis_outputs)
 
 def test_manifest_lists_its_outputs_with_digests(analysis_outputs):
     outputs = analysis_outputs["analysis_manifest"]["extra"]["outputs"]
-    assert set(outputs) == {"confirmatory_family", "beta_qe_intervals", "truncation_rates"}
+    assert set(outputs) == {
+        "confirmatory_family", "beta_qe_intervals", "truncation_rates",
+        "cdd_length_and_empty_outputs",
+    }
     for entry in outputs.values():
         assert len(entry["sha256"]) == 64
 
@@ -467,6 +545,62 @@ def test_truncation_is_also_broken_out_per_model(analysis_outputs):
         for model in _MODELS
         for precision in ("bf16", "bnb_nf4")
     }
+
+
+# --- descriptive CDD length / empty-output block -----------------------------
+
+
+def test_cdd_length_and_empty_outputs_match_the_planted_values(analysis_outputs):
+    block = analysis_outputs["cdd_length_and_empty_outputs"]
+    assert block["status"].startswith("descriptive and exploratory")
+    rows = block["by_model_and_precision"]
+    assert {(row["model"], row["precision"]) for row in rows} == {
+        (model.name, precision) for model in _MODELS for precision in ("bf16", "bnb_nf4")
+    }
+    for row in rows:
+        assert row["n_items"] == N_LCB_ITEMS == 54
+        assert row["n_items_not_recorded"] == 0
+        assert row["median_threshold_length"] == 40.0
+        assert row["n_items_threshold_length_zero"] == 3  # indices 0, 18, 36
+        assert row["greedy_empty_rate"] == pytest.approx(6 / 54)  # 0, 9, ..., 45
+        assert row["sample_empty_rate"] == pytest.approx(9 / 54)  # 0, 6, ..., 48
+        # Greedy: index 0's flag is missing; 10, 20, 30, 40, 50 hit the cap.
+        assert row["greedy_cap_hit_rate"] == pytest.approx(5 / 53)
+        # Samples: every 5th index, 0 through 50.
+        assert row["sample_cap_hit_rate"] == pytest.approx(11 / 54)
+
+
+def test_sample_empty_rate_is_per_sample_not_per_item():
+    import pandas as pd
+
+    from qcd.analysis.study_inputs import RawTables, cdd_length_and_empty_outputs
+
+    scores = pd.DataFrame([
+        {"model": "m", "quant": "bf16", "item_id": item, "detector": "cdd", "score": 0.5,
+         "source_sample_ids": [0, 1, 2, 3], "cdd_threshold_length": length,
+         "cdd_n_empty_samples": n_empty, "cdd_greedy_empty": False}
+        for item, length, n_empty in (("a", 12, 3), ("b", 20, 0))
+    ])
+    generations = pd.DataFrame(columns=["model", "quant", "is_greedy", "truncated_at_cap"])
+    tables = RawTables(Path("."), pd.DataFrame(), pd.DataFrame(), scores, generations, {})
+
+    (row,) = cdd_length_and_empty_outputs(tables)["by_model_and_precision"]
+    assert row["sample_empty_rate"] == pytest.approx(3 / 6)
+    assert row["median_threshold_length"] == 16.0
+    assert row["greedy_cap_hit_rate"] is None
+
+
+def test_the_descriptive_block_leaves_the_confirmatory_family_unchanged(
+    tmp_path, monkeypatch, run_analysis_module, analysis_outputs
+):
+    monkeypatch.setitem(globals(), "_planted_cdd_fields", lambda index: {})
+    run_dir = _write_run(tmp_path)
+    outputs = run_analysis_module.run_analysis(run_dir)
+    without = json.loads(outputs["confirmatory_family"].read_text(encoding="utf-8"))
+    block = json.loads(outputs["cdd_length_and_empty_outputs"].read_text(encoding="utf-8"))
+
+    assert without == analysis_outputs["confirmatory_family"]
+    assert {row["n_items_not_recorded"] for row in block["by_model_and_precision"]} == {N_LCB_ITEMS}
 
 
 # --- part files a resumed run may have written twice ------------------------

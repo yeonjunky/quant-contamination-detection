@@ -18,6 +18,12 @@
 #    session, not what was installed first. Exact `pip freeze` snapshot:
 #    pipeline/envs/local-smoke-freeze.txt.
 #
+# The torch pin is written as that freeze records it, `torch==2.13.0`: the
+# plain PyPI wheel, whose freeze lists the CUDA 13.0 runtime packages
+# (cuda-toolkit 13.0.3, nvidia-*-cu13). "+cu130" above is how torch names its
+# own CUDA build, not a version pip can install from PyPI. preflight_h100.py
+# ignores a `+local` suffix when comparing and prints torch.version.cuda.
+#
 # GPTQModel is deliberately NOT installed — the GPTQ/AWQ backend
 # (models/loader.py's _load_gptq_or_awq) uses llm-compressor (AWQ)
 # uniformly for all five roster models, not GPTQModel, not a per-model
@@ -27,7 +33,7 @@
 # on Olmo3-7B-Instruct empirically (see pipeline_implementation_log.md's
 # 2026-08-15 entry). See models/loader.py's module docstring for the full
 # rationale.
-torch==2.13.0+cu130
+torch==2.13.0
 transformers==5.14.1
 bitsandbytes==0.50.1
 accelerate==1.14.0

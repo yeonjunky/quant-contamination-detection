@@ -6,9 +6,12 @@ place (model loading) rather than somewhere earlier due to a wiring bug —
 leaving items.parquet and manifest.json already written when it does.
 """
 
+import concurrent.futures
 import dataclasses
 import datetime as dt
 import json
+import os
+import time
 from types import SimpleNamespace
 
 import pandas as pd
@@ -18,6 +21,7 @@ from qcd.config import ModelSpec, Quant
 from qcd.data.schema import Dataset, Item
 from qcd.models.registry import QWEN2_5_7B
 from qcd.real_run import RealRunConfig, _assemble_candidate_code, _generation_prompt, load_all_items, run
+from tests import sandbox_fakes
 
 
 _TEST_QWEN = dataclasses.replace(
@@ -198,6 +202,12 @@ def test_run_scores_fixed_prompt_and_keeps_completion_confidence(tmp_path, monke
                 token_logprobs=[-0.2, -0.3], is_greedy=temperature == 0.0,
             )
 
+        def generate_samples(self, item_id, prompt, *, temperature, sample_ids):
+            return [
+                self.generate(item_id, prompt, temperature=temperature, sample_id=sample_id)
+                for sample_id in sample_ids
+            ]
+
         def score_prompt_logprobs(self, item_id, prompt):
             self.prompt_calls.append((item_id, prompt))
             return [-1.0, -2.0, -3.0]
@@ -208,7 +218,7 @@ def test_run_scores_fixed_prompt_and_keeps_completion_confidence(tmp_path, monke
         real_run_module, "load_model", lambda spec, quant, mock=False: fake_model
     )
     monkeypatch.setattr(real_run_module, "_assemble_candidate_code", lambda item, text: text)
-    monkeypatch.setattr(real_run_module, "partial_pass_rate", lambda item, code: 1.0)
+    monkeypatch.setattr(real_run_module, "_timed_partial_pass_rate", sandbox_fakes.passes)
 
     config = _small_config(
         tmp_path, n_cdd_samples=2, include_humaneval=False, include_mbppplus=False
@@ -297,6 +307,12 @@ def test_run_records_decoding_settings_truncation_and_prompt_provenance(tmp_path
                 truncated_at_cap=is_greedy,
             )
 
+        def generate_samples(self, item_id, prompt, *, temperature, sample_ids):
+            return [
+                self.generate(item_id, prompt, temperature=temperature, sample_id=sample_id)
+                for sample_id in sample_ids
+            ]
+
         def score_prompt_detail(self, item_id, prompt):
             del item_id, prompt
             return detail
@@ -306,7 +322,7 @@ def test_run_records_decoding_settings_truncation_and_prompt_provenance(tmp_path
         real_run_module, "load_model", lambda spec, quant, mock=False: FakeModel()
     )
     monkeypatch.setattr(real_run_module, "_assemble_candidate_code", lambda item, text: text)
-    monkeypatch.setattr(real_run_module, "partial_pass_rate", lambda item, code: 1.0)
+    monkeypatch.setattr(real_run_module, "_timed_partial_pass_rate", sandbox_fakes.passes)
 
     config = _small_config(
         tmp_path, n_cdd_samples=2, include_humaneval=False, include_mbppplus=False
@@ -345,7 +361,552 @@ def test_run_records_decoding_settings_truncation_and_prompt_provenance(tmp_path
     assert greedy["chat_template_id"] == detail.chat_template_id
 
     # The template text itself is stored once per run, not per item.
-    templates = pd.read_parquet(tmp_path / "raw" / "chat_templates.parquet")
+    templates = pd.read_parquet(tmp_path / "raw" / "chat_templates.Qwen2.5-7B-Instruct-bf16.parquet")
     assert len(templates) == 1
     assert templates.iloc[0]["chat_template_id"] == detail.chat_template_id
     assert "message.content" in templates.iloc[0]["chat_template"]
+
+
+class _CountingModel:
+    tokenizer = object()
+
+    def __init__(self, fail_after=None):
+        self.calls = []
+        self.fail_after = fail_after
+
+    def _record(self, call):
+        if self.fail_after is not None and len(self.calls) == self.fail_after:
+            raise KeyboardInterrupt("simulated interruption")
+        self.calls.append(call)
+
+    @staticmethod
+    def _sample(item_id, sample_id, temperature):
+        token = int(item_id[1:]) * 100 + sample_id
+        return SimpleNamespace(
+            text=f"print({token})", token_ids=[token],
+            token_logprobs=[-0.5], is_greedy=temperature == 0.0,
+        )
+
+    def generate(self, item_id, prompt, *, temperature, sample_id):
+        self._record((item_id, "greedy", (sample_id,)))
+        return self._sample(item_id, sample_id, temperature)
+
+    def generate_samples(self, item_id, prompt, *, temperature, sample_ids):
+        self._record((item_id, "samples", tuple(sample_ids)))
+        return [self._sample(item_id, s, temperature) for s in sample_ids]
+
+    def score_prompt_logprobs(self, item_id, prompt):
+        return [-1.0]
+
+
+@pytest.fixture
+def run_with(monkeypatch, tmp_path):
+    """Runs `run()` on fixed LCB items q1..qN (two by default) against the
+    given model, with n=3 samples drawn at the given batch size, scored by a
+    `sandbox_fakes` function in the driver's spawned sandbox workers."""
+    import qcd.real_run as real_run_module
+
+    monkeypatch.setattr(real_run_module, "_assemble_candidate_code", lambda item, text: text)
+    monkeypatch.setenv("QCD_TEST_SANDBOX_LOG", str(tmp_path / "sandbox.log"))
+
+    def _load(model):
+        def load(spec, quant, mock=False):
+            _run.loads.append((spec.name, quant))
+            return model
+        return load
+
+    def _run(
+        model, output_dir, *, batch_size=2, spec=_TEST_QWEN, n_items=2,
+        sandbox=sandbox_fakes.passes, **overrides,
+    ):
+        items = [
+            Item(item_id=f"q{i}", dataset=Dataset.LCB_PRE, prompt=f"prompt {i}",
+                 metadata={"contest_date": "2023-06-01"})
+            for i in range(1, n_items + 1)
+        ]
+        monkeypatch.setattr(real_run_module, "load_all_items", lambda config: items)
+        monkeypatch.setattr(real_run_module, "_timed_partial_pass_rate", sandbox)
+        monkeypatch.setattr(real_run_module, "load_model", _load(model))
+        run(_small_config(
+            output_dir, n_cdd_samples=3, include_humaneval=False, include_mbppplus=False,
+            models=(dataclasses.replace(spec, sample_batch_size=batch_size),),
+            **overrides,
+        ))
+
+    _run.loads = []
+    return _run
+
+
+def _read_raw(output_dir, kind):
+    """One raw table across its parts, without the wall-clock timing columns,
+    which no two runs share."""
+    frame = pd.concat(
+        [pd.read_parquet(p) for p in sorted((output_dir / "raw").glob(f"{kind}.*.parquet"))],
+        ignore_index=True,
+    )
+    keys = (
+        ["quant", "item_id", "sample_id"] if kind == "generations"
+        else ["quant", "item_id", "detector"]
+    )
+    return frame.drop(columns=[c for c in frame.columns if c.endswith("_seconds")]) \
+        .sort_values(keys).reset_index(drop=True)
+
+
+def _sandbox_log(tmp_path):
+    return (tmp_path / "sandbox.log").read_text().splitlines()
+
+
+def _part_bytes(output_dir, pattern="*.parquet"):
+    return {p.name: p.read_bytes() for p in sorted((output_dir / "raw").glob(pattern))}
+
+
+def test_an_interrupted_run_resumes_from_cache_to_the_same_output(tmp_path, run_with):
+    # Interrupted between q2's two sample chunks: q1 is complete, q2's greedy
+    # output is cached, and q2's first chunk was generated but not cached.
+    interrupted = tmp_path / "interrupted"
+    with pytest.raises(KeyboardInterrupt):
+        run_with(_CountingModel(fail_after=5), interrupted)
+
+    resumed = _CountingModel()
+    run_with(resumed, interrupted)
+    # Only q2's sample set is generated again, whole, in the same chunks.
+    assert resumed.calls == [("q2", "samples", (1, 2)), ("q2", "samples", (3,))]
+
+    uninterrupted = tmp_path / "uninterrupted"
+    run_with(_CountingModel(), uninterrupted)
+    for kind in ("generations", "detector_scores"):
+        pd.testing.assert_frame_equal(_read_raw(interrupted, kind), _read_raw(uninterrupted, kind))
+
+
+def test_a_cache_made_at_another_batch_size_is_not_served(tmp_path, run_with):
+    import shutil
+
+    first = tmp_path / "batch2"
+    run_with(_CountingModel(), first, batch_size=2)
+    second = tmp_path / "batch1"
+    shutil.copytree(first / "cache", second / "cache")
+
+    model = _CountingModel()
+    run_with(model, second, batch_size=1)
+
+    assert [call for call in model.calls if call[1] == "samples"] == [
+        (item, "samples", (s,)) for item in ("q1", "q2") for s in range(1, 4)
+    ]
+    manifest = json.loads((second / "manifest.json").read_text())
+    assert manifest["config"]["sample_batch_sizes"] == {QWEN2_5_7B.name: 1}
+    assert manifest["config"]["generation_seed_policy"] == (
+        "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v4"
+    )
+
+
+def test_a_model_without_a_measured_batch_size_refuses_before_loading(tmp_path, monkeypatch):
+    import qcd.real_run as real_run_module
+    from qcd.io.manifest import StudyPhase
+    from qcd.models.registry import MAIN_ANALYSIS_MODELS
+
+    loaded = []
+    monkeypatch.setattr(
+        real_run_module, "load_model", lambda spec, quant, mock=False: loaded.append(spec)
+    )
+    monkeypatch.setattr(
+        real_run_module, "load_all_items", lambda config: loaded.append("items")
+    )
+
+    # What scripts/run_main.py builds before the H100 measurement: the registry
+    # roster with both 32B models unset, main study.
+    roster = tuple(
+        dataclasses.replace(m, sample_batch_size=None) if "32B" in m.name else m
+        for m in MAIN_ANALYSIS_MODELS
+    )
+    with pytest.raises(ValueError, match="Measure it on the H100") as refused:
+        run(_small_config(tmp_path, models=roster, study_phase=StudyPhase.MAIN_STUDY))
+    assert str(refused.value).startswith("['Qwen2.5-32B-Instruct', 'Olmo3.1-32B-Instruct'] have no")
+    assert "scripts/measure_sample_batch.py" in str(refused.value)
+    assert "models/registry.py" in str(refused.value)
+    assert loaded == []
+    assert not (tmp_path / "manifest.json").exists()
+
+
+def test_a_validation_run_proceeds_with_an_explicit_batch_size(tmp_path, run_with):
+    from qcd.io.manifest import StudyPhase
+    from qcd.models.registry import QWEN2_5_32B
+
+    model = _CountingModel()
+    run_with(
+        model, tmp_path, batch_size=2, study_phase=StudyPhase.ENGINEERING_VALIDATION,
+        spec=dataclasses.replace(
+            QWEN2_5_32B, sample_batch_size=None, primary_first_post_boundary="2023-11-01",
+        ),
+    )
+
+    assert ("q1", "samples", (1, 2)) in model.calls
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["study_phase"] == "engineering_validation"
+    assert manifest["config"]["sample_batch_sizes"] == {QWEN2_5_32B.name: 2}
+
+
+# --- one (model, precision) cell per process --------------------------------
+
+_BOTH = (Quant.BF16, Quant.BNB_NF4)
+_QWEN = QWEN2_5_7B.name
+
+
+def _manifest(output_dir):
+    return json.loads((output_dir / "manifest.json").read_text())
+
+
+def test_cell_processes_share_the_full_studys_manifest_and_output(tmp_path, run_with):
+    full = tmp_path / "full"
+    run_with(_CountingModel(), full, quant_levels=_BOTH)
+    run_with.loads.clear()
+
+    split = tmp_path / "split"
+    run_with(_CountingModel(), split, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BF16)}))
+    assert _manifest(split)["config_hash"] == _manifest(full)["config_hash"]
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+    assert set(_read_raw(split, "detector_scores")["quant"]) == {"bf16"}
+    bf16_files = _part_bytes(split)
+
+    # The second cell's process is accepted by the directory the first wrote,
+    # and leaves the first cell's files exactly as they were.
+    run_with(_CountingModel(), split, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert run_with.loads == [(_QWEN, Quant.BF16), (_QWEN, Quant.BNB_NF4)]
+    after = _part_bytes(split)
+    for name, content in bf16_files.items():
+        if "bf16" in name:
+            assert after[name] == content, name
+    for kind in ("generations", "detector_scores"):
+        pd.testing.assert_frame_equal(_read_raw(split, kind), _read_raw(full, kind))
+
+
+def test_an_unknown_cell_is_refused_before_loading(tmp_path, monkeypatch):
+    import qcd.real_run as real_run_module
+
+    loaded = []
+    monkeypatch.setattr(
+        real_run_module, "load_model", lambda spec, quant, mock=False: loaded.append(spec)
+    )
+    with pytest.raises(ValueError, match=r"Qwen2.5-7B-Instruct:bnb_nf4"):
+        run(_small_config(tmp_path, cells=frozenset({(_QWEN, Quant.BNB_NF4)})))
+    assert loaded == []
+    assert not (tmp_path / "manifest.json").exists()
+
+
+def test_a_completed_cell_is_skipped_without_loading_its_model(tmp_path, run_with):
+    run_with(_CountingModel(), tmp_path)
+    marker = tmp_path / "cells" / "Qwen2.5-7B-Instruct-bf16" / "complete.json"
+    record = json.loads(marker.read_text())
+    assert record["n_items"] == 2
+    assert record["parts"] == ["Qwen2.5-7B-Instruct-bf16-00000"]
+    assert record["config_hash"] == _manifest(tmp_path)["config_hash"]
+    parts = _part_bytes(tmp_path, "[gd]*.parquet")
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+
+    recorded = marker.read_text()
+    model = _CountingModel()
+    run_with(model, tmp_path)
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+    assert model.calls == []
+    assert _part_bytes(tmp_path, "[gd]*.parquet") == parts
+    assert marker.read_text() == recorded
+
+    # Interrupted after its last part but before the marker: every part is on
+    # disk, so the marker is written without loading the model either.
+    marker.unlink()
+    run_with(model, tmp_path)
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+    assert json.loads(marker.read_text())["parts"] == record["parts"]
+
+
+def test_an_interrupted_cell_resumes_at_its_first_unwritten_part(tmp_path, run_with, monkeypatch):
+    import qcd.real_run as real_run_module
+
+    monkeypatch.setattr(real_run_module, "_RAW_BATCH_ITEMS", 1)
+
+    interrupted = tmp_path / "interrupted"
+    # Three model calls per item (greedy, two sample chunks): the fourth is
+    # q2's greedy output, after q1's part was flushed.
+    with pytest.raises(KeyboardInterrupt):
+        run_with(_CountingModel(fail_after=3), interrupted, sandbox=sandbox_fakes.records)
+    first_part = _part_bytes(interrupted)
+    assert sorted(first_part) == [
+        "detector_scores.Qwen2.5-7B-Instruct-bf16-00000.parquet",
+        "generations.Qwen2.5-7B-Instruct-bf16-00000.parquet",
+        "items.parquet", "model_item_labels.parquet",
+    ]
+    assert not (interrupted / "cells" / "Qwen2.5-7B-Instruct-bf16" / "complete.json").exists()
+
+    (tmp_path / "sandbox.log").unlink()
+    resumed = _CountingModel()
+    run_with(resumed, interrupted, sandbox=sandbox_fakes.records)
+    # q1 is neither generated, sandboxed nor rewritten; only q2 runs.
+    assert resumed.calls == [("q2", "greedy", (0,)), ("q2", "samples", (1, 2)), ("q2", "samples", (3,))]
+    assert [line.split()[0] for line in _sandbox_log(tmp_path)] == ["q2"]
+    after = _part_bytes(interrupted)
+    for name, content in first_part.items():
+        assert after[name] == content, name
+
+    uninterrupted = tmp_path / "uninterrupted"
+    run_with(_CountingModel(), uninterrupted, sandbox=sandbox_fakes.records)
+    assert sorted(_part_bytes(interrupted)) == sorted(_part_bytes(uninterrupted))
+    for kind in ("generations", "detector_scores"):
+        resumed_frame = _read_raw(interrupted, kind)
+        keys = ["item_id", "sample_id"] if kind == "generations" else ["item_id", "detector"]
+        assert not resumed_frame.duplicated(subset=keys).any()
+        pd.testing.assert_frame_equal(resumed_frame, _read_raw(uninterrupted, kind))
+
+
+class _FixedOutputModel(_CountingModel):
+    """q1: a 120-token greedy output and samples of 0, 5 and 150 tokens.
+    q2: every output empty."""
+
+    _LENGTHS = {"q1": {0: 120, 1: 0, 2: 5, 3: 150}, "q2": {0: 0, 1: 0, 2: 0, 3: 0}}
+
+    @classmethod
+    def _sample(cls, item_id, sample_id, temperature):
+        n =cls._LENGTHS[item_id][sample_id]
+        return SimpleNamespace(
+            text="x" * n, token_ids=[7] * n, token_logprobs=[-0.5] * n,
+            is_greedy=temperature == 0.0,
+        )
+
+
+def test_cdd_rows_record_threshold_length_and_empty_outputs(tmp_path, run_with):
+    run_with(_FixedOutputModel(), tmp_path)
+
+    scores = _read_raw(tmp_path, "detector_scores")
+    cdd = scores[scores["detector"] == "cdd"].set_index("item_id")
+    # l is the longest output after truncation to 100 tokens, not the cap
+    # itself and not the untruncated 150.
+    assert cdd.loc["q1", "cdd_threshold_length"] == 100
+    assert cdd.loc["q1", "cdd_n_empty_samples"] == 1
+    assert cdd.loc["q1", "cdd_greedy_empty"] == False  # noqa: E712
+    # All outputs empty: l=0, a zero threshold, and peakedness 1.0.
+    assert cdd.loc["q2", "cdd_threshold_length"] == 0
+    assert cdd.loc["q2", "cdd_n_empty_samples"] == 3
+    assert cdd.loc["q2", "cdd_greedy_empty"] == True  # noqa: E712
+    assert cdd.loc["q2", "score"] == 1.0
+
+    others = scores[scores["detector"] != "cdd"]
+    assert others[["cdd_threshold_length", "cdd_n_empty_samples", "cdd_greedy_empty"]].isna().all().all()
+
+
+def test_a_stored_sample_row_is_regenerated_from_its_sample_id(tmp_path, run_with):
+    """A raw row's `sample_id` is the id its seed came from: generating that
+    id again gives the stored tokens. `_CountingModel` puts the id it was
+    asked for into the token, so a row stored under a shifted id fails."""
+    model = _CountingModel()
+    run_with(model, tmp_path)
+
+    generations = _read_raw(tmp_path, "generations")
+    samples = generations[~generations["is_greedy"]]
+    assert sorted(set(samples["sample_id"])) == [1, 2, 3]
+    for row in samples.itertuples():
+        [regenerated] = model.generate_samples(
+            row.item_id, "", temperature=row.decoding_temperature, sample_ids=[row.sample_id],
+        )
+        assert list(row.token_ids) == regenerated.token_ids, (row.item_id, row.sample_id)
+
+    cdd = _read_raw(tmp_path, "detector_scores").query("detector == 'cdd'")
+    for source in cdd["source_sample_ids"]:
+        assert list(source) == [0, 1, 2, 3]
+
+
+# --- one frozen commit and environment per main study ------------------------
+
+
+def test_a_main_study_cell_from_another_commit_is_refused(tmp_path, run_with, monkeypatch):
+    import qcd.io.manifest as manifest_module
+
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BF16)}))
+    frozen = _manifest(tmp_path)["git_commit"]
+
+    monkeypatch.setattr(manifest_module, "get_git_commit_hash", lambda repo_dir=None: "f" * 40)
+    model = _CountingModel()
+    with pytest.raises(RuntimeError, match=f"frozen at commit {frozen}") as refused:
+        run_with(model, tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert "move the directory aside" in str(refused.value)
+    assert model.calls == []
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+
+
+def test_a_main_study_cell_with_other_package_versions_is_refused(tmp_path, run_with, monkeypatch):
+    import qcd.io.manifest as manifest_module
+
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BF16)}))
+
+    installed = manifest_module.get_installed_package_versions
+    monkeypatch.setattr(
+        manifest_module, "get_installed_package_versions",
+        lambda packages=manifest_module.DEFAULT_TRACKED_PACKAGES: {
+            **installed(packages), "transformers": "0.0.0-other",
+        },
+    )
+    with pytest.raises(RuntimeError, match="transformers"):
+        run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+
+
+def test_a_validation_run_is_not_frozen_to_one_commit(tmp_path, run_with, monkeypatch):
+    import qcd.io.manifest as manifest_module
+    from qcd.io.manifest import StudyPhase
+
+    phase = StudyPhase.ENGINEERING_VALIDATION
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, study_phase=phase,
+             cells=frozenset({(_QWEN, Quant.BF16)}))
+    monkeypatch.setattr(manifest_module, "get_git_commit_hash", lambda repo_dir=None: "f" * 40)
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, study_phase=phase,
+             cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert run_with.loads == [(_QWEN, Quant.BF16), (_QWEN, Quant.BNB_NF4)]
+
+
+def test_each_cell_records_the_commit_and_environment_that_produced_it(tmp_path, run_with):
+    run_with(_CountingModel(), tmp_path)
+
+    manifest = _manifest(tmp_path)
+    cell_dir = tmp_path / "cells" / "Qwen2.5-7B-Instruct-bf16"
+    for record_name in ("started.json", "complete.json"):
+        record = json.loads((cell_dir / record_name).read_text())
+        assert record["git_commit"] == manifest["git_commit"], record_name
+        assert record["git_tracked_diff_sha256"] == manifest["git_tracked_diff_sha256"], record_name
+        assert record["package_versions"] == manifest["package_versions"], record_name
+        assert record["hostname"] == manifest["hostname"], record_name
+        assert "gpu_name" in record, record_name
+        assert record["config_hash"] == manifest["config_hash"], record_name
+    started = json.loads((cell_dir / "started.json").read_text())
+    assert isinstance(started["cpu_count"], int) and started["cpu_count"] >= 1
+    assert len(started["load_average"]) == 3
+
+
+def test_a_resumed_cell_keeps_its_first_start_record(tmp_path, run_with):
+    interrupted = _CountingModel(fail_after=1)
+    with pytest.raises(KeyboardInterrupt):
+        run_with(interrupted, tmp_path)
+    cell_dir = tmp_path / "cells" / "Qwen2.5-7B-Instruct-bf16"
+    first_start = (cell_dir / "started.json").read_text()
+
+    run_with(_CountingModel(), tmp_path)
+
+    assert (cell_dir / "started.json").read_text() == first_start
+    resumes = sorted(cell_dir.glob("resumed-*.json"))
+    assert len(resumes) == 1
+    assert json.loads(resumes[0].read_text())["started_at_utc"] > json.loads(first_start)["started_at_utc"]
+
+
+def test_a_cell_with_other_scoring_environment_variables_is_refused(tmp_path, run_with, monkeypatch):
+    """evalplus's memory cap and per-task timeout come from the environment
+    and change pass/fail, so they are part of the study's configuration."""
+    monkeypatch.setenv("EVALPLUS_MAX_MEMORY_BYTES", "4294967296")
+    monkeypatch.delenv("EVALPLUS_TIMEOUT_PER_TASK", raising=False)
+    run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BF16)}))
+    recorded = _manifest(tmp_path)["config"]["scoring_environment"]
+    assert recorded["EVALPLUS_MAX_MEMORY_BYTES"] == "4294967296"
+    assert recorded["EVALPLUS_TIMEOUT_PER_TASK"] is None
+
+    monkeypatch.setenv("EVALPLUS_MAX_MEMORY_BYTES", "-1")
+    with pytest.raises(RuntimeError, match="EVALPLUS_MAX_MEMORY_BYTES"):
+        run_with(_CountingModel(), tmp_path, quant_levels=_BOTH, cells=frozenset({(_QWEN, Quant.BNB_NF4)}))
+    assert run_with.loads == [(_QWEN, Quant.BF16)]
+
+
+# --- sandbox scoring in spawned workers --------------------------------------
+
+
+def _parts_in_file_order(output_dir):
+    """Each part file as written, rows unsorted, without timing columns."""
+    parts = {}
+    for path in sorted((output_dir / "raw").glob("[gd]*.parquet")):
+        frame = pd.read_parquet(path)
+        parts[path.name] = frame.drop(columns=[c for c in frame.columns if c.endswith("_seconds")])
+    return parts
+
+
+def test_pooled_scoring_writes_what_in_process_scoring_writes(tmp_path, run_with, monkeypatch):
+    import qcd.real_run as real_run_module
+
+    monkeypatch.setattr(real_run_module, "_RAW_BATCH_ITEMS", 2)
+    pooled = tmp_path / "pooled"
+    run_with(_CountingModel(), pooled, n_items=5, sandbox=sandbox_fakes.records)
+    logged = [line.split() for line in _sandbox_log(tmp_path)]
+    assert str(os.getpid()) not in {pid for _, pid, _ in logged}
+    assert {inherited for _, _, inherited in logged} == {"False"}, "workers were forked"
+
+    monkeypatch.setattr(
+        real_run_module, "ProcessPoolExecutor",
+        lambda workers, mp_context: concurrent.futures.ThreadPoolExecutor(1),
+    )
+    in_process = tmp_path / "in_process"
+    run_with(_CountingModel(), in_process, n_items=5, sandbox=sandbox_fakes.records)
+
+    pooled_parts, in_process_parts = _parts_in_file_order(pooled), _parts_in_file_order(in_process)
+    assert list(pooled_parts) == list(in_process_parts)
+    assert len(pooled_parts) == 6
+    for name, frame in pooled_parts.items():
+        pd.testing.assert_frame_equal(frame, in_process_parts[name])
+    greedy = _read_raw(pooled, "generations").query("is_greedy")
+    assert list(greedy["partial_pass_rate"]) == [0.1, 0.2, 0.3, 0.4, 0.5]
+
+
+def test_rows_keep_item_order_when_earlier_items_finish_scoring_last(tmp_path, run_with):
+    run_with(_CountingModel(), tmp_path, n_items=4, sandbox=sandbox_fakes.slower_for_earlier_items)
+
+    assert [line.split()[0] for line in _sandbox_log(tmp_path)] == ["q4", "q3", "q2", "q1"]
+    generations = pd.read_parquet(next((tmp_path / "raw").glob("generations.*.parquet")))
+    assert list(generations["item_id"]) == [f"q{i}" for i in range(1, 5) for _ in range(4)]
+    greedy = generations[generations["is_greedy"]]
+    assert list(greedy["partial_pass_rate"]) == [0.1, 0.2, 0.3, 0.4]
+    assert list(greedy["passed"]) == [False] * 4
+    # The worker's own scoring time, not the main process's wait for q1.
+    assert list(greedy["sandbox_scoring_seconds"]) == [sandbox_fakes.SECONDS] * 4
+
+
+class _ClockedModel(_CountingModel):
+    def __init__(self):
+        super().__init__()
+        self.greedy_started = {}
+
+    def generate(self, item_id, prompt, *, temperature, sample_id):
+        self.greedy_started[item_id] = time.time()
+        return super().generate(item_id, prompt, temperature=temperature, sample_id=sample_id)
+
+
+def test_a_parts_scores_all_return_before_the_next_part_is_generated(tmp_path, run_with, monkeypatch):
+    import qcd.real_run as real_run_module
+
+    monkeypatch.setattr(real_run_module, "_RAW_BATCH_ITEMS", 2)
+    model = _ClockedModel()
+    run_with(model, tmp_path, n_items=4, sandbox=sandbox_fakes.slower_for_earlier_items)
+
+    scored_at = {item: float(at) for item, at in (line.split() for line in _sandbox_log(tmp_path))}
+    assert model.greedy_started["q3"] > max(scored_at["q1"], scored_at["q2"])
+
+
+def test_a_worker_exception_stops_the_cell_without_a_partial_part(tmp_path, run_with):
+    failed = tmp_path / "failed"
+    with pytest.raises(ValueError, match="sandbox failed on q2"):
+        run_with(_CountingModel(), failed, sandbox=sandbox_fakes.fails_on_q2)
+    assert not list((failed / "raw").glob("[gd]*.parquet"))
+    assert not (failed / "cells" / "Qwen2.5-7B-Instruct-bf16" / "complete.json").exists()
+
+    run_with(_CountingModel(), failed, sandbox=sandbox_fakes.records)
+    clean = tmp_path / "clean"
+    run_with(_CountingModel(), clean, sandbox=sandbox_fakes.records)
+    assert sorted(_part_bytes(failed)) == sorted(_part_bytes(clean))
+    for kind in ("generations", "detector_scores"):
+        pd.testing.assert_frame_equal(_read_raw(failed, kind), _read_raw(clean, kind))
+
+
+def test_the_sandbox_worker_count_is_part_of_the_run_configuration(tmp_path, run_with, monkeypatch):
+    import qcd.real_run as real_run_module
+
+    four = tmp_path / "four"
+    run_with(_CountingModel(), four)
+    assert _manifest(four)["config"]["sandbox_workers"] == 4
+
+    monkeypatch.setattr(real_run_module, "_SANDBOX_WORKERS", 2)
+    with pytest.raises(RuntimeError, match="different run configuration"):
+        run_with(_CountingModel(), four)
+    two = tmp_path / "two"
+    run_with(_CountingModel(), two)
+    assert _manifest(two)["config"]["sandbox_workers"] == 2
+    assert _manifest(two)["config_hash"] != _manifest(four)["config_hash"]

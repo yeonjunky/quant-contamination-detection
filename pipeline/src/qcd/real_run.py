@@ -20,10 +20,16 @@ import dataclasses
 import datetime as dt
 import gc
 import json
+import math
+import multiprocessing
+import os
 import re
+import tempfile
 import time
 from collections import defaultdict
+from concurrent.futures import Future, ProcessPoolExecutor
 from pathlib import Path
+from typing import NamedTuple
 
 from qcd.config import ModelSpec, Quant
 from qcd.constants import (
@@ -34,21 +40,23 @@ from qcd.constants import (
 from qcd.data.humaneval import load_humaneval
 from qcd.data.livecodebench import REPO_REVISION as LCB_REPO_REVISION, load_livecodebench_split
 from qcd.data.mbppplus import load_mbppplus
-from qcd.data.schema import Dataset, Item
+from qcd.data.schema import Dataset, Item, PromptScoringDetail
 from qcd.data.temporal_labels import materialize_model_item_labels
-from qcd.detectors.cdd import peakedness
+from qcd.detectors.cdd import peakedness, threshold_length
 from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score
 from qcd.generation.cache import GenerationCache
-from qcd.generation.sampler import sample_item
+from qcd.generation.sampler import GREEDY_SAMPLE_ID, ItemGenerations, sample_ids, sample_item
 from qcd.io.manifest import (
-    StudyPhase, build_manifest, read_manifest, resolve_library_defaults,
+    RunManifest, StudyPhase, build_manifest, read_manifest, resolve_library_defaults,
     unresolved_library_defaults, write_manifest,
 )
+from qcd.io.cells import cell_id, completion_marker_path
 from qcd.io.raw_writer import RawDataWriter
 from qcd.models.loader import decoding_settings_id, load_model, resolved_decoding_settings
 from qcd.scoring.logprob import score_prompt_logprobs
 from qcd.scoring.pass_rate import partial_pass_rate
+from qcd.scoring.sandbox import scoring_environment
 
 _EVALPLUS_DATASETS = (Dataset.HUMANEVAL, Dataset.MBPPPLUS)
 
@@ -56,6 +64,13 @@ _EVALPLUS_DATASETS = (Dataset.HUMANEVAL, Dataset.MBPPPLUS)
 # ```, ...). DOTALL so the fence content can span multiple lines.
 _CODE_FENCE_RE = re.compile(r"```(?:[a-zA-Z0-9_+-]*)\n?(.*?)```", re.DOTALL)
 _RAW_BATCH_ITEMS = 25
+# Worker processes that run the code sandbox while the GPU generates the next
+# items. Each worker runs one item at a time, and that item's tests run one
+# subprocess at a time (`untrusted_check` per evalplus input list, one
+# `subprocess.run` per LCB test), so at most this many test programs run at
+# once beside the main process. It is in the manifest config because CPU
+# contention can move a timeout-bound test between pass and fail.
+_SANDBOX_WORKERS = 4
 
 
 def _strip_markdown_fence(text: str) -> str:
@@ -118,6 +133,27 @@ class RealRunConfig:
     # main study because this driver exists for §5 step 8; a bounded
     # engineering run must set it explicitly.
     study_phase: StudyPhase = StudyPhase.MAIN_STUDY
+    # The (model name, precision) cells this process runs; None runs them all.
+    # Not part of the manifest config, so every cell process of one study
+    # shares the full study's `config_hash` and writes into one directory.
+    cells: frozenset[tuple[str, Quant]] | None = None
+
+    def __post_init__(self) -> None:
+        if self.cells is not None:
+            study_cells = {(m.name, q) for m in self.models for q in self.quant_levels}
+            unknown = sorted(f"{name}:{quant.value}" for name, quant in self.cells - study_cells)
+            if unknown:
+                raise ValueError(f"cells {unknown} are not in this study's models x precisions")
+        # Refused here, before any item or model is loaded. This driver has no
+        # batch-size override, so a validation run tries a value by passing a
+        # ModelSpec with `sample_batch_size` set.
+        unmeasured = [m.name for m in self.models if m.sample_batch_size is None]
+        if unmeasured:
+            raise ValueError(
+                f"{unmeasured} have no sample_batch_size. Measure it on the H100 "
+                "(scripts/measure_sample_batch.py) and set it in "
+                "models/registry.py before the main run."
+            )
 
 
 def load_all_items(config: RealRunConfig) -> list[Item]:
@@ -228,7 +264,10 @@ def run(config: RealRunConfig) -> None:
             "include_mbppplus": config.include_mbppplus,
             "item_limit_per_condition": config.item_limit_per_condition,
             "generation_max_new_tokens": GENERATION_MAX_NEW_TOKENS,
-            "generation_seed_policy": "sha256(item_id,sample_id,temperature)-v1",
+            "generation_seed_policy": "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v4",
+            "sample_batch_sizes": {m.name: m.sample_batch_size for m in config.models},
+            "scoring_environment": scoring_environment(),
+            "sandbox_workers": _SANDBOX_WORKERS,
             "decoding_settings": {
                 "greedy": greedy_decoding,
                 "samples": sample_decoding,
@@ -244,7 +283,7 @@ def run(config: RealRunConfig) -> None:
     # configuration" and block a resume; the value is still on disk to compare.
     # The entries only a loaded model can answer (the BNB skip list, an AWQ
     # checkpoint's group size) are written per model/precision to
-    # `resolved_library_defaults.json` as the run proceeds.
+    # `cells/<cell>/resolved_library_defaults.json` when that cell loads.
     manifest = build_manifest(
         run_config,
         study_phase=config.study_phase,
@@ -256,176 +295,401 @@ def run(config: RealRunConfig) -> None:
     manifest_path = config.output_dir / "manifest.json"
     if manifest_path.exists():
         existing = read_manifest(manifest_path)
+        frozen_scoring = existing.get("config", {}).get("scoring_environment")
+        if frozen_scoring != run_config["scoring_environment"]:
+            raise RuntimeError(
+                f"cell refused: the scoring environment variables differ from the study in "
+                f"{config.output_dir}: frozen {frozen_scoring}, now "
+                f"{run_config['scoring_environment']}. Set them as the manifest records."
+            )
         if existing.get("config_hash") != manifest.config_hash:
             raise RuntimeError(
                 f"output directory already contains a different run configuration: {manifest_path}"
             )
+        if config.study_phase is StudyPhase.MAIN_STUDY:
+            _require_frozen_code_and_packages(existing, manifest, config.output_dir)
     else:
         write_manifest(manifest, manifest_path)
+    environment = {
+        "git_commit": manifest.git_commit,
+        "git_tracked_diff_sha256": manifest.git_tracked_diff_sha256,
+        "package_versions": manifest.package_versions,
+        "hostname": manifest.hostname,
+        "gpu_name": _gpu_name(),
+    }
 
     writer = RawDataWriter(config.output_dir / "raw")
     writer.write_items(items)
     writer.write_model_item_labels(model_item_labels)
 
     cache = GenerationCache(config.output_dir / "cache")
+    batches = [
+        items[start:start + _RAW_BATCH_ITEMS] for start in range(0, len(items), _RAW_BATCH_ITEMS)
+    ]
+    sandbox = start_sandbox_pool()
+    try:
+        for model_spec, quant in selected_cells(config):
+            _run_cell(
+                config, model_spec, quant, batches, writer, cache, sandbox,
+                greedy_decoding_id=greedy_decoding_id,
+                sample_decoding_id=sample_decoding_id,
+                config_hash=manifest.config_hash,
+                environment=environment,
+            )
+    finally:
+        sandbox.shutdown(cancel_futures=True)
+
+
+def _require_frozen_code_and_packages(existing: dict, current: RunManifest, output_dir: Path) -> None:
+    """Every cell of one main study runs the code and packages its manifest
+    recorded, so no two cells of one study differ in what produced them."""
+    frozen_commit = existing.get("git_commit")
+    if (frozen_commit, existing.get("git_tracked_diff_sha256")) != (
+        current.git_commit, current.git_tracked_diff_sha256,
+    ):
+        raise RuntimeError(
+            f"main-study cell refused: the study in {output_dir} is frozen at commit "
+            f"{frozen_commit}, and this process runs {current.git_commit}. Run the cell from "
+            "the frozen commit, or move the directory aside to start a new frozen study."
+        )
+    recorded = existing.get("package_versions")
+    if not recorded:
+        raise RuntimeError(
+            f"main-study cell refused: the manifest in {output_dir} records no package "
+            "versions, so this process cannot show it runs the study's packages."
+        )
+    changed = {
+        package: {"frozen": frozen, "now": current.package_versions.get(package)}
+        for package, frozen in recorded.items()
+        if current.package_versions.get(package) != frozen
+    }
+    if changed:
+        raise RuntimeError(
+            f"main-study cell refused: installed package versions differ from the study "
+            f"frozen in {output_dir}: {changed}. Install the frozen versions, or move the "
+            "directory aside to start a new frozen study."
+        )
+
+
+def _gpu_name() -> str | None:
+    try:
+        import torch  # noqa: PLC0415
+    except ImportError:
+        return None
+    return torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+
+
+def selected_cells(config: RealRunConfig) -> list[tuple[ModelSpec, Quant]]:
+    """The (model, precision) cells this process runs, in study order."""
+    return [
+        (model_spec, quant)
+        for model_spec in config.models
+        for quant in config.quant_levels
+        if config.cells is None or (model_spec.name, quant) in config.cells
+    ]
+
+
+def _write_json_atomic(payload: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, default=str)
+        os.replace(temporary_name, path)
+    except BaseException:
+        Path(temporary_name).unlink(missing_ok=True)
+        raise
+
+
+def _run_cell(
+    config: RealRunConfig,
+    model_spec: ModelSpec,
+    quant: Quant,
+    batches: list[list[Item]],
+    writer: RawDataWriter,
+    cache: GenerationCache,
+    sandbox: ProcessPoolExecutor,
+    *,
+    greedy_decoding_id: str,
+    sample_decoding_id: str,
+    config_hash: str,
+    environment: dict,
+) -> None:
+    """Score one (model, precision) cell, resuming from its written parts.
+
+    Each batch of items is flushed to its own atomically written part, so a
+    part on disk is final: a rerun skips it and regenerates only the batches
+    that never reached disk. `complete.json` is written after the last part,
+    and a cell carrying it is skipped without loading the model. Both it and
+    `started.json` record the commit, package versions, host and GPU of the
+    process that wrote them."""
+    this_cell = cell_id(model_spec.name, quant.value)
+    completion_marker = completion_marker_path(config.output_dir, this_cell)
+    cell_dir = completion_marker.parent
+    if completion_marker.exists():
+        return
+    started_at = dt.datetime.now(dt.timezone.utc)
+    # The first start keeps `started.json`; each resume gets its own record,
+    # so an interrupted cell's history is not overwritten.
+    start_record = cell_dir / "started.json"
+    if start_record.exists():
+        start_record = cell_dir / f"resumed-{started_at.strftime('%Y%m%dT%H%M%S%fZ')}.json"
+    _write_json_atomic(
+        {
+            "model": model_spec.name,
+            "quant": quant.value,
+            "config_hash": config_hash,
+            **environment,
+            # CPU contention among the sandbox workers can move a
+            # timeout-bound test between pass and fail, so the host's CPU
+            # count and load at start are kept with the cell.
+            "cpu_count": os.cpu_count(),
+            "load_average": list(os.getloadavg()),
+            "started_at_utc": started_at.isoformat(),
+        },
+        start_record,
+    )
+    parts = [f"{this_cell}-{index:05d}" for index in range(len(batches))]
+    pending = [(part, batch) for part, batch in zip(parts, batches) if not writer.has_part(part)]
+    if pending:
+        _score_batches(
+            config, model_spec, quant, pending, writer, cache, sandbox, cell_dir,
+            greedy_decoding_id=greedy_decoding_id, sample_decoding_id=sample_decoding_id,
+        )
+    _write_json_atomic(
+        {
+            "model": model_spec.name,
+            "quant": quant.value,
+            "n_items": sum(len(batch) for batch in batches),
+            "parts": parts,
+            "config_hash": config_hash,
+            **environment,
+            "completed_at_utc":dt.datetime.now(dt.timezone.utc).isoformat(),
+        },
+        completion_marker,
+    )
+
+
+class _GeneratedItem(NamedTuple):
+    """One item's GPU-side results, held until its sandbox score returns."""
+
+    item: Item
+    generations: ItemGenerations
+    generation_seconds: float
+    prompt_scoring_seconds: float
+    detail: PromptScoringDetail | None
+    prompt_logprobs: list[float]
+    sandbox_score: Future
+
+
+def start_sandbox_pool() -> ProcessPoolExecutor:
+    """The main run's code-scoring workers.
+
+    Spawned, not forked, and started before any model loads: evalplus forks
+    its test processes, and a fork of a CUDA process is unsafe. A worker that
+    cannot start fails here rather than after a model has loaded."""
+    sandbox = ProcessPoolExecutor(_SANDBOX_WORKERS, mp_context=multiprocessing.get_context("spawn"))
+    try:
+        for worker_started in [sandbox.submit(int) for _ in range(_SANDBOX_WORKERS)]:
+            worker_started.result()
+    except BaseException:
+        sandbox.shutdown(cancel_futures=True)
+        raise
+    return sandbox
+
+
+def _timed_partial_pass_rate(item: Item, candidate_code: str) -> tuple[float, float]:
+    """Runs in a sandbox worker; the time is the scoring alone, not the wait
+    in the worker queue."""
+    started = time.perf_counter()
+    pass_rate = partial_pass_rate(item, candidate_code)
+    return pass_rate, time.perf_counter() - started
+
+
+def _score_batches(
+    config: RealRunConfig,
+    model_spec: ModelSpec,
+    quant: Quant,
+    pending: list[tuple[str, list[Item]]],
+    writer: RawDataWriter,
+    cache: GenerationCache,
+    sandbox: ProcessPoolExecutor,
+    cell_dir: Path,
+    *,
+    greedy_decoding_id: str,
+    sample_decoding_id: str,
+) -> None:
+    model = load_model(model_spec, quant, mock=False)
+    # §4.3's per-model half of the library-default record: the BNB skip list
+    # and an AWQ checkpoint's group size only exist once a checkpoint is loaded.
+    per_model_defaults = resolve_library_defaults(model=getattr(model, "model", model))
+    _write_json_atomic(
+        {
+            "model": model_spec.name,
+            "quant": quant.value,
+            "resolved": per_model_defaults,
+            "unresolved": unresolved_library_defaults(per_model_defaults),
+        },
+        cell_dir / "resolved_library_defaults.json",
+    )
+    model_revision = getattr(model, "revision", None) or model_spec.revision
+    tokenizer_revision = getattr(
+        getattr(model, "tokenizer", None), "init_kwargs", {}
+    ).get("_commit_hash") or model_spec.revision
     chat_template_rows: list[dict] = []
-    seen_chat_templates: set[tuple[str, str, str]] = set()
-    resolved_defaults_path = config.output_dir / "resolved_library_defaults.json"
-    resolved_defaults_rows: list[dict] = []
-
-    for model_spec in config.models:
-        for quant in config.quant_levels:
-            model = load_model(model_spec, quant, mock=False)
-            # §4.3's per-model half of the library-default record: the BNB skip
-            # list and an AWQ checkpoint's group size only exist once a
-            # checkpoint is loaded. Rewritten after every load so a run that
-            # stops early still carries the conditions it did reach.
-            per_model_defaults = resolve_library_defaults(
-                model=getattr(model, "model", model)
+    for part, batch in pending:
+        generated: list[_GeneratedItem] = []
+        for item in batch:
+            started = time.perf_counter()
+            generations = sample_item(
+                model, cache, model_name=model_spec.name, quant=quant.value,
+                item_id=item.item_id, prompt=_generation_prompt(item), n_samples=config.n_cdd_samples,
+                batch_size=model_spec.sample_batch_size,
+                model_revision=model_revision,
+                # The decoding-settings ids and the sample batch size are
+                # part of the cache key, so a change to either misses the
+                # cache instead of serving generations produced under the
+                # older settings.
+                generation_config=(
+                    f"max_new_tokens={getattr(model, 'max_new_tokens', GENERATION_MAX_NEW_TOKENS)};"
+                    f"decoding={greedy_decoding_id}/{sample_decoding_id};"
+                    "seed_policy=sha256-per-row-fixed-batch-v4;"
+                    f"sample_batch_size={model_spec.sample_batch_size}"
+                ),
             )
-            resolved_defaults_rows.append({
-                "model": model_spec.name,
-                "quant": quant.value,
-                "resolved": per_model_defaults,
-                "unresolved": unresolved_library_defaults(per_model_defaults),
-            })
-            resolved_defaults_path.parent.mkdir(parents=True, exist_ok=True)
-            resolved_defaults_path.write_text(
-                json.dumps(resolved_defaults_rows, indent=2, default=str), encoding="utf-8"
+            generation_seconds = time.perf_counter() - started
+            sandbox_score = sandbox.submit(
+                _timed_partial_pass_rate, item, _assemble_candidate_code(item, generations.greedy.text)
             )
-            model_revision = getattr(model, "revision", None) or model_spec.revision
-            tokenizer_revision = getattr(
-                getattr(model, "tokenizer", None), "init_kwargs", {}
-            ).get("_commit_hash") or model_spec.revision
-            part_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "-", f"{model_spec.name}-{quant.value}")
-            for item_index, item in enumerate(items):
-                started = time.perf_counter()
-                generations = sample_item(
-                    model, cache, model_name=model_spec.name, quant=quant.value,
-                    item_id=item.item_id, prompt=_generation_prompt(item), n_samples=config.n_cdd_samples,
-                    model_revision=model_revision,
-                    # The decoding-settings ids are part of the cache key, so
-                    # a change to the frozen decoding settings misses the
-                    # cache instead of serving generations produced under the
-                    # older settings.
-                    generation_config=(
-                        f"max_new_tokens={getattr(model, 'max_new_tokens', GENERATION_MAX_NEW_TOKENS)};"
-                        f"decoding={greedy_decoding_id}/{sample_decoding_id};"
-                        "seed_policy=sha256-v1"
-                    ),
+            started = time.perf_counter()
+            # `score_prompt_detail` is the real adapter's richer entry
+            # point (§4.4's target text / token boundaries / chat
+            # template); backends without it — models/mock.py — keep the
+            # existing shared path, which is unchanged.
+            score_detail = getattr(model, "score_prompt_detail", None)
+            if score_detail is not None:
+                detail = score_detail(item.item_id, item.prompt)
+                prompt_logprobs = detail.logprobs
+            else:
+                detail = None
+                prompt_logprobs = score_prompt_logprobs(
+                    model, item.item_id, item.prompt
                 )
-                generation_seconds = time.perf_counter() - started
-                candidate_code = _assemble_candidate_code(item, generations.greedy.text)
-                started = time.perf_counter()
-                pass_rate = partial_pass_rate(item, candidate_code)
-                sandbox_scoring_seconds = time.perf_counter() - started
-                started = time.perf_counter()
-                # `score_prompt_detail` is the real adapter's richer entry
-                # point (§4.4's target text / token boundaries / chat
-                # template); backends without it — models/mock.py — keep the
-                # existing shared path, which is unchanged.
-                score_detail = getattr(model, "score_prompt_detail", None)
-                if score_detail is not None:
-                    detail = score_detail(item.item_id, item.prompt)
-                    prompt_logprobs = detail.logprobs
-                else:
-                    detail = None
-                    prompt_logprobs = score_prompt_logprobs(
-                        model, item.item_id, item.prompt
-                    )
-                prompt_scoring_seconds = time.perf_counter() - started
+            prompt_scoring_seconds = time.perf_counter() - started
 
-                if detail is not None:
-                    template_key = (model_spec.name, quant.value, detail.chat_template_id)
-                    if template_key not in seen_chat_templates:
-                        seen_chat_templates.add(template_key)
-                        chat_template_rows.append({
-                            "model": model_spec.name,
-                            "quant": quant.value,
-                            "chat_template_id": detail.chat_template_id,
-                            "chat_template_applied": detail.chat_template_applied,
-                            "chat_template": detail.chat_template,
-                            "tokenizer_revision": tokenizer_revision,
-                            "model_revision": model_revision,
-                        })
-                        writer.write_chat_templates(chat_template_rows)
+            if detail is not None and detail.chat_template_id not in {
+                row["chat_template_id"] for row in chat_template_rows
+            }:
+                chat_template_rows.append({
+                    "model": model_spec.name,
+                    "quant": quant.value,
+                    "chat_template_id": detail.chat_template_id,
+                    "chat_template_applied": detail.chat_template_applied,
+                    "chat_template": detail.chat_template,
+                    "tokenizer_revision": tokenizer_revision,
+                    "model_revision": model_revision,
+                })
+                writer.write_chat_templates(chat_template_rows, part=cell_dir.name)
+            generated.append(_GeneratedItem(
+                item, generations, generation_seconds, prompt_scoring_seconds,
+                detail, prompt_logprobs, sandbox_score,
+            ))
 
+        # Every score of the part returns before any of its rows reaches the
+        # writer, so a worker's exception, re-raised by `result()`, leaves no
+        # partial part. It also bounds the outstanding items to one part.
+        scores = [entry.sandbox_score.result() for entry in generated]
+        for (
+            (item, generations, generation_seconds, prompt_scoring_seconds, detail, prompt_logprobs, _),
+            (pass_rate, sandbox_scoring_seconds),
+        ) in zip(generated, scores):
+            writer.add_generation(
+                model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=GREEDY_SAMPLE_ID, is_greedy=True,
+                text=generations.greedy.text, token_ids=generations.greedy.token_ids,
+                token_logprobs=generations.greedy.token_logprobs, partial_pass_rate=pass_rate,
+                passed=bool(pass_rate == 1.0),
+                prompt_token_logprobs=prompt_logprobs,
+                decoding_temperature=0.0,
+                generation_seconds=generation_seconds,
+                prompt_scoring_seconds=prompt_scoring_seconds,
+                sandbox_scoring_seconds=sandbox_scoring_seconds,
+                model_revision=model_revision,
+                tokenizer_revision=tokenizer_revision,
+                truncated_at_cap=getattr(generations.greedy, "truncated_at_cap", None),
+                max_new_tokens=GENERATION_MAX_NEW_TOKENS,
+                decoding_settings_id=greedy_decoding_id,
+                chat_template_id=detail.chat_template_id if detail is not None else None,
+                prompt_chat_template_applied=(
+                    detail.chat_template_applied if detail is not None else None
+                ),
+                prompt_target_text_sha256=(
+                    detail.target_text_sha256 if detail is not None else None
+                ),
+                prompt_target_char_span=(
+                    detail.target_char_span if detail is not None else None
+                ),
+                prompt_target_token_indices=(
+                    detail.target_token_indices if detail is not None else None
+                ),
+                prompt_rendered_char_length=(
+                    detail.rendered_char_length if detail is not None else None
+                ),
+            )
+            for sample_id, sample in zip(sample_ids(len(generations.samples)), generations.samples):
                 writer.add_generation(
-                    model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=0, is_greedy=True,
-                    text=generations.greedy.text, token_ids=generations.greedy.token_ids,
-                    token_logprobs=generations.greedy.token_logprobs, partial_pass_rate=pass_rate,
-                    passed=bool(pass_rate == 1.0),
-                    prompt_token_logprobs=prompt_logprobs,
-                    decoding_temperature=0.0,
-                    generation_seconds=generation_seconds,
-                    prompt_scoring_seconds=prompt_scoring_seconds,
-                    sandbox_scoring_seconds=sandbox_scoring_seconds,
+                    model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=sample_id,
+                    is_greedy=False, text=sample.text, token_ids=sample.token_ids,
+                    token_logprobs=sample.token_logprobs, decoding_temperature=CDD_SAMPLE_TEMPERATURE,
                     model_revision=model_revision,
                     tokenizer_revision=tokenizer_revision,
-                    truncated_at_cap=getattr(generations.greedy, "truncated_at_cap", None),
+                    truncated_at_cap=getattr(sample, "truncated_at_cap", None),
                     max_new_tokens=GENERATION_MAX_NEW_TOKENS,
-                    decoding_settings_id=greedy_decoding_id,
-                    chat_template_id=detail.chat_template_id if detail is not None else None,
-                    prompt_chat_template_applied=(
-                        detail.chat_template_applied if detail is not None else None
-                    ),
-                    prompt_target_text_sha256=(
-                        detail.target_text_sha256 if detail is not None else None
-                    ),
-                    prompt_target_char_span=(
-                        detail.target_char_span if detail is not None else None
-                    ),
-                    prompt_target_token_indices=(
-                        detail.target_token_indices if detail is not None else None
-                    ),
-                    prompt_rendered_char_length=(
-                        detail.rendered_char_length if detail is not None else None
-                    ),
+                    decoding_settings_id=sample_decoding_id,
                 )
-                for sample_id, sample in enumerate(generations.samples, start=1):
-                    writer.add_generation(
-                        model=model_spec.name, quant=quant.value, item_id=item.item_id, sample_id=sample_id,
-                        is_greedy=False, text=sample.text, token_ids=sample.token_ids,
-                        token_logprobs=sample.token_logprobs, decoding_temperature=CDD_SAMPLE_TEMPERATURE,
-                        model_revision=model_revision,
-                        tokenizer_revision=tokenizer_revision,
-                        truncated_at_cap=getattr(sample, "truncated_at_cap", None),
-                        max_new_tokens=GENERATION_MAX_NEW_TOKENS,
-                        decoding_settings_id=sample_decoding_id,
-                    )
 
-                cdd_score = peakedness(generations.greedy.token_ids, [s.token_ids for s in generations.samples])
-                ppl_score = negative_log_perplexity_score(prompt_logprobs)
-                mink_score = mink_prob(prompt_logprobs)
-                completion_ppl_score = negative_log_perplexity_score(
-                    generations.greedy.token_logprobs
+            sample_token_ids = [s.token_ids for s in generations.samples]
+            cdd_score = peakedness(generations.greedy.token_ids, sample_token_ids)
+            ppl_score = negative_log_perplexity_score(prompt_logprobs)
+            mink_score = mink_prob(prompt_logprobs)
+            # An empty greedy output (immediate end of sequence) has no
+            # completion probability. These diagnostics are then NaN rather
+            # than an exception that aborts the whole cell.
+            greedy_logprobs = generations.greedy.token_logprobs
+            completion_ppl_score = (
+                negative_log_perplexity_score(greedy_logprobs) if greedy_logprobs else math.nan
+            )
+            completion_mink_score = mink_prob(greedy_logprobs) if greedy_logprobs else math.nan
+            writer.add_detector_score(
+                model=model_spec.name, quant=quant.value, item_id=item.item_id,
+                detector="cdd", score=cdd_score,
+                source_sample_ids=[GREEDY_SAMPLE_ID, *sample_ids(config.n_cdd_samples)],
+                cdd_threshold_length=threshold_length(
+                    generations.greedy.token_ids, sample_token_ids
+                ),
+                cdd_n_empty_samples=sum(not ids for ids in sample_token_ids),
+                cdd_greedy_empty=not generations.greedy.token_ids,
+            )
+            for detector, score in (
+                ("perplexity", ppl_score),
+                ("mink_prob", mink_score),
+                ("completion_perplexity", completion_ppl_score),
+                ("completion_mink_prob", completion_mink_score),
+            ):
+                writer.add_detector_score(
+                    model=model_spec.name, quant=quant.value, item_id=item.item_id,
+                    detector=detector, score=score,
                 )
-                completion_mink_score = mink_prob(generations.greedy.token_logprobs)
-                for detector, score in (
-                    ("cdd", cdd_score),
-                    ("perplexity", ppl_score),
-                    ("mink_prob", mink_score),
-                    ("completion_perplexity", completion_ppl_score),
-                    ("completion_mink_prob", completion_mink_score),
-                ):
-                    writer.add_detector_score(
-                        model=model_spec.name, quant=quant.value, item_id=item.item_id,
-                        detector=detector, score=score,
-                        source_sample_ids=(
-                            list(range(config.n_cdd_samples + 1)) if detector == "cdd" else None
-                        ),
-                    )
-                if (item_index + 1) % _RAW_BATCH_ITEMS == 0 or item_index + 1 == len(items):
-                    writer.flush(part=f"{part_prefix}-{item_index // _RAW_BATCH_ITEMS:05d}")
+        writer.flush(part=part)
 
-            # The right-hand side of the next ``model = load_model(...)`` is
-            # evaluated before rebinding, so explicit release is required to
-            # avoid holding two large checkpoints on the H100 simultaneously.
-            del model
-            gc.collect()
-            try:
-                import torch  # noqa: PLC0415
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except ImportError:
-                pass
+    # Release explicitly so the next cell in this process never holds two
+    # large checkpoints on the H100 at once.
+    del model
+    gc.collect()
+    try:
+        import torch  # noqa: PLC0415
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
