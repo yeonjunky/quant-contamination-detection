@@ -110,14 +110,20 @@ def evalplus_partial_pass(item: Item, candidate_code: str) -> float:
     `problem["prompt"] + problem["canonical_solution"]` convention for the
     reference solution)."""
     from evalplus.eval import untrusted_check  # noqa: PLC0415
+    from evalplus.eval._special_oracle import MBPP_OUTPUT_NOT_NONE_TASKS  # noqa: PLC0415
 
     problem = item.metadata["evalplus_problem"]
     dataset_name = item.metadata["evalplus_dataset_name"]
     entry_point = problem["entry_point"]
     atol = problem["atol"]
 
-    expected_base, time_base = _trusted_exec_with_time(problem["prompt"] + problem["canonical_solution"], problem["base_input"], entry_point)
-    expected_plus, time_plus = _trusted_exec_with_time(problem["prompt"] + problem["canonical_solution"], problem["plus_input"], entry_point)
+    # evalplus's own `evaluate` builds MBPP+ ground truth with
+    # `output_not_none` for the three regex tasks whose outputs are match
+    # objects; without it no solution can match their expected output.
+    output_not_none = dataset_name == "mbpp" and entry_point in MBPP_OUTPUT_NOT_NONE_TASKS
+    reference = problem["prompt"] + problem["canonical_solution"]
+    expected_base, time_base = _trusted_exec_with_time(reference, problem["base_input"], entry_point, output_not_none)
+    expected_plus, time_plus = _trusted_exec_with_time(reference, problem["plus_input"], entry_point, output_not_none)
 
     _, details_base = untrusted_check(
         dataset_name, candidate_code, problem["base_input"], entry_point,
@@ -138,10 +144,10 @@ def evalplus_partial_pass(item: Item, candidate_code: str) -> float:
     return passed / total if total else 0.0
 
 
-def _trusted_exec_with_time(code: str, inputs: list, entry_point: str):
+def _trusted_exec_with_time(code: str, inputs: list, entry_point: str, output_not_none: bool = False):
     from evalplus.gen.util import trusted_exec  # noqa: PLC0415
 
-    return trusted_exec(code, inputs, entry_point, record_time=True)
+    return trusted_exec(code, inputs, entry_point, record_time=True, output_not_none=output_not_none)
 
 
 # --- LiveCodeBench (custom subprocess harness) -------------------------------

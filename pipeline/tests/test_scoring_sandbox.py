@@ -46,6 +46,21 @@ def test_evalplus_reference_solution_with_large_inputs_passes_under_the_memory_c
         assert evalplus_partial_pass(item, problem["prompt"] + problem["canonical_solution"]) == 1.0
 
 
+def test_evalplus_regex_tasks_compare_whether_a_match_was_found():
+    # evalplus scores Mbpp/737, 787 and 794 on "output is not None"; their
+    # outputs are re.Match objects that never equal one another.
+    from qcd.data.mbppplus import load_mbppplus  # noqa: PLC0415
+
+    items = {item.item_id: item for item in load_mbppplus()}
+    for task_id in ("Mbpp/737", "Mbpp/787", "Mbpp/794"):
+        problem = items[task_id].metadata["evalplus_problem"]
+        reference = problem["prompt"] + problem["canonical_solution"]
+        assert evalplus_partial_pass(items[task_id], reference) == 1.0, task_id
+    problem = items["Mbpp/737"].metadata["evalplus_problem"]
+    never_matches = problem["prompt"] + "\nimport re\ndef check_str(string):\n    return None\n"
+    assert evalplus_partial_pass(items["Mbpp/737"], never_matches) < 1.0
+
+
 def test_evalplus_broken_solution_scores_low():
     item = _humaneval_item("HumanEval/0")
     problem = item.metadata["evalplus_problem"]
