@@ -56,8 +56,17 @@ from qcd.data.schema import Dataset, Item
 # reliability_guard skips the setrlimit calls entirely). Only set a default
 # on macOS, and only if the caller hasn't already set it — the H100/Linux
 # box should keep the real memory cap.
+#
+# On Linux the cap is raised from evalplus's 4 GiB to 16 GiB. RLIMIT_AS limits
+# virtual address space, and each test process is forked from a scorer that
+# already maps about 4 GiB (8 GiB with torch imported), so a 4 GiB cap left
+# reference solutions no room: HumanEval/15's large inputs failed with it and
+# passed at 16 GiB on the H100.
+EVALPLUS_LINUX_MAX_MEMORY_BYTES = 16 * 1024**3
 if sys.platform == "darwin":
     os.environ.setdefault("EVALPLUS_MAX_MEMORY_BYTES", "-1")
+else:
+    os.environ.setdefault("EVALPLUS_MAX_MEMORY_BYTES", str(EVALPLUS_LINUX_MAX_MEMORY_BYTES))
 
 # Environment variables evalplus 0.3.1 reads that change a pass/fail verdict:
 # the memory cap and per-task timeout of `untrusted_check`, and the files the

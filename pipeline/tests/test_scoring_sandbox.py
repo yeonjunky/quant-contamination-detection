@@ -7,6 +7,9 @@ what the real pipeline will do at scale.
 """
 
 import json
+import sys
+
+import pytest
 
 from qcd.data.humaneval import load_humaneval
 from qcd.data.schema import Dataset, Item
@@ -27,6 +30,20 @@ def test_evalplus_canonical_solution_passes_fully():
     rate = evalplus_partial_pass(item, candidate)
 
     assert rate == 1.0
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="macOS runs evalplus without a memory cap")
+def test_evalplus_reference_solution_with_large_inputs_passes_under_the_memory_cap():
+    # Test processes fork from a scorer that already maps ~4 GiB of address
+    # space; under evalplus's own 4 GiB cap, HumanEval/15's million-element
+    # inputs failed. Reserving 5 GiB of untouched address space stands in for
+    # the scorer's imports.
+    import mmap  # noqa: PLC0415
+
+    item = _humaneval_item("HumanEval/15")
+    problem = item.metadata["evalplus_problem"]
+    with mmap.mmap(-1, 5 * 1024**3):
+        assert evalplus_partial_pass(item, problem["prompt"] + problem["canonical_solution"]) == 1.0
 
 
 def test_evalplus_broken_solution_scores_low():
