@@ -84,6 +84,9 @@ CDD_XI_FIXED = 0.01
 # them; they now live here because the paper fixes them, and because
 # real_run.py has to record the same numbers in the run manifest.
 GENERATION_MAX_NEW_TOKENS = 512  # §4.4's "512-token generation cap"
+# cuBLAS workspace setting PyTorch requires for deterministic matmuls under
+# torch.use_deterministic_algorithms (models/loader.py).
+CUBLAS_WORKSPACE_CONFIG = ":4096:8"
 DECODING_TOP_P = 1.0
 # transformers disables top-k with `top_k=0`, not `None` (a `None` field is
 # treated as "unset" and is refilled from the checkpoint's generation_config;

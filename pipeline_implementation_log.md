@@ -706,3 +706,17 @@ HumanEval 프롬프트는 줄바꿈으로 시작하고 끝나서 고정 프롬�
 첫 실행의 진행 기록은 실행 스크립트가 종료 코드를 잘못 읽어 모든 줄이 `exit=0`이었다. 위의
 판정은 셀별 로그에서 다시 분류한 것이다. 실패한 Llama 셀의 출력은
 `data/raw/validation/smoke_test/_failed_20261010/`로 옮겼다.
+
+# 결정론적 CUDA 커널 (2026-10-10)
+
+H100 runbook 5단계의 첫 측정(Qwen2.5-7B bf16, 묶음 크기 50)에서 같은 문항을 같은 프로세스에서 두 번
+생성한 결과가 달라 재현성 점검이 실패했다(`repeat DIFFERS (greedy: token ids differ)`). greedy만
+네 번 반복하자 1회차와 2회차는 25번째 토큰, 3·4회차는 157번째 토큰부터 갈라졌다. 중단 후 재개한 셀이
+같은 출력을 다시 만들어야 하므로 본 실행 전에 막아야 하는 결함이다. 측정은 이 셀에서 멈췄다.
+
+`models/loader.py`가 실제 모델을 불러오기 전에 `CUBLAS_WORKSPACE_CONFIG=:4096:8`을 설정하고
+`torch.use_deterministic_algorithms(True)`를 켠다. 실행 기록의 설정에
+`deterministic_algorithms`로 남는다. 커밋 전 코드로 Qwen2.5-7B 네 정밀도를 묶음 크기 50으로 측정한
+결과(`data/raw/validation/sample_batch_measurement/_det_trial/`, 구현 검증 전용) 네 정밀도 모두 51개
+생성이 반복 간 완전히 같았고, bitsandbytes·AWQ 커널이 결정론 모드에서 오류 없이 돌았다. 문항당 생성
+시간은 bf16 20 s, int8 111 s, nf4 31 s, AWQ 25 s였다(가장 긴 LCB 문항, 생성 50개 + greedy 1개).

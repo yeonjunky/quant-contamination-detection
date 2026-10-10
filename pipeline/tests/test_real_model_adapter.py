@@ -237,3 +237,19 @@ def test_score_prompt_detail_refuses_a_template_that_changes_the_prompt_body():
     template = "{% for message in messages %}{{ message['content'] | upper }}{% endfor %}"
     with pytest.raises(ValueError, match="did not preserve"):
         _adapter_with_template(template).score_prompt_detail("upper", "def add(a, b):\n    return a + b")
+
+
+def test_real_models_load_with_deterministic_cuda_kernels():
+    # Greedy decoding diverged between repeats on the H100 without this, and
+    # a resumed cell has to regenerate what the interrupted one would have.
+    import subprocess  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    probe = (
+        "import os, torch\n"
+        "from qcd.models.loader import _use_deterministic_cuda\n"
+        "_use_deterministic_cuda()\n"
+        "print(torch.are_deterministic_algorithms_enabled(), os.environ['CUBLAS_WORKSPACE_CONFIG'])\n"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True).stdout
+    assert out.split() == ["True", ":4096:8"]

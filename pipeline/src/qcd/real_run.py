@@ -35,7 +35,7 @@ from qcd.config import ModelSpec, Quant
 from qcd.constants import (
     CDD_EDIT_DISTANCE_ALPHA, CDD_GREEDY_TEMPERATURE, CDD_MAX_TOKENS,
     CDD_N_SAMPLES, CDD_SAMPLE_TEMPERATURE, CDD_SCORE_DEFINITION,
-    GENERATION_MAX_NEW_TOKENS,
+    CUBLAS_WORKSPACE_CONFIG, GENERATION_MAX_NEW_TOKENS,
 )
 from qcd.data.humaneval import load_humaneval
 from qcd.data.livecodebench import REPO_REVISION as LCB_REPO_REVISION, load_livecodebench_split
@@ -265,6 +265,7 @@ def run(config: RealRunConfig) -> None:
             "item_limit_per_condition": config.item_limit_per_condition,
             "generation_max_new_tokens": GENERATION_MAX_NEW_TOKENS,
             "generation_seed_policy": "sha256(item_id,sample_id,temperature)-per-row-generator-fixed-batch-v4",
+            "deterministic_algorithms": {"torch": True, "cublas_workspace_config": CUBLAS_WORKSPACE_CONFIG},
             "sample_batch_sizes": {m.name: m.sample_batch_size for m in config.models},
             "scoring_environment": scoring_environment(),
             "sandbox_workers": _SANDBOX_WORKERS,

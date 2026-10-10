@@ -26,7 +26,7 @@ from typing import Protocol
 
 from qcd.config import ModelSpec, Quant
 from qcd.constants import (
-    DECODING_GREEDY_TEMPERATURE, DECODING_LENGTH_PENALTY,
+    CUBLAS_WORKSPACE_CONFIG, DECODING_GREEDY_TEMPERATURE, DECODING_LENGTH_PENALTY,
     DECODING_MIN_NEW_TOKENS, DECODING_REPETITION_PENALTY,
     DECODING_TOP_K_DISABLED, DECODING_TOP_P, FOLLOW_CHECKPOINT_GENERATION_CONFIG,
     GENERATION_MAX_NEW_TOKENS,
@@ -363,6 +363,7 @@ def load_model(spec: ModelSpec, quant: Quant, *, mock: bool = False) -> LoadedMo
     if mock:
         return MockModel(MockTokenizer())
 
+    _use_deterministic_cuda()
     backend = {
         Quant.BF16: _load_bf16,
         Quant.BNB_INT8: _load_bnb,
@@ -370,6 +371,21 @@ def load_model(spec: ModelSpec, quant: Quant, *, mock: bool = False) -> LoadedMo
         Quant.GPTQ_AWQ_INT4: _load_gptq_or_awq,
     }[quant]
     return backend(spec, quant)
+
+
+def _use_deterministic_cuda() -> None:
+    """Greedy decoding of one prompt diverged between repeats in one process
+    on the H100 (Qwen2.5-7B bf16, first differing token 25 of ~300) until
+    PyTorch was restricted to deterministic kernels. A resumed cell must
+    regenerate what the interrupted one would have, so every real model runs
+    this way. cuBLAS reads the workspace setting when it first initializes,
+    which is before any model weights reach the GPU."""
+    import os  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG
+    torch.use_deterministic_algorithms(True)
 
 
 def _load_bf16(spec: ModelSpec, quant: Quant) -> LoadedModel:
