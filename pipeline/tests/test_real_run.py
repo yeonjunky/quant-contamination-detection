@@ -833,7 +833,7 @@ def test_pooled_scoring_writes_what_in_process_scoring_writes(tmp_path, run_with
 
     monkeypatch.setattr(
         real_run_module, "ProcessPoolExecutor",
-        lambda workers, mp_context: concurrent.futures.ThreadPoolExecutor(1),
+        lambda workers, mp_context, initializer: concurrent.futures.ThreadPoolExecutor(1),
     )
     in_process = tmp_path / "in_process"
     run_with(_CountingModel(), in_process, n_items=5, sandbox=sandbox_fakes.records)
@@ -910,3 +910,21 @@ def test_the_sandbox_worker_count_is_part_of_the_run_configuration(tmp_path, run
     run_with(_CountingModel(), two)
     assert _manifest(two)["config"]["sandbox_workers"] == 2
     assert _manifest(two)["config_hash"] != _manifest(four)["config_hash"]
+
+
+def _start_method(_):
+    import multiprocessing  # noqa: PLC0415
+
+    return multiprocessing.get_start_method()
+
+
+def test_sandbox_workers_fork_their_own_test_processes():
+    # evalplus starts one process per test; under the inherited "spawn" each
+    # re-imported the entry script and timed out reference solutions.
+    from qcd.real_run import start_sandbox_pool  # noqa: PLC0415
+
+    sandbox = start_sandbox_pool()
+    try:
+        assert sandbox.submit(_start_method, None).result() == "fork"
+    finally:
+        sandbox.shutdown()

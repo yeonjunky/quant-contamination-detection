@@ -728,10 +728,18 @@ class _RealModelAdapter:
         else:
             rendered = prompt
 
-        prompt_start = rendered.find(prompt)
+        # Some chat templates trim the message (Llama-3.1's `| trim`), so the
+        # model sees, and this scores, the benchmark prompt without its
+        # leading and trailing whitespace. `target_text` records which text
+        # was scored.
+        target_text = prompt
+        prompt_start = rendered.find(target_text)
+        if prompt_start < 0 and prompt.strip():
+            target_text = prompt.strip()
+            prompt_start = rendered.find(target_text)
         if prompt_start < 0:
             raise ValueError("chat template did not preserve the benchmark prompt verbatim")
-        prompt_end = prompt_start + len(prompt)
+        prompt_end = prompt_start + len(target_text)
 
         try:
             encoded = self.tokenizer(
@@ -785,7 +793,7 @@ class _RealModelAdapter:
             rendered_char_length=len(rendered),
             chat_template_applied=has_chat_template,
             chat_template=getattr(self.tokenizer, "chat_template", None),
-            target_text=prompt,
+            target_text=target_text,
         )
 
 

@@ -206,3 +206,34 @@ def test_score_prompt_detail_reports_boundaries_and_template(adapter):
     assert detail.chat_template_applied is False
     assert detail.chat_template is None
     assert detail.target_text == prompt
+
+
+_TRIMMING_TEMPLATE = (
+    "{% for message in messages %}<|{{ message['role'] }}|>{{ message['content'] | trim }}<|end|>{% endfor %}"
+    "{% if add_generation_prompt %}<|assistant|>{% endif %}"
+)
+
+
+def _adapter_with_template(template: str) -> _RealModelAdapter:
+    tokenizer = AutoTokenizer.from_pretrained(_TINY_MODEL)
+    tokenizer.chat_template = template
+    return _RealModelAdapter(AutoModelForCausalLM.from_pretrained(_TINY_MODEL), tokenizer, max_new_tokens=8)
+
+
+def test_score_prompt_detail_scores_the_text_a_trimming_template_keeps():
+    # Llama-3.1's template trims the message, and HumanEval prompts begin and
+    # end with newlines.
+    prompt = "\n\ndef add(a, b):\n    return a + b\n"
+    detail = _adapter_with_template(_TRIMMING_TEMPLATE).score_prompt_detail("trim", prompt)
+
+    assert detail.chat_template_applied is True
+    assert detail.target_text == prompt.strip()
+    start, end = detail.target_char_span
+    assert end - start == len(prompt.strip())
+    assert detail.logprobs
+
+
+def test_score_prompt_detail_refuses_a_template_that_changes_the_prompt_body():
+    template = "{% for message in messages %}{{ message['content'] | upper }}{% endfor %}"
+    with pytest.raises(ValueError, match="did not preserve"):
+        _adapter_with_template(template).score_prompt_detail("upper", "def add(a, b):\n    return a + b")

@@ -704,7 +704,9 @@ precisions, and the same field is scored for every LiveCodeBench item whether or
 starter code. That text is placed in a single user message and rendered
 with the checkpoint's own chat template, with the assistant generation marker appended. We add no system
 message of our own, so a template that inserts a default system string or a date line inserts the same one
-at every precision. Only tokens lying wholly inside the benchmark text contribute to the score: template,
+at every precision. A template that trims the message, as Llama-3.1's does, drops the prompt's leading and
+trailing whitespace; the scored benchmark text is then that trimmed text, which is what the model receives,
+identical across precisions and recorded as the target text. Only tokens lying wholly inside the benchmark text contribute to the score: template,
 special and generation-marker tokens are excluded by character offsets, and a target token with no causal
 left context is dropped. Perplexity is exp(−mean log probability). For Q1a and the stored `perplexity` score, use the numerically stable −log(perplexity), i.e. mean log probability; its shift is a different estimand from raw-perplexity shift. Min-k% uses k=20 and
 averages the lowest max(1, round(0.2N)) of the N scored token log-probabilities. Its source defines that

@@ -484,13 +484,27 @@ class _GeneratedItem(NamedTuple):
     sandbox_score: Future
 
 
+def _fork_sandbox_children() -> None:
+    multiprocessing.set_start_method("fork", force=True)
+
+
 def start_sandbox_pool() -> ProcessPoolExecutor:
     """The main run's code-scoring workers.
 
     Spawned, not forked, and started before any model loads: evalplus forks
     its test processes, and a fork of a CUDA process is unsafe. A worker that
-    cannot start fails here rather than after a model has loaded."""
-    sandbox = ProcessPoolExecutor(_SANDBOX_WORKERS, mp_context=multiprocessing.get_context("spawn"))
+    cannot start fails here rather than after a model has loaded.
+
+    A spawned worker inherits "spawn" as its own start method, so evalplus's
+    per-test processes would re-import the entry script — and torch with it —
+    inside each test's time limit. On the H100 that made every reference
+    solution's base tests time out. The worker never touches CUDA, so its own
+    children fork."""
+    sandbox = ProcessPoolExecutor(
+        _SANDBOX_WORKERS,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=_fork_sandbox_children,
+    )
     try:
         for worker_started in [sandbox.submit(int) for _ in range(_SANDBOX_WORKERS)]:
             worker_started.result()
