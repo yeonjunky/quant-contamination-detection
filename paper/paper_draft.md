@@ -678,9 +678,12 @@ restatement of defaults: shipped configurations differ across the roster (Qwen2.
 example, ships `temperature 0.7`, `top_p 0.8`, `top_k 20`, `repetition_penalty 1.05`), so inheriting them
 would truncate each model's CDD sample distribution differently and make the peakedness scores
 incomparable across arms. The greedy output is generated alone. The 50 samples of an item are generated
-in batches of a size fixed per model and shared by all of that model's precisions (50 for the 7B/8B
-models; for the 32B models, the largest size that fits on the H100, set from the engineering-validation
-memory check before the main run), always grouping consecutive sample indices in the same way. Each row
+in batches of a size fixed per model and shared by all of that model's precisions: 50 for Qwen2.5-7B and
+Llama-3.1-8B, and 10 for Olmo3-7B and both 32B models. Each value is the largest size whose forced
+512-token generation of the longest LiveCodeBench prompt fits within 90% of the H100's memory at every
+precision, set from the engineering-validation memory check before the main run; Olmo3-7B's
+key-value cache does not fit a batch of 25 under that rule. Consecutive sample indices are always grouped
+in the same way. Each row
 draws its tokens from its own random-number generator seeded with sha256(item_id, sample_id, temperature),
 so a given item and sample index draw the same random sequence at every precision, independent of the
 other rows. The batch size and grouping are fixed because logits can differ in their last digits between

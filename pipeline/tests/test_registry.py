@@ -19,13 +19,10 @@ def test_invalid_olmo_3_32b_id_is_not_in_roster() -> None:
     assert all(model.hf_repo_id != "allenai/Olmo-3-32B-Instruct" for model in ALL_MODELS)
 
 
-def test_sample_batch_size_is_fixed_for_small_models_and_unset_or_measured_for_32b() -> None:
-    # 7B/8B are fixed at 50 by the paper (§4.4). The 32B values stay None until
-    # scripts/measure_sample_batch.py has measured them on the H100.
+def test_sample_batch_sizes_are_the_values_paper_section_4_4_states() -> None:
+    # §4.4 states each model's value, measured on the H100 before the main run.
     sizes = {model.name: model.sample_batch_size for model in ALL_MODELS}
-    assert {name: sizes[name] for name in ("Qwen2.5-7B-Instruct", "Llama-3.1-8B-Instruct", "Olmo3-7B-Instruct")} == {
-        "Qwen2.5-7B-Instruct": 50, "Llama-3.1-8B-Instruct": 50, "Olmo3-7B-Instruct": 50,
+    assert sizes == {
+        "Qwen2.5-7B-Instruct": 50, "Llama-3.1-8B-Instruct": 50, "Olmo3-7B-Instruct": 10,
+        "Qwen2.5-32B-Instruct": 10, "Olmo3.1-32B-Instruct": 10,
     }
-    for name in ("Qwen2.5-32B-Instruct", "Olmo3.1-32B-Instruct"):
-        size = sizes[name]
-        assert size is None or (type(size) is int and size >= 1), (name, size)

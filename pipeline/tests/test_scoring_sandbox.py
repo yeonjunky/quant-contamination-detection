@@ -36,13 +36,15 @@ def test_evalplus_canonical_solution_passes_fully():
 def test_evalplus_reference_solution_with_large_inputs_passes_under_the_memory_cap():
     # Test processes fork from a scorer that already maps ~4 GiB of address
     # space; under evalplus's own 4 GiB cap, HumanEval/15's million-element
-    # inputs failed. Reserving 5 GiB of untouched address space stands in for
-    # the scorer's imports.
+    # inputs failed. Untouched address space brings this process up to the
+    # 8 GiB a scorer that has imported torch maps.
     import mmap  # noqa: PLC0415
 
+    with open("/proc/self/status") as status:
+        mapped = next(int(line.split()[1]) * 1024 for line in status if line.startswith("VmSize:"))
     item = _humaneval_item("HumanEval/15")
     problem = item.metadata["evalplus_problem"]
-    with mmap.mmap(-1, 5 * 1024**3):
+    with mmap.mmap(-1, max(8 * 1024**3 - mapped, mmap.PAGESIZE)):
         assert evalplus_partial_pass(item, problem["prompt"] + problem["canonical_solution"]) == 1.0
 
 

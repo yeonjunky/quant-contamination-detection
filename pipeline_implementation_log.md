@@ -720,3 +720,29 @@ H100 runbook 5단계의 첫 측정(Qwen2.5-7B bf16, 묶음 크기 50)에서 같�
 결과(`data/raw/validation/sample_batch_measurement/_det_trial/`, 구현 검증 전용) 네 정밀도 모두 51개
 생성이 반복 간 완전히 같았고, bitsandbytes·AWQ 커널이 결정론 모드에서 오류 없이 돌았다. 문항당 생성
 시간은 bf16 20 s, int8 111 s, nf4 31 s, AWQ 25 s였다(가장 긴 LCB 문항, 생성 50개 + greedy 1개).
+
+# 샘플 묶음 크기 확정 (2026-10-11)
+
+H100 runbook 5–6단계. `measure_sample_batch.py`로 20개 셀을 쟀다(구현 검증 출력,
+`data/raw/validation/sample_batch_measurement/`). 측정한 모든 크기에서 반복 생성이 완전히 같았고,
+새 프로세스에서 다시 잰 Qwen2.5-32B bf16(10)과 Qwen2.5-7B bf16(50)은 생성 지문이 첫 기록과 일치했다.
+
+| 모델 | bf16 | int8 | nf4 | AWQ | 모델 값 |
+|---|---|---|---|---|---|
+| Qwen2.5-7B | 50 | 50 | 50 | 50 | 50 |
+| Llama-3.1-8B | 50 | 50 | 50 | 50 | 50 |
+| Olmo3-7B | 10 | 50 | 10 | 10 | 10 |
+| Qwen2.5-32B | 10 | 10 | 10 | 10 | 10 |
+| Olmo3.1-32B | 25 | 25 | 25 | 10 | 10 |
+
+- Olmo3-7B는 50과 25 모두 bf16·nf4·AWQ의 강제 512토큰 최대 예약 메모리가 99GB였다. 논문 §4.4(영/한)와
+  `revision_provenance.md` (w)에 반영했다.
+- Qwen2.5-32B int8은 묶음 50에서 bitsandbytes가 `Error invalid argument at line 421 in file
+  /src/csrc/ops.cu`로 프로세스째 끝났다. 원인은 확인하지 않았다(int8 matmul의 원소 수가 2³¹을 넘는 것으로
+  추정). 10에서는 정상이다.
+- 측정 실행 스크립트가 커널 오류를 메모리 부족처럼 처리해 Qwen2.5-32B int8을 4·3·2·1로 재기 시작한 것을
+  멈추고, 묶음 크기마다 별도 프로세스로 다시 쟀다.
+
+생성 시간의 상한(가장 긴 LCB 문항으로 잰 문항당 시간 × 1,597문항)은 약 1,700 GPU-시간이며 int8과 32B의
+작은 묶음이 대부분을 차지한다. 실제 시간은 본 실행 첫 셀의 경과 시간으로 다시 잰다(runbook 7단계).
+Olmo3.1-32B bf16·int8·nf4와 Olmo3-7B int8은 묶음 10에서 다시 잰 뒤 본 실행을 시작한다.

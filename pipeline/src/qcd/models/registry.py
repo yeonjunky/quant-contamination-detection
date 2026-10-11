@@ -40,8 +40,10 @@ QWEN2_5_32B = ModelSpec(
     revision="5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd",
     role="Primary",
     primary_first_post_boundary="2024-09-20",
-    # None: set from the H100 smoke-test measurement before the main run.
-    sample_batch_size=None,
+    # H100 NVL measurement 2026-10-10/11 (scripts/measure_sample_batch.py):
+    # 50 ran out of memory and 25 reserved 90.5 GB in bf16; 10 met the rule
+    # at every precision.
+    sample_batch_size=10,
 )
 LLAMA3_1_8B = ModelSpec(
     name="Llama-3.1-8B-Instruct",
@@ -69,7 +71,9 @@ OLMO3_7B = ModelSpec(
     revision="6e5971d9eba42665f5bd5a0fcf047f299ce1dccc",
     role="Open-corpus confirmed-positive evidence + size axis",
     primary_first_post_boundary="2025-01-01",
-    sample_batch_size=50,
+    # H100 NVL measurement 2026-10-10/11: 50 and 25 reserved 99 GB in bf16,
+    # nf4 and AWQ; 10 met the rule.
+    sample_batch_size=10,
 )
 OLMO3_1_32B = ModelSpec(
     name="Olmo3.1-32B-Instruct",
@@ -78,8 +82,9 @@ OLMO3_1_32B = ModelSpec(
     revision="ac0587e4a7744a551c059d8cd17ba220bc940dae",
     role="Open-corpus confirmed-positive evidence + size axis",
     primary_first_post_boundary="2025-01-01",
-    # None: set from the H100 smoke-test measurement before the main run.
-    sample_batch_size=None,
+    # H100 NVL measurement 2026-10-11: 25 met the rule in bf16, int8 and nf4
+    # but reserved 92.4 GB in AWQ; 10 met it there.
+    sample_batch_size=10,
 )
 
 MAIN_ANALYSIS_MODELS: tuple[ModelSpec, ...] = (
