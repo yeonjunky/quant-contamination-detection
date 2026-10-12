@@ -274,6 +274,16 @@
   경로 `/root/hf_cache`, `/root/.cache/huggingface`, 저장소 루트의 `data`가 존재하지 않을 때만
   각각 위 세 위치를 가리키는 심볼릭 링크를 만든다. 기존 경로에 실제 파일·디렉터리 또는
   심볼릭 링크가 있으면 삭제하거나 덮어쓰지 말고 먼저 내용을 확인한다.
+- **Claude 세션 메모리는 영구 저장소에 둔다.** 컨테이너의 `/root`는 overlay라 컨테이너를 내리면
+  사라지고, `~/project`(NFS)만 남는다. 메모리 원본은
+  `~/project/dataset/claude-memory/quant-contamination-detection/`이고,
+  `~/.claude/projects/-root-project-quant-contamination-detection/memory`는 그곳을 가리키는
+  심볼릭 링크다. 새 컨테이너에서 세션을 시작하면 이 링크부터 확인한다. 링크가 없으면 만든다:
+  `mkdir -p ~/.claude/projects/-root-project-quant-contamination-detection && ln -s
+  ~/project/dataset/claude-memory/quant-contamination-detection
+  ~/.claude/projects/-root-project-quant-contamination-detection/memory`. 그 자리에 이미 실제
+  디렉터리가 있으면(링크 전에 세션이 메모리를 썼으면) 삭제하지 말고, 영구 저장소 쪽과 내용을 대조해
+  새 파일만 옮긴 뒤 디렉터리를 `memory.pre-symlink-<날짜>`로 바꾸고 링크를 만든다.
 - 폴더명 `knowlodge-rot-by-quantization`의 오타는 의도된 것이 아닐 수 있으나 그대로 둔다.
 
 ---
