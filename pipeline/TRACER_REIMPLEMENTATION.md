@@ -48,6 +48,20 @@ None may be described as an original-paper setting. The default implementation
 will avoid screening `U` pairs because they are not contamination candidates,
 while retaining enough state to audit that routing decision.
 
+### Decided 2026-10-19 (before any main-study output was read)
+
+- **Decoding:** deterministic for all three LLM stages — temperature 0 (or the
+  provider's greedy mode) with a fixed seed recorded in the manifest.
+- **Invalid output:** no retry. A malformed, multiple-choice or missing-label
+  response is recorded as an unparsed judgement with its raw text and counted
+  per stage; under deterministic decoding a retry would return the same output.
+- **`U` pairs:** not sent to trivial-task screening (the default above).
+- **Still open:** the LLM checkpoint or API snapshot shared by the three
+  stages, and the output-token limit and reasoning setting, which are chosen
+  with a small wiring test once the model is fixed. Every raw response is
+  stored, because a seed on a shared, batched API server does not guarantee
+  identical outputs on a rerun.
+
 The provisional local adapter pins `jinaai/jina-embeddings-v3` by an immutable
 Hub commit, uses its symmetric `text-matching` task and explicit L2-normalized
 cosine, and clips negative cosine values to zero. This last transformation makes

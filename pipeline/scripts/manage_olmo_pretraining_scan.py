@@ -296,7 +296,7 @@ def main() -> None:
     init_parser.add_argument("--revision")
     init_parser.add_argument("--ngram-size", type=int, default=13)
     init_parser.add_argument("--ngram-coverage-threshold", type=float, default=0.8)
-    init_parser.add_argument("--candidates-per-item", type=int, default=5)
+    init_parser.add_argument("--candidates-per-item", type=int, default=20)
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--model", choices=OPEN_CORPUS_MODELS, required=True)
@@ -311,7 +311,7 @@ def main() -> None:
     run_parser.add_argument("--progress-every", type=int, default=10_000)
     run_parser.add_argument("--ngram-size", type=int, default=13)
     run_parser.add_argument("--ngram-coverage-threshold", type=float, default=0.8)
-    run_parser.add_argument("--candidates-per-item", type=int, default=5)
+    run_parser.add_argument("--candidates-per-item", type=int, default=20)
 
     subparsers.add_parser("status")
     finalize_parser = subparsers.add_parser("finalize")

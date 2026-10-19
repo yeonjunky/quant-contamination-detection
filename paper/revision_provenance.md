@@ -627,3 +627,23 @@ seed를 받고 같은 번호로 저장된다. 논문 §4.4의 seed 문장(sha256
 고쳐 Olmo3-7B도 측정으로 정한 값을 쓰게 하고 다섯 모델의 값을 명시했다: Qwen2.5-7B·Llama-3.1-8B 50,
 Olmo3-7B·Qwen2.5-32B·Olmo3.1-32B 10. 측정 기록은 `data/raw/validation/sample_batch_measurement/`에
 있으며 구현 검증 출력이다. 본 실행 데이터는 아직 없다.
+
+### (x) 본 실행 출력을 읽기 전에 고정한 탐색 분석과 검색 설정 (2026-10-19)
+
+본 실행은 2026-10-11에 커밋 `51da915`로 시작했고, 이 날짜 기준 Qwen2.5-32B bf16 셀의 원자료가 일부
+디스크에 있다. 진행 확인을 위해 행 수와 문항 수만 셌고, 점수·통과 여부·생성 내용은 읽지 않았다. 아래 결정은
+그 상태에서 내렸다.
+
+- **CDD 민감도 분석 두 가지 추가 (영·한 §4.4 동시).** C3 방식의 대응 CDD 이동을 모델·양자화 수준마다
+  (i) 임계값을 0.05·100 = 5 edit에 고정해 저장된 토큰 ID로 다시 계산한 점수와 (ii) 출력이 모두 빈 문항을
+  뺀 기록 점수로 반복한다. 탐색적이며 비보정 p값으로 보고하고 C1–C4에는 들어가지 않는다. 코드는
+  `detectors.cdd.peakedness_fixed_threshold`, `analysis.study_inputs.cdd_recomputed_scores`,
+  `scripts/run_analysis.py`의 `cdd_threshold_sensitivity.json`. 본 실행 생성 코드는 바뀌지 않으므로
+  실행 중인 본 실행에는 영향이 없다.
+- **Olmo 검색 설정 동결.** `confirmed-match`는 정규화 문자열 포함 또는 13-gram coverage ≥ 0.8. 후보 상한은
+  문항당 5개에서 20개로 올렸다(같은 문제 지문이 여러 페이지에 복제되면 5칸이 사본으로 채워질 수 있어서).
+  2025-01-01 이후 LCB 문항이 사전학습 스캔에서 `confirmed-match`가 된 수를 오탐 점검 수치로 함께 보고하며,
+  이 수치로 기준을 다시 조정하지 않는다. 기록 위치는 `pipeline/OLMO_GROUND_TRUTH.md`.
+- **TRACER 생성 설정.** 세 LLM 단계 모두 결정론적 디코딩(temperature 0, seed 고정), 형식 오류는 재시도
+  없이 판정 불가로 기록, `U` 쌍은 사소함 검사를 하지 않는다. LLM 모델은 아직 정하지 않았다. 기록 위치는
+  `pipeline/TRACER_REIMPLEMENTATION.md`.

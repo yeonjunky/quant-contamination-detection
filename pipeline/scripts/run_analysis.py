@@ -22,6 +22,10 @@ What this driver runs, and nothing else:
 4. **A descriptive, exploratory block** on CDD's threshold length `l`, empty
    outputs and cap hits per model and precision. It reads the same tables
    but feeds no test; C1-C4 do not depend on it.
+5. **An exploratory CDD sensitivity block**: the C3-style paired shift per
+   model and quantized level, recomputed with the threshold held at
+   alpha * 100 tokens and, separately, without all-empty items. Unadjusted,
+   outside the confirmatory family.
 
 Three gates run before any of that:
 
@@ -45,6 +49,7 @@ Outputs (in `--out`, default `<run_dir>/analysis`):
     beta_qe_intervals.json     per-model conditional-logit β_QE and J
     truncation_rates.json      §4.4 rates by precision
     cdd_length_and_empty_outputs.json   descriptive only, not confirmatory
+    cdd_threshold_sensitivity.json      exploratory only, not confirmatory
     analysis_manifest.json     what §4.5.5/§4.5.6 require to be recorded
 """
 
@@ -103,6 +108,7 @@ CONFIRMATORY_FAMILY_FILENAME = "confirmatory_family.json"
 BETA_QE_FILENAME = "beta_qe_intervals.json"
 TRUNCATION_FILENAME = "truncation_rates.json"
 CDD_LENGTH_FILENAME = "cdd_length_and_empty_outputs.json"
+CDD_SENSITIVITY_FILENAME = "cdd_threshold_sensitivity.json"
 ANALYSIS_MANIFEST_FILENAME = "analysis_manifest.json"
 
 
@@ -209,6 +215,60 @@ def run_beta_qe_intervals(
         "outcome": "greedy pass@1 (`generations.passed`), §4.4",
         "interval_level": interval_level,
         "n_rows": int(frame.shape[0]),
+        "contrasts": contrasts,
+    }
+
+
+# --------------------------------------------------------------------------
+# Exploratory CDD sensitivity (added 2026-10-19, before any main-study output
+# was read; see paper/revision_provenance.md)
+# --------------------------------------------------------------------------
+
+
+def run_cdd_sensitivity(tables: study_inputs.RawTables) -> dict:
+    """The C3-style paired CDD shift, per model and quantized level against
+    bf16, under the recorded score and two exploratory variants: the threshold
+    held at alpha * 100 tokens, and the recorded score without items whose
+    outputs are all empty. Unadjusted p-values; nothing here joins C1-C4."""
+    recomputed = study_inputs.cdd_recomputed_scores(tables)
+    baseline = Quant.BF16.value
+    contrasts: dict[str, dict] = {}
+    for model in sorted(recomputed["model"].unique()):
+        quants = set(recomputed.loc[recomputed["model"] == model, "quant"])
+        for target in sorted(quants - {baseline}):
+            pairs = study_inputs.cdd_sensitivity_pairs(
+                tables, recomputed, model=model, baseline=baseline, target=target
+            )
+            contrasts.setdefault(f"{baseline}->{target}", {})[model] = {
+                "n_lcb_items": pairs.n_lcb_items,
+                "n_paired_items": pairs.n_paired_items,
+                "n_items_all_outputs_empty": pairs.n_items_all_outputs_empty,
+                "recorded": paired_score_shift_test(*pairs.recorded, detector="cdd").as_dict(),
+                "fixed_threshold": paired_score_shift_test(
+                    *pairs.fixed_threshold, detector="cdd_fixed_threshold"
+                ).as_dict(),
+                "recorded_excluding_empty": paired_score_shift_test(
+                    *pairs.recorded_excluding_empty, detector="cdd"
+                ).as_dict(),
+            }
+    return {
+        "status": (
+            "exploratory sensitivity; unadjusted p-values; not part of C1-C4 or any "
+            "confirmatory computation"
+        ),
+        "sample": "LiveCodeBench items scored at both precisions (C1-C3's item set)",
+        "definitions": {
+            "recorded": "the CDD score as written by the main run (C3's definition)",
+            "fixed_threshold": (
+                "CDD recomputed from the stored token ids with the edit-distance threshold held "
+                "at alpha * 100 tokens = 5, so it cannot move with output length "
+                "(detectors.cdd.peakedness_fixed_threshold)"
+            ),
+            "recorded_excluding_empty": (
+                "the recorded score without items whose greedy output and every sample are "
+                "empty at either precision; such an item scores 1.0 by construction"
+            ),
+        },
         "contrasts": contrasts,
     }
 
@@ -407,6 +467,9 @@ def run_analysis(
         ),
         "cdd_length_and_empty_outputs": _write_json(
             out_dir / CDD_LENGTH_FILENAME, study_inputs.cdd_length_and_empty_outputs(tables)
+        ),
+        "cdd_threshold_sensitivity": _write_json(
+            out_dir / CDD_SENSITIVITY_FILENAME, run_cdd_sensitivity(tables)
         ),
     }
     manifest = build_analysis_manifest(

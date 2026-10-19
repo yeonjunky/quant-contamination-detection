@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from qcd.data.schema import Dataset, TemporalProxyLabel
+from qcd.detectors.cdd import peakedness_fixed_threshold
 
 #: The two `data.schema.Dataset` values that are LiveCodeBench. §4.5.6's
 #: C1-C3 run on "all 1,055 LCB release_v6 items", which is both of them.
@@ -515,3 +516,95 @@ def cdd_length_and_empty_outputs(tables: RawTables) -> dict:
         },
         "by_model_and_precision": sorted(rows, key=lambda row: (row["model"], row["precision"])),
     }
+
+
+def cdd_recomputed_scores(tables: RawTables) -> pd.DataFrame:
+    """Per model, precision and LiveCodeBench item, recomputed from the stored
+    token ids: `fixed_threshold_score` (CDD with the threshold held at
+    alpha * 100 tokens, `detectors.cdd.peakedness_fixed_threshold`) and
+    `all_outputs_empty` (greedy and every sample empty, so the recorded score
+    is 1.0 by construction). An item without a greedy row or without samples
+    is left out. Exploratory inputs only; C1-C4 never read them."""
+    lcb = set(lcb_item_ids(tables))
+    generations = tables.generations
+    selected = generations[generations["item_id"].astype(str).isin(lcb)]
+    rows = []
+    for (model, quant, item_id), item in selected.groupby(["model", "quant", "item_id"]):
+        greedy = item[item["is_greedy"].astype(bool)]
+        samples = item[~item["is_greedy"].astype(bool)].sort_values("sample_id")
+        if len(greedy) != 1 or samples.empty:
+            continue
+        greedy_ids = list(greedy["token_ids"].iloc[0])
+        sample_ids = [list(ids) for ids in samples["token_ids"]]
+        rows.append({
+            "model": str(model),
+            "quant": str(quant),
+            "item_id": str(item_id),
+            "fixed_threshold_score": peakedness_fixed_threshold(greedy_ids, sample_ids),
+            "all_outputs_empty": not greedy_ids and not any(sample_ids),
+        })
+    return pd.DataFrame(
+        rows,
+        columns=["model", "quant", "item_id", "fixed_threshold_score", "all_outputs_empty"],
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class CddSensitivityPairs:
+    """Aligned ``(baseline, target)`` CDD arrays for the three exploratory
+    variants, on the LCB items where the recorded score and the recomputed
+    values exist at both precisions."""
+
+    recorded: tuple[np.ndarray, np.ndarray]
+    fixed_threshold: tuple[np.ndarray, np.ndarray]
+    recorded_excluding_empty: tuple[np.ndarray, np.ndarray]
+    n_lcb_items: int
+    n_paired_items: int
+    n_items_all_outputs_empty: int
+
+
+def cdd_sensitivity_pairs(
+    tables: RawTables,
+    recomputed: pd.DataFrame,
+    *,
+    model: str,
+    baseline: str,
+    target: str,
+) -> CddSensitivityPairs:
+    """`recorded` is the CDD score as written (C3's definition); the excluding-
+    empty variant drops an item whose outputs are all empty at either
+    precision, since its score is 1.0 whatever the model did."""
+    item_ids = lcb_item_ids(tables)
+    wide = _score_matrix(
+        tables, model=model, quants=(baseline, target), detectors=("cdd",), item_ids=item_ids
+    )
+    cell = recomputed[recomputed["model"] == model]
+    fixed = cell.pivot(index="item_id", columns="quant", values="fixed_threshold_score")
+    empty = cell.pivot(index="item_id", columns="quant", values="all_outputs_empty")
+    fixed = fixed.reindex(index=item_ids, columns=[baseline, target])
+    empty = empty.reindex(index=item_ids, columns=[baseline, target])
+
+    recorded = pd.DataFrame(
+        {quant: wide[("cdd", quant)] if ("cdd", quant) in wide.columns else np.nan
+         for quant in (baseline, target)},
+        index=item_ids,
+    )
+    complete = (
+        np.isfinite(recorded.to_numpy(dtype=float)).all(axis=1)
+        & np.isfinite(fixed.to_numpy(dtype=float)).all(axis=1)
+    )
+    any_empty = empty.fillna(False).astype(bool).any(axis=1).to_numpy()
+    keep_nonempty = complete & ~any_empty
+
+    def arrays(frame: pd.DataFrame, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        kept = frame[mask]
+        return kept[baseline].to_numpy(dtype=float), kept[target].to_numpy(dtype=float)
+
+    return CddSensitivityPairs(
+        recorded=arrays(recorded, complete),
+        fixed_threshold=arrays(fixed, complete),
+        recorded_excluding_empty=arrays(recorded, keep_nonempty),
+        n_lcb_items=int(item_ids.size),
+        n_paired_items=int(complete.sum()),
+        n_items_all_outputs_empty=int((complete & any_empty).sum()),
+    )

@@ -23,6 +23,8 @@ only when at least one truncated output actually reaches 100 tokens.
 
 from __future__ import annotations
 
+import math
+
 from qcd.constants import CDD_EDIT_DISTANCE_ALPHA, CDD_MAX_TOKENS
 
 
@@ -87,4 +89,50 @@ def peakedness(
     for sample_trunc in samples_trunc:
         if token_edit_distance(greedy_trunc, sample_trunc) <= threshold:
             close += 1
+    return close / len(sample_token_ids_list)
+
+
+def edit_distance_within(a: list[int], b: list[int], limit: int) -> bool:
+    """Whether `token_edit_distance(a, b) <= limit`, computed only on the
+    diagonal band of width `limit` and stopped as soon as every cell in a row
+    exceeds it. Same answer as the full DP, in O(len(a) * limit)."""
+    n, m = len(a), len(b)
+    if limit < 0 or abs(n - m) > limit:
+        return False
+    over = limit + 1  # stands for every distance above `limit`
+    prev = [j if j <= limit else over for j in range(m + 1)]
+    for i in range(1, n + 1):
+        lo, hi = max(1, i - limit), min(m, i + limit)
+        curr = [over] * (m + 1)
+        curr[0] = i if i <= limit else over
+        for j in range(lo, hi + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost, over)
+        if min(curr[lo - 1 : hi + 1]) > limit:
+            return False
+        prev = curr
+    return prev[m] <= limit
+
+
+def peakedness_fixed_threshold(
+    greedy_token_ids: list[int],
+    sample_token_ids_list: list[list[int]],
+    *,
+    max_tokens: int = CDD_MAX_TOKENS,
+    alpha: float = CDD_EDIT_DISTANCE_ALPHA,
+) -> float:
+    """Peak(M;x) with the threshold held at `alpha * max_tokens` whatever the
+    outputs' length — the rule `CDD_SCORE_DEFINITION` replaced. Exploratory
+    only: it lets the analysis show how much of a precision-to-precision CDD
+    shift remains once the threshold cannot move with output length. It never
+    feeds C1-C4."""
+    if not sample_token_ids_list:
+        raise ValueError("peakedness needs at least one temperature sample")
+
+    greedy_trunc = greedy_token_ids[:max_tokens]
+    limit = math.floor(alpha * max_tokens)
+    close = sum(
+        edit_distance_within(greedy_trunc, sample[:max_tokens], limit)
+        for sample in sample_token_ids_list
+    )
     return close / len(sample_token_ids_list)

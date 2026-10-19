@@ -694,7 +694,7 @@ generated on the single inference stack described in §4.3. For CDD, truncate ou
 maximum actual length across the truncated greedy output and all 50 samples. The score is
 (1/50)Σ I[ED(sample_i,greedy)≤0.05l], using token-level Levenshtein distance. l is not automatically
 100: ten-token outputs use a 0.5-edit threshold. This follows arXiv:2603.03203 §3.1 equation (1).
-Q1 uses the raw peakedness score, which lies on the discrete grid {0, 1/50, …, 1}, rather than a binary ξ decision.
+Q1 uses the raw peakedness score, which lies on the discrete grid {0, 1/50, …, 1}, rather than a binary ξ decision. Because l moves with output length, a precision that shortens outputs also tightens the threshold, and an item whose outputs are all empty scores 1 by construction. Two exploratory sensitivity analyses, fixed before any main-study output was read, therefore repeat the C3-style paired CDD shift for every model and quantized level: once with the threshold held at 0.05·100 = 5 edits, recomputed from the stored token IDs, and once without items whose outputs are all empty at either precision. Both are reported with unadjusted p-values next to each model's per-precision threshold length, empty-output and cap-hit rates, and neither enters the confirmatory family.
 
 Perplexity and Min-k% use teacher-forced natural-log probabilities of one fixed text per item, never a
 sampled answer and never a reference solution. The scored text is the benchmark's own problem statement:

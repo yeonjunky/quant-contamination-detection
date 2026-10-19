@@ -471,7 +471,7 @@ def test_manifest_lists_its_outputs_with_digests(analysis_outputs):
     outputs = analysis_outputs["analysis_manifest"]["extra"]["outputs"]
     assert set(outputs) == {
         "confirmatory_family", "beta_qe_intervals", "truncation_rates",
-        "cdd_length_and_empty_outputs",
+        "cdd_length_and_empty_outputs", "cdd_threshold_sensitivity",
     }
     for entry in outputs.values():
         assert len(entry["sha256"]) == 64
@@ -601,6 +601,86 @@ def test_the_descriptive_block_leaves_the_confirmatory_family_unchanged(
 
     assert without == analysis_outputs["confirmatory_family"]
     assert {row["n_items_not_recorded"] for row in block["by_model_and_precision"]} == {N_LCB_ITEMS}
+
+
+# --- exploratory CDD sensitivity block --------------------------------------
+
+
+def test_cdd_sensitivity_is_reported_per_model_and_stays_outside_the_family(analysis_outputs):
+    block = analysis_outputs["cdd_threshold_sensitivity"]
+    assert block["status"].startswith("exploratory sensitivity")
+    contrast = block["contrasts"]["bf16->bnb_nf4"]
+    assert set(contrast) == {QWEN2_5_32B.name, QWEN2_5_7B.name}
+    for entry in contrast.values():
+        assert entry["n_lcb_items"] == entry["n_paired_items"] == N_LCB_ITEMS
+        # The synthetic outputs ([1, 2] vs [1, 3]) are never empty.
+        assert entry["n_items_all_outputs_empty"] == 0
+        assert set(entry) >= {"recorded", "fixed_threshold", "recorded_excluding_empty"}
+    # The recorded variant is C3 itself on the confirmatory arm.
+    c3 = analysis_outputs["confirmatory_family"]["tests"]["C3"]
+    recorded = contrast[QWEN2_5_32B.name]["recorded"]
+    assert recorded["mean_difference"] == pytest.approx(c3["mean_difference"])
+    assert recorded["p_value"] == pytest.approx(c3["p_value"])
+
+
+def _sensitivity_tables():
+    import pandas as pd
+
+    from qcd.analysis.study_inputs import RawTables
+
+    items = pd.DataFrame({
+        "item_id": ["a", "b", "c", "d", "he"],
+        "dataset": ["lcb_pre", "lcb_pre", "lcb_post", "lcb_post", "humaneval"],
+    })
+    long_greedy = list(range(10))
+    one_edit = long_greedy[:-1] + [99]
+    # (item, quant) -> (greedy token ids, sample token ids, recorded score)
+    planted = {
+        ("a", "bf16"): (long_greedy, [long_greedy, one_edit], 0.5),
+        ("a", "bnb_nf4"): (long_greedy, [one_edit, one_edit], 0.0),
+        ("b", "bf16"): (long_greedy, [long_greedy, long_greedy], 1.0),
+        ("b", "bnb_nf4"): (long_greedy, [long_greedy, one_edit], 0.5),
+        ("c", "bf16"): (long_greedy, [one_edit, one_edit], 0.0),
+        ("c", "bnb_nf4"): ([], [[], []], 1.0),  # all empty: 1.0 by construction
+        ("d", "bf16"): (long_greedy, [long_greedy, long_greedy], 1.0),
+        ("d", "bnb_nf4"): (long_greedy, [long_greedy, long_greedy], 1.0),
+        ("he", "bf16"): (long_greedy, [long_greedy, long_greedy], 1.0),
+        ("he", "bnb_nf4"): (long_greedy, [long_greedy, long_greedy], 1.0),
+    }
+    scores, generations = [], []
+    for (item, quant), (greedy, samples, score) in planted.items():
+        scores.append({"model": "m", "quant": quant, "item_id": item, "detector": "cdd",
+                       "score": score})
+        generations.append({"model": "m", "quant": quant, "item_id": item, "sample_id": 0,
+                            "is_greedy": True, "token_ids": greedy})
+        for sample_id, ids in enumerate(samples, start=1):
+            generations.append({"model": "m", "quant": quant, "item_id": item,
+                                "sample_id": sample_id, "is_greedy": False, "token_ids": ids})
+    return RawTables(
+        Path("."), items, pd.DataFrame(), pd.DataFrame(scores), pd.DataFrame(generations), {}
+    )
+
+
+def test_cdd_sensitivity_pairs_recompute_and_drop_all_empty_items():
+    from qcd.analysis.study_inputs import cdd_recomputed_scores, cdd_sensitivity_pairs
+
+    tables = _sensitivity_tables()
+    recomputed = cdd_recomputed_scores(tables)
+    # LiveCodeBench only: the HumanEval item is not recomputed.
+    assert set(recomputed["item_id"]) == {"a", "b", "c", "d"}
+
+    pairs = cdd_sensitivity_pairs(tables, recomputed, model="m", baseline="bf16", target="bnb_nf4")
+    assert pairs.n_lcb_items == 4
+    assert pairs.n_paired_items == 4
+    assert pairs.n_items_all_outputs_empty == 1
+    # Item order is a, b, c, d.
+    assert pairs.recorded[0].tolist() == [0.5, 1.0, 0.0, 1.0]
+    assert pairs.recorded[1].tolist() == [0.0, 0.5, 1.0, 1.0]
+    # With the threshold held at 5 edits, one edit in ten tokens is close.
+    assert pairs.fixed_threshold[0].tolist() == [1.0, 1.0, 1.0, 1.0]
+    assert pairs.fixed_threshold[1].tolist() == [1.0, 1.0, 1.0, 1.0]
+    assert pairs.recorded_excluding_empty[0].tolist() == [0.5, 1.0, 1.0]
+    assert pairs.recorded_excluding_empty[1].tolist() == [0.0, 0.5, 1.0]
 
 
 # --- part files a resumed run may have written twice ------------------------

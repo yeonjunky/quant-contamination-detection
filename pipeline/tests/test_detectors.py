@@ -3,7 +3,12 @@ import math
 import pytest
 
 from qcd.constants import CDD_EDIT_DISTANCE_ALPHA, CDD_MAX_TOKENS, CDD_XI_FIXED
-from qcd.detectors.cdd import peakedness, token_edit_distance
+from qcd.detectors.cdd import (
+    edit_distance_within,
+    peakedness,
+    peakedness_fixed_threshold,
+    token_edit_distance,
+)
 from qcd.detectors.mink_prob import mink_prob
 from qcd.detectors.perplexity import negative_log_perplexity_score, perplexity
 from qcd.detectors.threshold import (
@@ -80,6 +85,45 @@ def test_peakedness_uses_one_maximum_across_reference_and_all_samples():
 def test_peakedness_empty_samples_raises():
     with pytest.raises(ValueError):
         peakedness([1, 2, 3], [])
+
+
+def test_edit_distance_within_agrees_with_the_full_dp():
+    import random
+
+    rng = random.Random(0)
+    for _ in range(2000):
+        a = [rng.randrange(3) for _ in range(rng.randrange(12))]
+        b = [rng.randrange(3) for _ in range(rng.randrange(12))]
+        distance = token_edit_distance(a, b)
+        for limit in range(7):
+            assert edit_distance_within(a, b, limit) == (distance <= limit), (a, b, limit)
+
+
+def test_fixed_threshold_does_not_shrink_with_short_outputs():
+    # l=10: the recorded rule allows 0.5 edits, the fixed rule alpha*100 = 5.
+    greedy = list(range(10))
+    one_edit = greedy[:-1] + [99]
+    assert peakedness(greedy, [one_edit]) == 0.0
+    assert peakedness_fixed_threshold(greedy, [one_edit]) == 1.0
+
+
+def test_fixed_threshold_matches_the_recorded_rule_at_full_length():
+    greedy = list(range(100))
+    five_edits = [99_000 + i for i in range(5)] + greedy[5:]
+    six_edits = [99_000 + i for i in range(6)] + greedy[6:]
+    samples = [five_edits, six_edits]
+    assert peakedness(greedy, samples) == peakedness_fixed_threshold(greedy, samples) == 0.5
+
+
+def test_fixed_threshold_truncates_to_max_tokens():
+    greedy = list(range(150))
+    tail_differs = list(range(100)) + [7] * 50
+    assert peakedness_fixed_threshold(greedy, [tail_differs]) == 1.0
+
+
+def test_fixed_threshold_empty_samples_raises():
+    with pytest.raises(ValueError):
+        peakedness_fixed_threshold([1, 2, 3], [])
 
 
 # --- Perplexity ----------------------------------------------------------

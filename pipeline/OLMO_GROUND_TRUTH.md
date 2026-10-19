@@ -132,7 +132,7 @@ shards remain required for an exhaustive result. Each completed shard writes
 only nonzero string evidence, atomically, while the manifest records negative
 scan coverage and the document count. This avoids storing 1,597 negative rows
 for every one of tens of thousands of shards. The pretraining worker retains
-the top five candidates per benchmark item and shard by default. Each candidate
+the top 20 candidates per benchmark item and shard by default. Each candidate
 includes the full and normalized source text, SHA-256, selected source metadata,
 matched token position, an n-gram example, and local context so downstream
 TRACER stages do not require a second multi-terabyte corpus pass. Change the
@@ -140,7 +140,7 @@ bound explicitly with `--candidates-per-item`; it is part of the retrieval
 configuration and must be frozen before the scientific run.
 
 After `status` reports that every shard is complete, `finalize --output PATH`
-reduces the shard evidence to the globally ranked candidate bound (five rows
+reduces the shard evidence to the globally ranked candidate bound (20 rows
 per benchmark item by default). It refuses to
 produce an apparently complete result while any shard is pending, running, or
 failed.
@@ -151,9 +151,24 @@ output keeps model, corpus, stage, document ID, scan count, exact flag, n-gram
 coverage, threshold, `match_detected`, `corpus_status`, and `coverage_complete`
 in every benchmark-item row. `confirmed-match` requires positive evidence;
 `no-match-found` is emitted only after a complete requested scan; bounded smoke
-or shard scans use `not-observable` until exhaustive finalization. The defaults (`n=13`, coverage
-`0.8`) are provisional retrieval settings and must be frozen or recalibrated
-without looking at Q1 results before a full scientific run.
+or shard scans use `not-observable` until exhaustive finalization.
+
+### Frozen retrieval settings (2026-10-19, before any main-study output was read)
+
+- **`confirmed-match` rule:** normalized verbatim containment, or token 13-gram
+  coverage `>= 0.8` within one document (`n=13`, coverage `0.8`).
+- **Candidate bound:** 20 candidates per benchmark item, per shard and after
+  `finalize` (`--candidates-per-item 20`). A larger bound than the earlier 5
+  keeps room for distinct documents when one problem text is mirrored across
+  many pages; candidates below the match rule still go on to TRACER.
+- **Negative-control count, reported with every pretraining result:** LCB-post
+  items (contest date on or after 2025-01-01) cannot be in either Olmo bulk
+  pretraining mix, whose crawl ends 2024-12-31 (arXiv:2512.13961). The number of
+  LCB-post items that reach `confirmed-match` in a pretraining scan is reported
+  as the rule's observed false-match count. It does not re-tune the rule.
+
+These are retrieval choices of this study, not settings taken from TRACER or
+from the Olmo 3 decontamination pipeline.
 
 The resumable manifest records evidence schema version 4: version 3 added the
 tri-state output, version 4 added the `model` on the manifest metadata and on
