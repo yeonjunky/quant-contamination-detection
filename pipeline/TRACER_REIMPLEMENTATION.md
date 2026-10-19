@@ -56,11 +56,18 @@ while retaining enough state to audit that routing decision.
   response is recorded as an unparsed judgement with its raw text and counted
   per stage; under deterministic decoding a retry would return the same output.
 - **`U` pairs:** not sent to trivial-task screening (the default above).
-- **Still open:** the LLM checkpoint or API snapshot shared by the three
-  stages, and the output-token limit and reasoning setting, which are chosen
-  with a small wiring test once the model is fixed. Every raw response is
-  stored, because a seed on a shared, batched API server does not guarantee
-  identical outputs on a rerun.
+- **Model (decided 2026-10-19):** `gpt-oss-120b` for all three LLM stages,
+  the open-weight backbone TRACER reports (Table 3 overall macro F1 0.78; GPT-5
+  0.91, Gemini-2.5-Pro 0.81, Qwen3-14B 0.72). Weights:
+  `ggml-org/gpt-oss-120b-GGUF` revision `238abdd290bb874b90a5da1b4549881b7d05c091`,
+  file `gpt-oss-120b-MXFP4.gguf` (the released MXFP4 format), served by
+  llama.cpp `b11381` (`836d57176`) on the H100 host's CPUs, because the GPU is
+  held by the main run. The run manifest records the GGUF revision, the
+  llama.cpp build, the thread count and the server flags.
+- **Still open:** the output-token limit and the reasoning-effort setting,
+  chosen with a small wiring test. Every raw response is stored, because a
+  fixed seed does not guarantee identical outputs across builds or thread
+  counts.
 
 The provisional local adapter pins `jinaai/jina-embeddings-v3` by an immutable
 Hub commit, uses its symmetric `text-matching` task and explicit L2-normalized

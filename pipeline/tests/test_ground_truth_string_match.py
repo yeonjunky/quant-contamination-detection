@@ -150,3 +150,62 @@ def test_top_k_must_be_positive():
         scan_corpus(
             [], [], model=_MODEL, corpus_name="synthetic", stage="pretraining", top_k=0,
         )
+
+
+# --- sensitivity rule (8-gram / 0.5 beside the 13-gram / 0.8 primary) -------
+
+
+def test_sensitivity_rule_reports_a_separate_status_without_changing_the_primary():
+    # Six tokens; the document repeats the first four and changes the rest.
+    item = _item("partial", "alpha beta gamma delta epsilon zeta")
+    [row] = scan_corpus(
+        [item], [{"id": "doc", "text": "alpha beta gamma delta CHANGED CHANGED"}],
+        model=_MODEL, corpus_name="synthetic", stage="sft",
+        config=MatchConfig(4, 0.8), sensitivity=MatchConfig(2, 0.5),
+        coverage_complete=True,
+    )
+    # Primary: 1 of 3 four-grams. Sensitivity: 3 of 5 bigrams.
+    assert row["ngram_coverage"] == pytest.approx(1 / 3)
+    assert row["match_detected"] is False
+    assert row["corpus_status"] == "no-match-found"
+    assert row["sensitivity_ngram_coverage"] == pytest.approx(3 / 5)
+    assert row["sensitivity_match_detected"] is True
+    assert row["sensitivity_corpus_status"] == "confirmed-match"
+    assert (row["sensitivity_ngram_size"], row["sensitivity_ngram_threshold"]) == (2, 0.5)
+
+
+def test_a_document_sharing_only_a_sensitivity_ngram_is_a_candidate():
+    item = _item("short-overlap", "alpha beta gamma delta epsilon zeta")
+    [row] = scan_corpus(
+        [item], [{"id": "doc", "text": "noise alpha beta noise"}],
+        model=_MODEL, corpus_name="synthetic", stage="sft",
+        config=MatchConfig(4, 0.8), sensitivity=MatchConfig(2, 0.5),
+        coverage_complete=True,
+    )
+    assert row["document_id"] == "doc"
+    assert row["matched_ngrams"] == 0
+    assert row["sensitivity_matched_ngrams"] == 1
+    assert row["match_context"] is not None
+
+
+def test_sensitivity_match_outranks_higher_primary_coverage_within_top_k():
+    item = _item("rank", "a b c d e f g h")
+    documents = [
+        # Primary 4-gram coverage 2/5, bigram coverage 4/7: neither rule matches at 0.6.
+        {"id": "primary-heavy", "text": "a b c d e x x x"},
+        # Primary 0/5, bigram coverage 6/7 by scattered pairs: sensitivity match.
+        {"id": "sensitivity-match", "text": "a b x b c x c d x d e x e f x f g"},
+    ]
+    rows = scan_corpus(
+        [item], documents, model=_MODEL, corpus_name="synthetic", stage="sft",
+        config=MatchConfig(4, 0.8), sensitivity=MatchConfig(2, 0.6), top_k=1,
+    )
+    assert [row["document_id"] for row in rows] == ["sensitivity-match"]
+
+
+def test_without_a_sensitivity_rule_rows_carry_no_sensitivity_fields():
+    [row] = scan_corpus(
+        [_item("plain", "alpha beta gamma delta")], [{"id": "d", "text": "alpha beta gamma delta"}],
+        model=_MODEL, corpus_name="synthetic", stage="sft", config=MatchConfig(2, 0.8),
+    )
+    assert not any(key.startswith("sensitivity_") for key in row)

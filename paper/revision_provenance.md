@@ -647,3 +647,21 @@ Olmo3-7B·Qwen2.5-32B·Olmo3.1-32B 10. 측정 기록은 `data/raw/validation/sam
 - **TRACER 생성 설정.** 세 LLM 단계 모두 결정론적 디코딩(temperature 0, seed 고정), 형식 오류는 재시도
   없이 판정 불가로 기록, `U` 쌍은 사소함 검사를 하지 않는다. LLM 모델은 아직 정하지 않았다. 기록 위치는
   `pipeline/TRACER_REIMPLEMENTATION.md`.
+
+### (y) Olmo 검색 민감도 기준·코퍼스 버전 고정·TRACER 모델 확정 (2026-10-19)
+
+(x)와 같은 날, 본 실행 출력을 읽지 않은 상태에서 정했다. 논문 본문 문장은 바뀌지 않는다.
+
+- **민감도 기준 추가.** `confirmed-match`의 주 기준(13-gram coverage ≥ 0.8)은 그대로 두고, Olmo 3 보고서가
+  자기 사후학습 오염 제거에 썼다고 밝힌 8-gram / 0.5 기준을 같은 스캔에서 함께 계산해 별도 상태
+  (`sensitivity_corpus_status`)로 보고한다. 주 상태를 대체하지 않는다. 후보 순위는 주 기준 일치, 민감도 기준
+  일치, coverage 순이다. 근거 스키마는 v5로 올렸다.
+- **코퍼스 버전 고정.** 32B 사전학습 mix `allenai/dolma3_mix-6T`는 `689a3ea…`(데이터 파일이 2025-12 업로드와
+  동일), `Dolci-Instruct-SFT/DPO/RL`은 각각 `bd3c8f3…`/`aed155c…`/`1a8d79b…`.
+- **사후학습 데이터 귀속.** 두 Instruct arm의 모델 카드가 모두 같은 세 저장소를 학습 데이터로 적고 있어 두 arm
+  모두에 귀속했다. 32B가 고정한 버전과 정확히 같은 데이터로 학습되었다는 직접 서술은 없으며(SFT·DPO는
+  2026-02에 행 수 변화 없이 재업로드), 이 한계는 `pipeline/OLMO_GROUND_TRUTH.md`에 남겼다.
+- **사후학습 스캔 스크립트.** 문항당 후보 20개와 문서 원문을 저장하도록 바꿔 TRACER로 넘길 수 있게 했다.
+- **TRACER 모델.** 세 LLM 단계 모두 `gpt-oss-120b`(MXFP4 GGUF, 버전 고정)를 llama.cpp로 H100 호스트의 CPU에서
+  돌린다. GPU는 본 실행이 쓰고 있다. 실제 TRACER 프롬프트로 잰 처리량은 동시 8개 기준 호출당 약 13.5초였다
+  (구현 측정, 연구 데이터 아님).

@@ -40,14 +40,16 @@ from qcd.ground_truth.olmo_corpora import (
     OPEN_CORPUS_MODELS, check_model_corpus, find_corpus,
 )
 from qcd.ground_truth.string_match import (
-    METHOD_FAMILY, MatchConfig, extract_text, scan_corpus, tokenize,
+    METHOD_FAMILY, MatchConfig, evidence_rank, extract_text, scan_corpus, tokenize,
 )
 
 
 #: 3 -> 4: every evidence row and the manifest metadata now carry the `model`
 #: the corpus belongs to. A schema-3 manifest must be reinitialized rather than
 #: mixed with schema-4 shard rows, because its rows are unattributed.
-EVIDENCE_SCHEMA_VERSION = "4"
+#: 4 -> 5: rows also carry the sensitivity rule's coverage and status, and
+#: candidates are ranked with it; schema-4 shard rows have neither.
+EVIDENCE_SCHEMA_VERSION = "5"
 
 
 def retrieval_metadata(args) -> dict[str, str]:
@@ -55,6 +57,8 @@ def retrieval_metadata(args) -> dict[str, str]:
         "ngram_size": str(args.ngram_size),
         "ngram_coverage_threshold": str(args.ngram_coverage_threshold),
         "candidates_per_item": str(args.candidates_per_item),
+        "sensitivity_ngram_size": str(args.sensitivity_ngram_size),
+        "sensitivity_ngram_coverage_threshold": str(args.sensitivity_ngram_coverage_threshold),
         "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
     }
 
@@ -153,6 +157,9 @@ def run(args, connection) -> None:
                 model=args.model,
                 corpus_name=f"{args.repo}@{args.revision}:{path}", stage="pretraining",
                 config=MatchConfig(args.ngram_size, args.ngram_coverage_threshold),
+                sensitivity=MatchConfig(
+                    args.sensitivity_ngram_size, args.sensitivity_ngram_coverage_threshold,
+                ),
                 progress_every=args.progress_every, progress_callback=progress,
                 completion_callback=completion_count.append,
                 top_k=args.candidates_per_item, evidence_only=True,
@@ -213,9 +220,27 @@ def finalize(args, connection) -> None:
             f"{stats['total']:,} shards complete"
         )
     metadata = dict(connection.execute("SELECT key, value FROM metadata"))
+    model = metadata.get("model")
+    if not model:
+        raise RuntimeError(
+            "this manifest records no `model` — it was initialized under evidence schema 3, "
+            "whose rows cannot be attributed to an Olmo checkpoint. Reinitialize with --model "
+            "rather than guessing which arm this corpus belongs to."
+        )
+    if metadata.get("evidence_schema_version") != EVIDENCE_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"this manifest is at evidence schema {metadata.get('evidence_schema_version')}, "
+            f"not {EVIDENCE_SCHEMA_VERSION}: its shard rows carry no sensitivity-rule coverage. "
+            "Reinitialize it rather than mixing schemas."
+        )
     candidates_per_item = int(metadata["candidates_per_item"])
     ngram_size = int(metadata["ngram_size"])
     ngram_coverage_threshold = float(metadata["ngram_coverage_threshold"])
+    config = MatchConfig(ngram_size, ngram_coverage_threshold)
+    sensitivity = MatchConfig(
+        int(metadata["sensitivity_ngram_size"]),
+        float(metadata["sensitivity_ngram_coverage_threshold"]),
+    )
     best: dict[tuple[str, str], list[dict]] = {}
     for record in connection.execute(
         "SELECT path, output_path FROM shards WHERE status='complete' ORDER BY path"
@@ -227,17 +252,12 @@ def finalize(args, connection) -> None:
                 row["source_shard"] = record["path"]
                 candidates = best.setdefault(key, [])
                 candidates.append(row)
-                candidates.sort(key=_final_evidence_rank, reverse=True)
+                candidates.sort(
+                    key=lambda row: _final_evidence_rank(row, config, sensitivity), reverse=True
+                )
                 del candidates[candidates_per_item:]
 
     corpus = f"{metadata['repo']}@{metadata['revision']}"
-    model = metadata.get("model")
-    if not model:
-        raise RuntimeError(
-            "this manifest records no `model` — it was initialized under evidence schema 3, "
-            "whose rows cannot be attributed to an Olmo checkpoint. Reinitialize with --model "
-            "rather than guessing which arm this corpus belongs to."
-        )
     rows = []
     for item in benchmark_items():
         key = (item.dataset.value, item.item_id)
@@ -258,11 +278,22 @@ def finalize(args, connection) -> None:
                 "document_id": None,
                 "matched_ngrams": 0,
                 "query_ngrams": max(0, len(tokenize(item.prompt)) - ngram_size + 1),
+                "sensitivity_ngram_size": sensitivity.ngram_size,
+                "sensitivity_ngram_coverage": 0.0,
+                "sensitivity_ngram_threshold": sensitivity.ngram_coverage_threshold,
+                "sensitivity_match_detected": False,
+                "sensitivity_matched_ngrams": 0,
+                "sensitivity_query_ngrams": max(
+                    0, len(tokenize(item.prompt)) - sensitivity.ngram_size + 1
+                ),
                 "source_shard": None,
             }]
         for candidate_rank, row in enumerate(item_candidates, start=1):
             row["corpus_status"] = (
                 "confirmed-match" if row.get("match_detected") else "no-match-found"
+            )
+            row["sensitivity_corpus_status"] = (
+                "confirmed-match" if row.get("sensitivity_match_detected") else "no-match-found"
             )
             row["coverage_complete"] = True
             row["candidate_rank"] = candidate_rank
@@ -274,15 +305,11 @@ def finalize(args, connection) -> None:
     print(f"wrote {len(rows):,} item rows to {args.output}")
 
 
-def _final_evidence_rank(row: dict) -> tuple:
-    """Stable global ordering for candidates collected from different shards."""
-    return (
-        bool(row["normalized_verbatim"]),
-        float(row["ngram_coverage"]),
-        int(row["matched_ngrams"]),
-        str(row["source_shard"]),
-        str(row["document_id"]),
-    )
+def _final_evidence_rank(row: dict, config: MatchConfig, sensitivity: MatchConfig) -> tuple:
+    """Stable global ordering for candidates collected from different shards:
+    the per-shard order of `string_match.evidence_rank`, then the shard."""
+    *rank, document_id = evidence_rank(row, config, sensitivity)
+    return (*rank, str(row["source_shard"]), document_id)
 
 
 def main() -> None:
@@ -297,6 +324,8 @@ def main() -> None:
     init_parser.add_argument("--ngram-size", type=int, default=13)
     init_parser.add_argument("--ngram-coverage-threshold", type=float, default=0.8)
     init_parser.add_argument("--candidates-per-item", type=int, default=20)
+    init_parser.add_argument("--sensitivity-ngram-size", type=int, default=8)
+    init_parser.add_argument("--sensitivity-ngram-coverage-threshold", type=float, default=0.5)
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--model", choices=OPEN_CORPUS_MODELS, required=True)
@@ -312,6 +341,8 @@ def main() -> None:
     run_parser.add_argument("--ngram-size", type=int, default=13)
     run_parser.add_argument("--ngram-coverage-threshold", type=float, default=0.8)
     run_parser.add_argument("--candidates-per-item", type=int, default=20)
+    run_parser.add_argument("--sensitivity-ngram-size", type=int, default=8)
+    run_parser.add_argument("--sensitivity-ngram-coverage-threshold", type=float, default=0.5)
 
     subparsers.add_parser("status")
     finalize_parser = subparsers.add_parser("finalize")

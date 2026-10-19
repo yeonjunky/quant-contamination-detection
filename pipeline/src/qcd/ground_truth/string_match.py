@@ -70,6 +70,17 @@ class MatchConfig:
         if not 0.0 <= self.ngram_coverage_threshold <= 1.0:
             raise ValueError("ngram_coverage_threshold must be in [0, 1]")
 
+    def matches(self, coverage: float) -> bool:
+        return coverage >= self.ngram_coverage_threshold
+
+
+#: The frozen `confirmed-match` rule (`OLMO_GROUND_TRUTH.md`, 2026-10-19).
+PRIMARY_CONFIG = MatchConfig(13, 0.8)
+#: The sensitivity rule reported beside it: the 8-gram / 0.5-overlap rule the
+#: Olmo 3 report gives for its own post-training decontamination
+#: (arXiv:2512.13961). It never replaces the primary status.
+SENSITIVITY_CONFIG = MatchConfig(8, 0.5)
+
 
 def _ngrams(tokens: tuple[str, ...], n: int) -> set[tuple[str, ...]]:
     return {tokens[i : i + n] for i in range(max(0, len(tokens) - n + 1))}
@@ -83,6 +94,7 @@ def scan_corpus(
     corpus_name: str,
     stage: str,
     config: MatchConfig = MatchConfig(),
+    sensitivity: MatchConfig | None = None,
     progress_every: int | None = None,
     progress_callback: Callable[[int], None] | None = None,
     completion_callback: Callable[[int], None] | None = None,
@@ -106,6 +118,13 @@ def scan_corpus(
     fallback rather than a substitute for a public/persistent corpus index.
     Callers must set ``coverage_complete=True`` only when the requested corpus
     scope was exhausted; otherwise a non-match remains ``not-observable``.
+
+    With ``sensitivity`` set, the same pass also counts that rule's n-grams: a
+    document sharing an n-gram of either width becomes a candidate, every row
+    carries the sensitivity coverage and a separate ``sensitivity_*`` status,
+    and candidates are ranked primary-match first, then sensitivity-match, so
+    a sensitivity-only match is not pushed out of the ``top_k`` bound by
+    lower-coverage candidates.  The primary fields are unchanged by it.
     """
     if top_k < 1:
         raise ValueError("top_k must be positive")
@@ -114,14 +133,23 @@ def scan_corpus(
     output_items: list[tuple[tuple[str, str], str, str]] = []
     queries: dict[tuple[str, str], dict[str, Any]] = {}
     inverted: dict[tuple[str, ...], set[tuple[str, str]]] = defaultdict(set)
+    sensitivity_inverted: dict[tuple[str, ...], set[tuple[str, str]]] = defaultdict(set)
     for item in items:
         query_key = (item.dataset.value, item.item_id)
         normalized = normalize_text(item.prompt)
-        grams = _ngrams(tokenize(item.prompt), config.ngram_size)
+        tokens = tokenize(item.prompt)
+        grams = _ngrams(tokens, config.ngram_size)
+        sensitivity_grams = _ngrams(tokens, sensitivity.ngram_size) if sensitivity else set()
         output_items.append((query_key, item.item_id, item.dataset.value))
-        queries[query_key] = {"normalized": normalized, "grams": grams}
+        queries[query_key] = {
+            "normalized": normalized,
+            "grams": grams,
+            "sensitivity_grams": sensitivity_grams,
+        }
         for gram in grams:
             inverted[gram].add(query_key)
+        for gram in sensitivity_grams:
+            sensitivity_inverted[gram].add(query_key)
     # LiveCodeBench items carry very large private-test metadata.  Retain only
     # the lightweight query/output fields above during a multi-million-row
     # corpus scan.
@@ -146,8 +174,14 @@ def scan_corpus(
             for query_key in inverted.get(gram, ()):
                 counts[query_key] += 1
                 example_gram.setdefault(query_key, gram)
+        sensitivity_counts: dict[tuple[str, str], int] = defaultdict(int)
+        if sensitivity:
+            for gram in _ngrams(doc_tokens, sensitivity.ngram_size):
+                for query_key in sensitivity_inverted.get(gram, ()):
+                    sensitivity_counts[query_key] += 1
+                    example_gram.setdefault(query_key, gram)
 
-        candidates = set(counts)
+        candidates = set(counts) | set(sensitivity_counts)
         # Short prompts have no n-grams at the configured width but still get
         # a normalized-verbatim check.
         # Any query long enough to have n-grams must share at least one of them
@@ -169,7 +203,7 @@ def scan_corpus(
             context = None
             if token_start is not None:
                 left = max(0, token_start - 30)
-                right = min(len(doc_tokens), token_start + config.ngram_size + 30)
+                right = min(len(doc_tokens), token_start + len(gram) + 30)
                 context = " ".join(doc_tokens[left:right])
             evidence = {
                     "document_id": str(document.get("id", doc_index)),
@@ -182,6 +216,16 @@ def scan_corpus(
                     "matched_ngram_example": " ".join(gram) if gram else None,
                     "match_context": context,
                 }
+            if sensitivity:
+                sensitivity_total = len(query["sensitivity_grams"])
+                evidence.update({
+                    "sensitivity_ngram_coverage": (
+                        sensitivity_counts[query_key] / sensitivity_total
+                        if sensitivity_total else 0.0
+                    ),
+                    "sensitivity_matched_ngrams": sensitivity_counts[query_key],
+                    "sensitivity_query_ngrams": sensitivity_total,
+                })
             if include_document_text:
                 evidence.update(
                     {
@@ -197,7 +241,9 @@ def scan_corpus(
                 )
             candidates_for_query = best[query_key]
             candidates_for_query.append(evidence)
-            candidates_for_query.sort(key=_evidence_rank, reverse=True)
+            candidates_for_query.sort(
+                key=lambda row: evidence_rank(row, config, sensitivity), reverse=True
+            )
             del candidates_for_query[top_k:]
         if progress_every and docs_scanned % progress_every == 0 and progress_callback:
             progress_callback(docs_scanned)
@@ -212,16 +258,8 @@ def scan_corpus(
         for candidate_rank, evidence in enumerate(evidence_rows or [{}], start=1):
             coverage = float(evidence.get("ngram_coverage", 0.0))
             exact = bool(evidence.get("normalized_verbatim", False))
-            matched = exact or coverage >= config.ngram_coverage_threshold
-            status = (
-                CorpusReferenceStatus.CONFIRMED_MATCH
-                if matched
-                else (
-                    CorpusReferenceStatus.NO_MATCH_FOUND
-                    if coverage_complete
-                    else CorpusReferenceStatus.NOT_OBSERVABLE
-                )
-            )
+            matched = exact or config.matches(coverage)
+            status = _status(matched, coverage_complete)
             row = {
                 "item_id": item_id,
                 "dataset": dataset,
@@ -242,15 +280,52 @@ def scan_corpus(
                 "documents_scanned": docs_scanned,
                 "candidate_rank": candidate_rank,
             }
+            if sensitivity:
+                sensitivity_coverage = float(evidence.get("sensitivity_ngram_coverage", 0.0))
+                sensitivity_matched = exact or sensitivity.matches(sensitivity_coverage)
+                row.update({
+                    "sensitivity_ngram_size": sensitivity.ngram_size,
+                    "sensitivity_ngram_coverage": sensitivity_coverage,
+                    "sensitivity_ngram_threshold": sensitivity.ngram_coverage_threshold,
+                    "sensitivity_match_detected": sensitivity_matched,
+                    "sensitivity_corpus_status": _status(
+                        sensitivity_matched, coverage_complete
+                    ).value,
+                    "sensitivity_matched_ngrams": int(evidence.get("sensitivity_matched_ngrams", 0)),
+                    "sensitivity_query_ngrams": int(evidence.get(
+                        "sensitivity_query_ngrams", len(queries[query_key]["sensitivity_grams"])
+                    )),
+                })
             row.update({key: value for key, value in evidence.items() if key not in row})
             rows.append(row)
     return rows
 
 
-def _evidence_rank(evidence: Mapping[str, Any]) -> tuple[Any, ...]:
+def _status(matched: bool, coverage_complete: bool) -> CorpusReferenceStatus:
+    if matched:
+        return CorpusReferenceStatus.CONFIRMED_MATCH
+    if coverage_complete:
+        return CorpusReferenceStatus.NO_MATCH_FOUND
+    return CorpusReferenceStatus.NOT_OBSERVABLE
+
+
+def evidence_rank(
+    evidence: Mapping[str, Any],
+    config: MatchConfig,
+    sensitivity: MatchConfig | None = None,
+) -> tuple[Any, ...]:
+    """Candidate order: verbatim, primary match, sensitivity match, then
+    coverage.  Without ``sensitivity`` this is the verbatim/coverage order
+    alone, because a primary match is monotone in primary coverage."""
+    exact = bool(evidence["normalized_verbatim"])
+    coverage = float(evidence["ngram_coverage"])
+    sensitivity_coverage = float(evidence.get("sensitivity_ngram_coverage", 0.0))
     return (
-        bool(evidence["normalized_verbatim"]),
-        float(evidence["ngram_coverage"]),
+        exact,
+        config.matches(coverage),
+        bool(sensitivity and sensitivity.matches(sensitivity_coverage)),
+        coverage,
+        sensitivity_coverage,
         int(evidence["matched_ngrams"]),
         str(evidence["document_id"]),
     )

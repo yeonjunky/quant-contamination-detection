@@ -7,6 +7,13 @@ a row that does not say which checkpoint it belongs to cannot be turned into a
 per-model corpus status. The (checkpoint, repository) pair is checked against
 `qcd.ground_truth.olmo_corpora`, which refuses a pairing it records as
 belonging to the other arm and warns when the assignment is unverified.
+
+Each benchmark item gets up to `--candidates-per-item` candidate rows, ranked
+as `string_match.evidence_rank` orders them and carrying the document text so
+TRACER needs no second pass over the corpus. `corpus_status` and
+`sensitivity_corpus_status` describe one candidate; an item is a
+`confirmed-match` under a rule when any of its rows is. An item with no
+candidate keeps one row with no document.
 """
 
 from __future__ import annotations
@@ -92,6 +99,9 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--ngram-size", type=int, default=13)
     parser.add_argument("--ngram-coverage-threshold", type=float, default=0.8)
+    parser.add_argument("--candidates-per-item", type=int, default=20)
+    parser.add_argument("--sensitivity-ngram-size", type=int, default=8)
+    parser.add_argument("--sensitivity-ngram-coverage-threshold", type=float, default=0.5)
     parser.add_argument("--max-documents", type=int, help="Smoke-test cap; omit for a complete stream scan")
     parser.add_argument("--progress-every", type=int, default=10_000)
     args = parser.parse_args()
@@ -141,6 +151,11 @@ def main() -> None:
         _benchmark_items(args.benchmark), documents,
         model=args.model, corpus_name=corpus_name, stage=args.stage,
         config=MatchConfig(args.ngram_size, args.ngram_coverage_threshold),
+        sensitivity=MatchConfig(
+            args.sensitivity_ngram_size, args.sensitivity_ngram_coverage_threshold,
+        ),
+        top_k=args.candidates_per_item,
+        include_document_text=True,
         progress_every=args.progress_every,
         progress_callback=report_progress,
         coverage_complete=(args.max_documents is None and args.hf_file is None),

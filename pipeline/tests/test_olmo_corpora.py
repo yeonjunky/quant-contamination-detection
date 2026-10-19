@@ -28,26 +28,36 @@ def test_the_two_olmo_arms_have_different_pretraining_mixes():
     assert [c.hf_repo for c in thirty_two] == ["allenai/dolma3_mix-6T"]
 
 
-def test_only_the_7b_pretraining_mix_has_a_pinned_scan_revision():
-    """The 32B revision is left unresolved rather than invented."""
-    seven = find_corpus("allenai/dolma3_mix-6T-1025-7B")
-    thirty_two = find_corpus("allenai/dolma3_mix-6T")
-    assert require_revision(seven) == "2ca900fbe14e86c5c83d064d9f0882f1c0b8c05b"
-    assert thirty_two.revision is None
-    with pytest.raises(ValueError, match="no pinned scan revision"):
-        require_revision(thirty_two)
-
-
-def test_post_training_repositories_are_not_attributed_to_a_checkpoint():
-    unassigned = {corpus.hf_repo for corpus in unassigned_corpora()}
-    assert unassigned == {
-        "allenai/Dolci-Instruct-SFT",
-        "allenai/Dolci-Instruct-DPO",
-        "allenai/Dolci-Instruct-RL",
+def test_every_open_corpus_is_pinned_to_a_hub_revision():
+    pins = {corpus.hf_repo: require_revision(corpus) for corpus in OLMO_CORPORA}
+    assert pins == {
+        "allenai/dolma3_mix-6T-1025-7B": "2ca900fbe14e86c5c83d064d9f0882f1c0b8c05b",
+        "allenai/dolma3_mix-6T": "689a3ea2d8217e64d73a5058913fa43ad15e81aa",
+        "allenai/Dolci-Instruct-SFT": "bd3c8f3a9b2cc5a9682e44b96ddd0bb2ff027221",
+        "allenai/Dolci-Instruct-DPO": "aed155cf32e809b590490b6c3577ee4b0d0a5019",
+        "allenai/Dolci-Instruct-RL": "1a8d79b1012d77e4bb1fd7f699c5c7eb33ef931e",
     }
-    for corpus in OLMO_CORPORA:
-        if corpus.hf_repo in unassigned:
-            assert corpus.assignment_verified is False
+
+
+def test_an_unpinned_corpus_is_refused():
+    import dataclasses
+
+    unpinned = dataclasses.replace(find_corpus("allenai/dolma3_mix-6T"), revision=None)
+    with pytest.raises(ValueError, match="no pinned scan revision"):
+        require_revision(unpinned)
+
+
+def test_post_training_repositories_belong_to_both_instruct_arms():
+    """Each arm's model card names the same three Dolci-Instruct repositories."""
+    assert unassigned_corpora() == ()
+    for model in OPEN_CORPUS_MODELS:
+        stages = {c.stage: c.hf_repo for c in corpora_for_model(model) if c.stage != "pretraining"}
+        assert stages == {
+            "sft": "allenai/Dolci-Instruct-SFT",
+            "dpo": "allenai/Dolci-Instruct-DPO",
+            "rlvr": "allenai/Dolci-Instruct-RL",
+        }
+        assert check_model_corpus(model, "allenai/Dolci-Instruct-SFT") is None
 
 
 def test_scanning_the_other_arms_pretraining_mix_is_refused():
@@ -56,10 +66,7 @@ def test_scanning_the_other_arms_pretraining_mix_is_refused():
     assert check_model_corpus("Olmo3-7B-Instruct", "allenai/dolma3_mix-6T-1025-7B") is None
 
 
-def test_unverified_or_unknown_pairings_warn_instead_of_passing_silently():
-    assert "operator-declared" in check_model_corpus(
-        "Olmo3-7B-Instruct", "allenai/Dolci-Instruct-SFT"
-    )
+def test_unknown_pairings_warn_instead_of_passing_silently():
     assert "unverified" in check_model_corpus("Olmo3-7B-Instruct", "someone/unknown-mix")
 
 

@@ -20,29 +20,37 @@ it, and the checkpoint/repository pairing is checked against
 `src/qcd/ground_truth/olmo_corpora.py`, which refuses a pairing it records as
 belonging to the other arm.
 
-## Verified public inputs (2026-08-21)
+## Verified public inputs (2026-08-21; revisions and post-training assignment 2026-10-19)
 
 | Checkpoint | Stage | Hugging Face repository | Pinned scan revision | Hub size / rows | Text-bearing schema |
 |---|---|---|---|---:|---|
 | `Olmo3-7B-Instruct` | bulk pretraining | [`allenai/dolma3_mix-6T-1025-7B`](https://huggingface.co/datasets/allenai/dolma3_mix-6T-1025-7B) | `2ca900fbe14e86c5c83d064d9f0882f1c0b8c05b` | 3.23 TB compressed at the pinned scan revision (47,025 shards); card: 23.7 TB uncompressed, 3.87B documents | `id`, `text`, `metadata`, `source`, `version`, `created`, `added`, `doc`, `attributes` |
-| `Olmo3.1-32B-Instruct` | bulk pretraining | [`allenai/dolma3_mix-6T`](https://huggingface.co/datasets/allenai/dolma3_mix-6T) | **not pinned** | 4.41 TB compressed in the current Hub file manifest | same JSONL.Zstandard schema |
-| **assignment not verified** | SFT | [`allenai/Dolci-Instruct-SFT`](https://huggingface.co/datasets/allenai/Dolci-Instruct-SFT) | not pinned | 3.06 GB download; 2,152,112 rows | `id`, nested `messages`, `source_dataset`, `domain` |
-| **assignment not verified** | DPO | [`allenai/Dolci-Instruct-DPO`](https://huggingface.co/datasets/allenai/Dolci-Instruct-DPO) | not pinned | 810 MB download; 259,922 rows | nested `chosen` and `rejected`, model IDs, `prompt_id`, `preference_type` |
-| **assignment not verified** | RL/RLVR prompt mixture | [`allenai/Dolci-Instruct-RL`](https://huggingface.co/datasets/allenai/Dolci-Instruct-RL) | not pinned | 483 MB download; 169,964 rows | `prompt`, `solution`, `ground_truth`, `source_prompt`, outputs and source metadata |
+| `Olmo3.1-32B-Instruct` | bulk pretraining | [`allenai/dolma3_mix-6T`](https://huggingface.co/datasets/allenai/dolma3_mix-6T) | `689a3ea2d8217e64d73a5058913fa43ad15e81aa` | 4.41 TB compressed at the pinned revision (63,913 files) | same JSONL.Zstandard schema |
+| both Instruct arms | SFT | [`allenai/Dolci-Instruct-SFT`](https://huggingface.co/datasets/allenai/Dolci-Instruct-SFT) | `bd3c8f3a9b2cc5a9682e44b96ddd0bb2ff027221` | 3.06 GB download; 2,152,112 rows | `id`, nested `messages`, `source_dataset`, `domain` |
+| both Instruct arms | DPO | [`allenai/Dolci-Instruct-DPO`](https://huggingface.co/datasets/allenai/Dolci-Instruct-DPO) | `aed155cf32e809b590490b6c3577ee4b0d0a5019` | 810 MB download; 259,922 rows | nested `chosen` and `rejected`, model IDs, `prompt_id`, `preference_type` |
+| both Instruct arms | RL/RLVR prompt mixture | [`allenai/Dolci-Instruct-RL`](https://huggingface.co/datasets/allenai/Dolci-Instruct-RL) | `1a8d79b1012d77e4bb1fd7f699c5c7eb33ef931e` | 483 MB download; 169,964 rows | `prompt`, `solution`, `ground_truth`, `source_prompt`, outputs and source metadata |
 
-Two values in that table are deliberately left open rather than filled in:
+How the two values that were open until 2026-10-19 were settled (Hub API and
+model cards, checked that day):
 
-- **the 32B pretraining scan revision.** Only the 7B mix has a revision pinned
-  in this repository. Resolve one on the Hub and record it before treating a
-  32B scan as a scientific result; `olmo_corpora.require_revision` refuses until
-  then, and the scan scripts fall back to resolving the current Hub commit,
-  which is not a pin.
-- **which checkpoint each `Dolci-Instruct-*` post-training mix belongs to.**
-  Nothing in this repository establishes whether the 7B and 32B Instruct
-  checkpoints are post-trained on the same mixes. The scan scripts still accept
-  a post-training repository with an explicit `--model`, but they print that
-  the attribution is operator-declared, and the registry records the assignment
-  as unverified rather than attributing these repositories to both arms.
+- **32B pretraining revision.** `689a3ea2…` is the current Hub commit. Its 63,913
+  data files have the same paths, LFS oids and sizes as at `6612d71…`, the commit
+  that finished the 2025-12-16/17 upload; every later commit edits only the
+  README. `6612d71…` itself is not used, because its README config points
+  `datasets` at a single directory. The `Olmo-3-1125-32B` card names
+  `allenai/dolma3_mix-5.5T-1125`, which now redirects to this repository. The
+  Olmo 3 report notes that the released mixes are reconstructions of the data
+  sampled in training (arXiv:2512.13961 v2, p.14, footnote 5).
+- **Post-training assignment.** Both arms' model cards name the same three
+  repositories: `Olmo-3-7B-Instruct-SFT` and `Olmo-3.1-32B-Instruct-SFT` name
+  `Dolci-Instruct-SFT`; the 7B and `Olmo-3.1-32B-Instruct-DPO` cards name
+  `Dolci-Instruct-DPO`; `Olmo-3.1-32B-Instruct` and the 7B card name
+  `Dolci-Instruct-RL`. The report's artifact list pairs both Instruct models with
+  `Dolci-Instruct-{SFT|DPO|RL}`, while Think data is split into 7B and 32B
+  repositories. Neither source says the 32B run used exactly the revisions
+  pinned here: SFT and DPO were re-uploaded on 2026-02-03 and 2026-02-20 with
+  unchanged row counts (pre-upload revisions `51b25163…` and `9d9461c8…`), and
+  the report's training tables describe only the 7B Instruct runs.
 
 Sizes above are availability checks, not experimental results. Compressed sizes
 were summed from Hugging Face Hub API file manifests; row counts and
@@ -77,9 +85,12 @@ python scripts/search_olmo_corpus.py \
   --output ../data/olmo_ground_truth/sft_humaneval_smoke.jsonl
 ```
 
-`--model` is required and is written into every evidence row. For a
-post-training repository it is operator-declared (the table above records no
-verified assignment), and the script says so on stderr.
+`--model` is required and is written into every evidence row. The pair is
+checked against `olmo_corpora.py`: each post-training repository is recorded
+for both Instruct arms, so a post-training scan runs once per arm with that
+arm's `--model`. Every item keeps up to 20 ranked candidate rows with document
+text (`--candidates-per-item`); `corpus_status` describes one candidate, and an
+item is a `confirmed-match` when any of its rows is.
 
 `--benchmark all` combines HumanEval, MBPP+, LCB-pre, and LCB-post before
 building the benchmark-side index, so each training corpus is transferred and
@@ -167,15 +178,24 @@ or shard scans use `not-observable` until exhaustive finalization.
   LCB-post items that reach `confirmed-match` in a pretraining scan is reported
   as the rule's observed false-match count. It does not re-tune the rule.
 
-These are retrieval choices of this study, not settings taken from TRACER or
-from the Olmo 3 decontamination pipeline.
+- **Sensitivity rule, reported beside the primary one:** token 8-gram coverage
+  `>= 0.5` (or verbatim containment), the rule the Olmo 3 report gives for its
+  own post-training decontamination (8-gram matching, 0.5 overlap threshold).
+  The same pass computes it, every row carries `sensitivity_ngram_coverage` and
+  `sensitivity_corpus_status`, and candidates rank primary-match first, then
+  sensitivity-match, then coverage. It never replaces the primary status. In a
+  post-training mix, a sensitivity match is a case Olmo's own filter would have
+  removed.
 
-The resumable manifest records evidence schema version 4: version 3 added the
+The primary rule and the candidate bound are retrieval choices of this study,
+not settings taken from TRACER or from the Olmo 3 decontamination pipeline.
+
+The resumable manifest records evidence schema version 5: version 3 added the
 tri-state output, version 4 added the `model` on the manifest metadata and on
-every evidence row. A manifest at an older schema version must be reinitialized
-rather than mixed with new shard rows — a schema-3 manifest's rows name no
-checkpoint, and `finalize` refuses one rather than guessing which arm they
-belong to.
+every evidence row, and version 5 added the sensitivity rule's fields. A
+manifest at an older schema version must be reinitialized rather than mixed
+with new shard rows; `finalize` refuses a schema-3 manifest (its rows name no
+checkpoint) and any manifest not at version 5.
 
 ## Not implemented in this first pass
 

@@ -41,7 +41,9 @@ def test_finalize_keeps_global_top_k_and_reassigns_ranks(tmp_path, monkeypatch):
             "ngram_size": "13",
             "ngram_coverage_threshold": "0.8",
             "candidates_per_item": "2",
-            "evidence_schema_version": "4",
+            "sensitivity_ngram_size": "8",
+            "sensitivity_ngram_coverage_threshold": "0.5",
+            "evidence_schema_version": "5",
         },
         shards=[("a.zst", 1, 0), ("b.zst", 1, 0)],
     )
@@ -92,7 +94,9 @@ def test_finalize_converts_weak_partial_evidence_to_complete_no_match(tmp_path, 
             "ngram_size": "13",
             "ngram_coverage_threshold": "0.8",
             "candidates_per_item": "1",
-            "evidence_schema_version": "4",
+            "sensitivity_ngram_size": "8",
+            "sensitivity_ngram_coverage_threshold": "0.5",
+            "evidence_schema_version": "5",
         },
         shards=[("a.zst", 1, 0)],
     )
@@ -135,7 +139,9 @@ def test_finalize_attributes_every_row_to_the_manifest_model(tmp_path, monkeypat
             "ngram_size": "13",
             "ngram_coverage_threshold": "0.8",
             "candidates_per_item": "1",
-            "evidence_schema_version": "4",
+            "sensitivity_ngram_size": "8",
+            "sensitivity_ngram_coverage_threshold": "0.5",
+            "evidence_schema_version": "5",
         },
         shards=[("a.zst", 1, 0)],
     )
@@ -182,3 +188,58 @@ def test_finalize_refuses_an_unattributed_schema_3_manifest(tmp_path, monkeypatc
     monkeypatch.setattr(MODULE, "benchmark_items", lambda: [])
     with pytest.raises(RuntimeError, match="records no `model`"):
         MODULE.finalize(SimpleNamespace(output=tmp_path / "final.jsonl"), connection)
+
+
+def _finalize_one_shard(tmp_path, monkeypatch, rows, *, candidates_per_item, schema="5"):
+    connection = connect(tmp_path / "manifest.sqlite")
+    metadata = {
+        "model": "Olmo3-7B-Instruct",
+        "repo": "example/corpus",
+        "revision": "abc",
+        "ngram_size": "13",
+        "ngram_coverage_threshold": "0.8",
+        "candidates_per_item": str(candidates_per_item),
+        "evidence_schema_version": schema,
+    }
+    if schema == "5":
+        metadata |= {"sensitivity_ngram_size": "8", "sensitivity_ngram_coverage_threshold": "0.5"}
+    initialize(connection, metadata=metadata, shards=[("a.zst", 1, 0)])
+    shard = claim_next(connection, worker_id="worker")
+    output = tmp_path / "worker.jsonl"
+    output.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    assert mark_complete(
+        connection, shard["path"], documents_scanned=3, evidence_rows=len(rows),
+        output_path=str(output), worker_id="worker", lease_token=shard["lease_token"],
+    )
+    item = SimpleNamespace(
+        dataset=SimpleNamespace(value="humaneval"), item_id="item-1", prompt="prompt",
+    )
+    monkeypatch.setattr(MODULE, "benchmark_items", lambda: [item])
+    destination = tmp_path / "final.jsonl"
+    MODULE.finalize(SimpleNamespace(output=destination), connection)
+    return [json.loads(line) for line in destination.read_text().splitlines()]
+
+
+def test_finalize_keeps_a_sensitivity_only_match_ahead_of_higher_primary_coverage(
+    tmp_path, monkeypatch
+):
+    higher_primary = _candidate("primary-0.6", 0.6) | {
+        "sensitivity_ngram_coverage": 0.3, "sensitivity_match_detected": False,
+    }
+    sensitivity_only = _candidate("sensitivity-0.7", 0.1) | {
+        "sensitivity_ngram_coverage": 0.7, "sensitivity_match_detected": True,
+    }
+    rows = _finalize_one_shard(
+        tmp_path, monkeypatch, [higher_primary, sensitivity_only], candidates_per_item=1
+    )
+    (row,) = rows
+    assert row["document_id"] == "sensitivity-0.7"
+    assert row["corpus_status"] == "no-match-found"
+    assert row["sensitivity_corpus_status"] == "confirmed-match"
+
+
+def test_finalize_refuses_a_schema_4_manifest(tmp_path, monkeypatch):
+    with pytest.raises(RuntimeError, match="evidence schema 4"):
+        _finalize_one_shard(
+            tmp_path, monkeypatch, [_candidate("hit", 0.9)], candidates_per_item=1, schema="4"
+        )

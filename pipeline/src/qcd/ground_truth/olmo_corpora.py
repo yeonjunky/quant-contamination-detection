@@ -11,17 +11,16 @@ pretraining mix — `OLMO_GROUND_TRUTH.md`'s verified-inputs table records
 other.
 
 Nothing here is inferred. Every repository, revision and model assignment is
-either copied from `OLMO_GROUND_TRUTH.md`'s verified-inputs table or left
-explicitly unresolved:
+copied from `OLMO_GROUND_TRUTH.md`'s verified-inputs table, which names the
+source of each (checked 2026-10-19):
 
-- the 32B pretraining mix has no pinned scan revision recorded anywhere in
-  this repository, so `revision` is `None` and `require_revision` refuses to
-  start a scan until an operator pins one;
-- the three `Dolci-Instruct-*` post-training repositories are recorded without
-  a per-checkpoint assignment. Whether the 7B and 32B Instruct checkpoints are
-  post-trained on the same mixes is not established by anything this
-  repository has verified, so they are listed as unassigned rather than
-  silently attributed to both arms.
+- the 32B pretraining mix is pinned to the Hub revision whose data files are
+  identical to the December 2025 upload (later commits edit only the README);
+- the three `Dolci-Instruct-*` post-training repositories are attributed to
+  both Instruct arms, because each arm's own model card names them. Neither
+  the cards nor the Olmo 3 report state that the 32B run used exactly the
+  revision pinned here, and the SFT and DPO repositories were re-uploaded in
+  February 2026 with unchanged row counts; `note` records both.
 
 Closed-corpus arms (Qwen2.5, Llama-3.1) are `not-observable` on paper §4.2's
 corpus axis by construction — there is no released corpus to search.
@@ -86,33 +85,46 @@ OLMO_CORPORA: tuple[OlmoCorpus, ...] = (
     OlmoCorpus(
         stage="pretraining",
         hf_repo="allenai/dolma3_mix-6T",
-        revision=None,
+        revision="689a3ea2d8217e64d73a5058913fa43ad15e81aa",
         models=("Olmo3.1-32B-Instruct",),
         note=(
-            "32B bulk pretraining mix. No scan revision has been pinned for it in this "
-            "repository; pin one and record it before a scientific scan."
+            "32B bulk pretraining mix (the Olmo-3-1125-32B card's dolma3_mix-5.5T-1125, "
+            "which now redirects here). Every data file at this revision has the same LFS "
+            "oid and size as at the 2025-12-17 upload; later commits edit only the README."
         ),
     ),
     OlmoCorpus(
         stage="sft",
         hf_repo="allenai/Dolci-Instruct-SFT",
-        revision=None,
-        models=None,
-        note="Post-training SFT mix; per-checkpoint assignment not verified here.",
+        revision="bd3c8f3a9b2cc5a9682e44b96ddd0bb2ff027221",
+        models=OPEN_CORPUS_MODELS,
+        note=(
+            "Named by the Olmo-3-7B-Instruct-SFT and Olmo-3.1-32B-Instruct-SFT cards. "
+            "Re-uploaded 2026-02-03 (same 2,152,112 rows; `source` split into "
+            "`source_dataset`/`domain`); the pre-upload revision is "
+            "51b25163854ed9da85df78c7e9267ecbaf9c36a0."
+        ),
     ),
     OlmoCorpus(
         stage="dpo",
         hf_repo="allenai/Dolci-Instruct-DPO",
-        revision=None,
-        models=None,
-        note="Post-training DPO mix; per-checkpoint assignment not verified here.",
+        revision="aed155cf32e809b590490b6c3577ee4b0d0a5019",
+        models=OPEN_CORPUS_MODELS,
+        note=(
+            "Named by the Olmo-3-7B-Instruct and Olmo-3.1-32B-Instruct-DPO cards. "
+            "Re-uploaded 2026-02-20 with the same 259,922 rows; the pre-upload revision is "
+            "9d9461c8a6fdfa0728718864bd59954749fff3d7."
+        ),
     ),
     OlmoCorpus(
         stage="rlvr",
         hf_repo="allenai/Dolci-Instruct-RL",
-        revision=None,
-        models=None,
-        note="Post-training RL/RLVR prompt mixture; per-checkpoint assignment not verified here.",
+        revision="1a8d79b1012d77e4bb1fd7f699c5c7eb33ef931e",
+        models=OPEN_CORPUS_MODELS,
+        note=(
+            "Named by the Olmo-3-7B-Instruct and Olmo-3.1-32B-Instruct cards; no data "
+            "commits since 2025-11-19."
+        ),
     ),
 )
 
